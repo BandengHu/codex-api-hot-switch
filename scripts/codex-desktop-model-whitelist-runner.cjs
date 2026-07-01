@@ -165,20 +165,26 @@ async function codexRestartBlockingProcessCount() {
   return processes.filter(isCodexRestartBlockingProcess).length
 }
 
-function requestCodexDesktopClose() {
+function terminateCodexDesktopProcesses() {
   if (process.platform !== "win32") return Promise.resolve(0)
   const script = `
 $ErrorActionPreference = "Stop"
-$targets = Get-Process -Name Codex -ErrorAction SilentlyContinue |
+$targets = Get-CimInstance Win32_Process -Filter "name = 'Codex.exe' OR name = 'codex.exe'" |
   Where-Object {
-    $path = ([string]$_.Path).ToLower()
-    $path.Contains("\\windowsapps\\openai.codex") -and
-      $path.EndsWith("\\app\\codex.exe") -and
-      $_.MainWindowHandle -ne 0
+    $path = ([string]$_.ExecutablePath).ToLower()
+    $line = ([string]$_.CommandLine).ToLower()
+    $isDesktop = $path.Contains("\\windowsapps\\openai.codex") -and $path.EndsWith("\\app\\codex.exe")
+    $isAppServer = $path.Contains("\\windowsapps\\openai.codex") -and
+      $path.EndsWith("\\app\\resources\\codex.exe") -and
+      $line.Contains(" app-server")
+    $isDesktop -or $isAppServer
   }
 $count = @($targets).Count
 foreach ($target in @($targets)) {
-  [void]$target.CloseMainWindow()
+  $processId = [int]$target.ProcessId
+  if ($processId -gt 0) {
+    Stop-Process -Id $processId -Force -ErrorAction Stop
+  }
 }
 [Console]::Out.Write($count)
 `
@@ -1059,10 +1065,10 @@ async function launch(options) {
 }
 
 async function restart(options) {
-  const closedProcessCount = await requestCodexDesktopClose()
+  const closedProcessCount = await terminateCodexDesktopProcesses()
   const exited = await waitForCodexDesktopExit()
-  if (!exited) throw new Error("Codex 桌面端未能正常关闭，请手动完全退出 Codex 后再启动带模型白名单")
-  const result = await startAndInject(options, "已关闭现有 Codex，并重启完成模型白名单注入")
+  if (!exited) throw new Error("Codex 桌面端旧进程未能结束，请手动完全退出 Codex 后再启动带模型白名单")
+  const result = await startAndInject(options, "已结束现有 Codex，并重启完成模型白名单注入")
   return { ...result, closedProcessCount }
 }
 
