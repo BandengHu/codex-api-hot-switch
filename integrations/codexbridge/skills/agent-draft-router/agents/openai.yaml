@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Draft Router"
+  short_description: "Checklist-first /agent draft generation"
+  default_prompt: "Use this skill to route /agent natural-language intake and generate checklist-first mission drafts."

@@ -1,0 +1,60 @@
+{
+  "name": "codexbridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Codex-centered bridge for multiple chat platforms and model providers.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "tsx src/index.ts",
+    "web:dev": "pnpm --dir apps/web dev",
+    "web:build": "pnpm --dir apps/web build",
+    "web:start": "pnpm --dir apps/web start",
+    "mission-control:build": "tsc -p packages/mission-control/tsconfig.json",
+    "mission-control:check-boundary": "node scripts/check-mission-control-boundary.mjs",
+    "mission-control:test": "tsx --test packages/mission-control/test/*.test.ts",
+    "mission-control:typecheck": "tsc -p packages/mission-control/tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:js": "tsc -p tsconfig.checkjs.json",
+    "codex-gateway:build": "tsc -p packages/codex-gateway/tsconfig.json",
+    "codex-gateway:check-boundary": "node scripts/check-codex-gateway-boundary.mjs",
+    "codex-gateway:test": "tsx --test packages/codex-gateway/test/*.test.ts",
+    "codex-gateway:typecheck": "tsc -p packages/codex-gateway/tsconfig.json --noEmit",
+    "codex-native-api:build": "tsc -p packages/codex-native-api/tsconfig.json",
+    "codex-native-api:check-boundary": "node scripts/check-codex-native-api-boundary.mjs",
+    "codex-native-api:test": "tsx --test packages/codex-native-api/test/*.test.ts",
+    "codex-native-api:typecheck": "tsc -p packages/codex-native-api/tsconfig.json --noEmit",
+    "codex-provider-relay:build": "tsc -p packages/codex-provider-relay/tsconfig.json",
+    "codex-provider-relay:check-boundary": "node scripts/check-codex-provider-relay-boundary.mjs",
+    "codex-provider-relay:test": "tsx --test packages/codex-provider-relay/test/*.test.ts",
+    "codex-provider-relay:typecheck": "tsc -p packages/codex-provider-relay/tsconfig.json --noEmit",
+    "codex-provider:build": "tsc -p packages/codex-provider-relay/tsconfig.json",
+    "codex-provider:check-boundary": "node scripts/check-codex-provider-relay-boundary.mjs",
+    "codex-provider:test": "tsx --test packages/codex-provider-relay/test/*.test.ts",
+    "codex-provider:typecheck": "tsc -p packages/codex-provider-relay/tsconfig.json --noEmit",
+    "weixin:login": "tsx src/cli.ts weixin login",
+    "weixin:clear-context": "tsx src/cli.ts weixin clear-context",
+    "weixin:serve": "tsx src/cli.ts weixin serve",
+    "wecom:serve": "tsx src/cli.ts wecom serve",
+    "codex:cleanup-internal-threads": "tsx src/cli.ts codex cleanup-internal-threads",
+    "test": "node ./scripts/test.mjs",
+    "test:live-agent": "node --input-type=module -e \"process.env.CODEXBRIDGE_TEST_ALLOW_LIVE_AGENT='1'; await import('./scripts/test.mjs');\" test/live_agent/live_agent_smoke.test.ts",
+    "test:live-openai-compatible": "node --input-type=module -e \"process.env.CODEXBRIDGE_TEST_LIVE_OPENAI_COMPATIBLE='1'; await import('./scripts/test.mjs');\" test/providers/openai_compatible/live_provider_smoke.test.ts"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@openai/agents": "^0.8.5",
+    "@wecom/aibot-node-sdk": "1.0.6",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
+    "qrcode": "^1.5.4",
+    "zod": "^4.3.6"
+  }
+}

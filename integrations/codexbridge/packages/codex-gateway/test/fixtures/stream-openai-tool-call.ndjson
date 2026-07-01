@@ -1,0 +1,3 @@
+{"id":"chatcmpl_stream_contract","created":1700000002,"model":"stream-model","choices":[{"index":0,"delta":{"content":"hello"}}]}
+{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_stream_1","function":{"name":"lookup","arguments":"{\"q\""}}]}}]}
+{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"x\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}

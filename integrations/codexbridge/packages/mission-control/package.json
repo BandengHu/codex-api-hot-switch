@@ -1,0 +1,26 @@
+{
+  "name": "@codexbridge/mission-control",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Internal long-running mission runtime for CodexBridge.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

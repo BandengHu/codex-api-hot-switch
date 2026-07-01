@@ -1,0 +1,14 @@
+.DS_Store
+.codex
+.env
+.env.*
+node_modules/
+dist/
+build/
+.next/
+coverage/
+*.tsbuildinfo
+.telegram-inbox/
+.codexbridge/
+reports/
+reference/
