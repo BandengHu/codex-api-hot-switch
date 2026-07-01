@@ -1,3 +1,12 @@
+const runtimeFileSystemTraceExcludes = [
+  "./.git/**/*",
+  "./.next/**/*",
+  "./.electron-server/**/*",
+  "./.electron-shell/**/*",
+  "./dist/**/*",
+  "./next.config.mjs",
+]
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: "standalone",
@@ -24,6 +33,10 @@ const nextConfig = {
       "./node_modules/ffmpeg-static/**/*",
       "./node_modules/ffprobe-static/**/*",
     ],
+  },
+  outputFileTracingExcludes: {
+    "/api/codex-sessions": runtimeFileSystemTraceExcludes,
+    "/api/wecom-bridge": runtimeFileSystemTraceExcludes,
   },
 }
 

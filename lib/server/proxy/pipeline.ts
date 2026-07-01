@@ -7,6 +7,7 @@ import {
 } from "@/lib/server/codex-model-catalog"
 import type { RequestLog, TokenUsage } from "@/lib/types"
 import {
+  applyAssistantMessagePhase,
   compactJson,
   isOpenAIChatProtocol,
   isOpenAIResponsesProtocol,
@@ -326,6 +327,12 @@ function withResponseModel(payload: unknown, model: string) {
   return next
 }
 
+function applyAssistantMessagePhaseToResponsePayload(payload: unknown) {
+  if (!isObject(payload)) return
+  const root = isObject(payload.response) ? payload.response : payload
+  applyAssistantMessagePhase(root.output)
+}
+
 function transformResponse(
   target: ProxyTarget,
   path: string,
@@ -346,9 +353,13 @@ function transformResponse(
       recordCodexChatResponse(payload, built?.rewrittenBody)
     }
     if (isResponsesCompactPath(path)) return payload
-    return built?.adapter?.type === "passthrough"
+    const transformed = built?.adapter?.type === "passthrough"
       ? withResponseModel(payload, built.adapter.responseModelOverride || target.requestedModel)
       : payload
+    if (!target.provider.rawResponsesPassthrough) {
+      applyAssistantMessagePhaseToResponsePayload(transformed)
+    }
+    return transformed
   }
   if (isOpenAIChatProtocol(target.provider.protocol)) {
     return built?.adapter?.type === "chat_compatible" ||
@@ -714,6 +725,8 @@ async function maybeAdaptOpenAICompatibleStream(
           createResponsesSseRepairStream({
             modelOverride: adapter.responseModelOverride,
             synthesizeFinalOnStreamEnd: true,
+            toolContext: adapter.toolContext,
+            assistantMessagePhase: !target.provider.rawResponsesPassthrough,
           }),
         )
   const recordedStream =
@@ -1101,6 +1114,7 @@ async function handleResponsesCompactFallback(params: {
   rawBody: unknown
   target: ProxyTarget
   startedAt: number
+  requestSignal?: AbortSignal
 }) {
   if (!isObject(params.body)) {
     throw new ProxyRequestBodyError("responses/compact 请求体必须是合法 JSON 对象", 400)
@@ -1113,7 +1127,7 @@ async function handleResponsesCompactFallback(params: {
   const built = buildProxyRequest(summaryTarget, "v1/responses", summaryBody)
   let upstream: Response
   try {
-    upstream = await fetchWithProviderTimeout(summaryTarget, built)
+    upstream = await fetchWithProviderTimeout(summaryTarget, built, params.requestSignal)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     const transformed = {
@@ -1608,7 +1622,7 @@ async function handleRelayWebSearchResponses(params: {
     currentBuilt = buildProxyRequest(params.target, params.path, currentBody)
     let upstream: Response
     try {
-      upstream = await fetchWithProviderTimeout(params.target, currentBuilt)
+      upstream = await fetchWithProviderTimeout(params.target, currentBuilt, params.requestSignal)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       appendLogDetached(
@@ -1788,6 +1802,7 @@ export async function handleProxyPost(parts: string[], request: Request) {
         rawBody: rawBody ?? body,
         target,
         startedAt,
+        requestSignal: request.signal,
       })
     }
     if (shouldRelayWebSearch(target, effectivePath, body)) {
@@ -1803,7 +1818,7 @@ export async function handleProxyPost(parts: string[], request: Request) {
     }
 
     built = buildProxyRequest(target, effectivePath, body)
-    let upstream = await fetchWithProviderTimeout(target, built)
+    let upstream = await fetchWithProviderTimeout(target, built, request.signal)
     const successResponse = await maybeHandleSuccessfulUpstream({
       imageApiRequest,
       upstream,
@@ -1829,7 +1844,7 @@ export async function handleProxyPost(parts: string[], request: Request) {
 
       attemptedRectifiers.add(rectified.kind)
       built = withRewrittenBody(built, rectified.body)
-      upstream = await fetchWithProviderTimeout(target, built)
+      upstream = await fetchWithProviderTimeout(target, built, request.signal)
       const rectifiedSuccessResponse = await maybeHandleSuccessfulUpstream({
         imageApiRequest,
         upstream,

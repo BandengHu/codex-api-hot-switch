@@ -62,8 +62,11 @@
     },
     "files": [
       "electron/**/*",
+      "!node_modules/**/*",
+      "!**/node_modules/**/*",
       "package.json"
     ],
+    "asarUnpack": [],
     "extraResources": [
       {
         "from": ".electron-server",

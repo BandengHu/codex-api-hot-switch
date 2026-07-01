@@ -34,19 +34,36 @@ export interface BuiltProxyRequest {
 export async function fetchWithProviderTimeout(
   target: ProxyTarget,
   built: Pick<BuiltProxyRequest, "url" | "init">,
+  requestSignal?: AbortSignal,
 ) {
   const timeoutMs = Math.max(1000, target.provider.timeoutMs || 60000)
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const abortState: { cause: "timeout" | "client" | "" } = { cause: "" }
+  const abort = (cause: "timeout" | "client") => {
+    if (controller.signal.aborted) return
+    abortState.cause = cause
+    controller.abort()
+  }
+  const onClientAbort = () => abort("client")
+  if (requestSignal?.aborted) {
+    abort("client")
+  } else {
+    requestSignal?.addEventListener("abort", onClientAbort, { once: true })
+  }
+  const timer = setTimeout(() => abort("timeout"), timeoutMs)
   try {
     return await fetch(built.url, { ...built.init, signal: controller.signal })
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
+    if (controller.signal.aborted && abortState.cause === "client") {
+      throw new Error("客户端已取消请求，上游请求已中止")
+    }
+    if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
       throw new Error(`上游请求超时：超过 ${timeoutMs}ms 未响应`)
     }
     throw error
   } finally {
     clearTimeout(timer)
+    requestSignal?.removeEventListener("abort", onClientAbort)
   }
 }
 

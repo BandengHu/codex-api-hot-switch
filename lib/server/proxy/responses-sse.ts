@@ -1,5 +1,12 @@
 import "server-only"
 
+import {
+  toolCallAddedItem,
+  toolCallItem,
+  type ToolContext,
+} from "./codex-tool-proxy"
+import { applyAssistantMessagePhase } from "./common"
+
 type AnyRecord = Record<string, any>
 
 const textEncoder = new TextEncoder()
@@ -25,6 +32,16 @@ function isObject(value: unknown): value is AnyRecord {
 
 function responsePayloadRoot(value: any) {
   return isObject(value?.response) ? value.response : value
+}
+
+function isToolOutputItem(item: unknown) {
+  if (!isObject(item)) return false
+  return (
+    item.type === "function_call" ||
+    item.type === "custom_tool_call" ||
+    item.type === "tool_search_call" ||
+    item.type === "local_shell_call"
+  )
 }
 
 export function parseSseFrames(text: string) {
@@ -248,6 +265,7 @@ class ResponsesStreamRepairer {
   private completedSeen = false
   private failedSeen = false
   private pendingDone = false
+  private pendingMessageDoneFrames: Array<{ event: string; data: AnyRecord }> = []
   responseId = ""
   usage: any = null
 
@@ -256,6 +274,8 @@ class ResponsesStreamRepairer {
       modelOverride?: string
       repairIncompleteFinalItems?: boolean
       synthesizeFinalOnStreamEnd?: boolean
+      toolContext?: ToolContext
+      assistantMessagePhase?: boolean
     } = {},
   ) {}
 
@@ -379,7 +399,10 @@ class ResponsesStreamRepairer {
       if (this.options.repairIncompleteFinalItems !== false) {
         this.repairCompletedResponseItems(response)
       }
-      return prefix + sse(event, data)
+      if (this.options.assistantMessagePhase) {
+        applyAssistantMessagePhase(response.output)
+      }
+      return prefix + this.flushPendingMessageDoneFrames("final_answer") + sse(event, data)
     }
     if (type === "response.failed") {
       this.failedSeen = true
@@ -413,6 +436,7 @@ class ResponsesStreamRepairer {
 
   private handleOutputItemAdded(event: string, data: AnyRecord, frameText: string) {
     const item = data.item
+    const phasePrefix = this.flushPendingMessageDoneFramesBeforeTool(item)
     if (isObject(item) && item.type === "message") {
       this.rememberOutputItem("message", item, data.output_index)
       return rawSseFrame(frameText)
@@ -423,9 +447,9 @@ class ResponsesStreamRepairer {
     }
     if (isObject(item) && item.type === "custom_tool_call") {
       this.rememberOutputItem("custom_tool", item, data.output_index)
-      return rawSseFrame(frameText)
+      return phasePrefix + rawSseFrame(frameText)
     }
-    if (!isObject(item) || item.type !== "function_call") return rawSseFrame(frameText)
+    if (!isObject(item) || item.type !== "function_call") return phasePrefix + rawSseFrame(frameText)
 
     const callIdChanged = ensureFunctionCallId(item)
     const itemId = String(item.id || item.call_id || "").trim()
@@ -441,13 +465,27 @@ class ResponsesStreamRepairer {
       }
       for (const key of functionItemKeys(item)) this.functionItems.set(key, snapshot)
     }
+    if (itemId && this.isCustomFunctionTool(name)) {
+      const callId = item.call_id || stableFunctionCallId(item)
+      this.pending.set(itemId, {
+        name,
+        callId,
+        outputIndex: data.output_index,
+        chunks: argumentsText ? [argumentsText] : [],
+        flushed: false,
+        sanitized: null,
+        custom: true,
+      })
+      data.item = toolCallAddedItem(callId, name, this.options.toolContext!)
+      return phasePrefix + sse(event, data)
+    }
     if (!itemId || !isCollabToolName(name)) {
       const repaired = repairFunctionCallArguments(argumentsText)
       if (repaired !== argumentsText) {
         item.arguments = repaired
-        return sse(event, data)
+        return phasePrefix + sse(event, data)
       }
-      return callIdChanged ? sse(event, data) : rawSseFrame(frameText)
+      return phasePrefix + (callIdChanged ? sse(event, data) : rawSseFrame(frameText))
     }
     this.pending.set(itemId, {
       name,
@@ -458,9 +496,9 @@ class ResponsesStreamRepairer {
     })
     if (argumentsText) {
       item.arguments = ""
-      return sse(event, data)
+      return phasePrefix + sse(event, data)
     }
-    return callIdChanged ? sse(event, data) : rawSseFrame(frameText)
+    return phasePrefix + (callIdChanged ? sse(event, data) : rawSseFrame(frameText))
   }
 
   private handleFunctionArgumentsDelta(event: string, data: AnyRecord, frameText: string) {
@@ -505,6 +543,16 @@ class ResponsesStreamRepairer {
     if (typeof data.arguments === "string" && data.arguments && item.chunks.length === 0) {
       item.chunks.push(data.arguments)
     }
+    if (item.custom) {
+      const { prefix, sanitized } = this.flushCustomArgsWithPrefix(itemId)
+      return prefix + sse("response.custom_tool_call_input.done", {
+        type: "response.custom_tool_call_input.done",
+        item_id: this.customToolItemId(item),
+        call_id: item.callId,
+        output_index: data.output_index ?? item.outputIndex,
+        input: sanitized,
+      })
+    }
     const { prefix, sanitized } = this.flushArgsWithPrefix(itemId)
     data.arguments = sanitized
     return prefix + sse(event, data)
@@ -515,7 +563,12 @@ class ResponsesStreamRepairer {
     if (isObject(item) && item.type === "message") {
       this.rememberOutputItem("message", item, data.output_index)
       this.markOutputItemDone("message", item, data.output_index)
-      return this.repairMessageItem(item, data.output_index)
+      const changed = this.repairMessageItem(item, data.output_index)
+      if (this.options.assistantMessagePhase && item.phase == null) {
+        this.pendingMessageDoneFrames.push({ event, data })
+        return ""
+      }
+      return changed
         ? sse(event, data)
         : rawSseFrame(frameText)
     }
@@ -537,9 +590,24 @@ class ResponsesStreamRepairer {
 
     const itemId = String(item.id || item.call_id || "").trim()
     const pending = this.pending.get(itemId)
+    if (pending?.custom) {
+      if (typeof item.arguments === "string" && item.arguments && pending.chunks.length === 0) {
+        pending.chunks.push(item.arguments)
+      }
+      const { prefix } = this.flushCustomArgsWithPrefix(itemId)
+      data.item = toolCallItem(
+        pending.callId || item.call_id || stableFunctionCallId(item),
+        pending.name || item.name,
+        pending.sanitized || "",
+        this.options.toolContext!,
+      )
+      this.markOutputItemDone("custom_tool", data.item, data.output_index)
+      return this.flushPendingMessageDoneFramesBeforeTool(item) + prefix + sse(event, data)
+    }
     let changed = this.repairFunctionItem(item, data.output_index)
     this.markOutputItemDone("function_call", item, data.output_index)
-    if (!pending) return changed ? sse(event, data) : rawSseFrame(frameText)
+    const phasePrefix = this.flushPendingMessageDoneFramesBeforeTool(item)
+    if (!pending) return phasePrefix + (changed ? sse(event, data) : rawSseFrame(frameText))
 
     if (typeof item.arguments === "string" && item.arguments && pending.chunks.length === 0) {
       pending.chunks.push(item.arguments)
@@ -548,7 +616,25 @@ class ResponsesStreamRepairer {
     ensureFunctionCallId(item)
     item.arguments = sanitized
     changed = true
-    return prefix + (changed ? sse(event, data) : rawSseFrame(frameText))
+    return phasePrefix + prefix + (changed ? sse(event, data) : rawSseFrame(frameText))
+  }
+
+  private flushPendingMessageDoneFramesBeforeTool(item: unknown) {
+    if (!this.options.assistantMessagePhase || !isToolOutputItem(item)) return ""
+    return this.flushPendingMessageDoneFrames("commentary")
+  }
+
+  private flushPendingMessageDoneFrames(phase: "commentary" | "final_answer") {
+    if (!this.options.assistantMessagePhase || this.pendingMessageDoneFrames.length === 0) {
+      return ""
+    }
+    let out = ""
+    for (const pending of this.pendingMessageDoneFrames.splice(0)) {
+      const item = pending.data.item
+      if (isObject(item) && item.phase == null) item.phase = phase
+      out += sse(pending.event, pending.data)
+    }
+    return out
   }
 
   private flushArgsWithPrefix(itemId: string) {
@@ -556,7 +642,7 @@ class ResponsesStreamRepairer {
     if (!item) return { prefix: "", sanitized: "" }
     if (item.flushed) return { prefix: "", sanitized: item.sanitized || "" }
     item.flushed = true
-    const raw = repairFunctionCallArguments(item.chunks.join(""))
+    const raw = String(repairFunctionCallArguments(item.chunks.join("")) || "")
     const sanitized = sanitizeCollabToolArguments(item.name, raw) ?? raw
     item.sanitized = sanitized
     if (!sanitized) return { prefix: "", sanitized }
@@ -569,8 +655,38 @@ class ResponsesStreamRepairer {
     return { prefix: sse("response.function_call_arguments.delta", payload), sanitized }
   }
 
+  private flushCustomArgsWithPrefix(itemId: string) {
+    const item = this.pending.get(itemId)
+    if (!item) return { prefix: "", sanitized: "" }
+    if (item.flushed) return { prefix: "", sanitized: item.sanitized || "" }
+    item.flushed = true
+    const raw = String(repairFunctionCallArguments(item.chunks.join("")) || "")
+    const completed = toolCallItem(String(item.callId || ""), String(item.name || ""), raw, this.options.toolContext!)
+    const input = typeof completed.input === "string" ? completed.input : raw
+    item.sanitized = input
+    if (!input) return { prefix: "", sanitized: input }
+    return {
+      prefix: sse("response.custom_tool_call_input.delta", {
+        type: "response.custom_tool_call_input.delta",
+        item_id: this.customToolItemId(item),
+        call_id: item.callId,
+        output_index: item.outputIndex,
+        delta: input,
+      }),
+      sanitized: input,
+    }
+  }
+
   private flushArgs(itemId: string) {
     return this.flushArgsWithPrefix(itemId).prefix
+  }
+
+  private isCustomFunctionTool(name: string) {
+    return Boolean(this.options.toolContext?.customTools.has(name))
+  }
+
+  private customToolItemId(item: AnyRecord) {
+    return `ctc_${item.callId}`
   }
 
   private outputItemDoneKeyValues(
@@ -854,6 +970,16 @@ class ResponsesStreamRepairer {
         if (key) includedCustomToolKeys.add(key)
         this.repairCustomToolItem(item, index)
       } else if (item?.type === "function_call") {
+        if (this.isCustomFunctionTool(item.name)) {
+          this.repairFunctionItem(item, index)
+          const args = typeof item.arguments === "string" ? item.arguments : ""
+          const callId = item.call_id || stableFunctionCallId(item)
+          const customItem = toolCallItem(callId, item.name, args, this.options.toolContext!)
+          output[index] = customItem
+          const key = this.outputKeyFor("custom_tool", customItem, index)
+          if (key) includedCustomToolKeys.add(key)
+          continue
+        }
         this.repairFunctionItem(item, index)
         for (const key of functionItemKeys(item)) includedFunctionKeys.add(key)
       }
@@ -893,6 +1019,9 @@ class ResponsesStreamRepairer {
       nextOutput.splice(index, 0, entry.item)
     }
     response.output = nextOutput
+    if (this.options.assistantMessagePhase) {
+      applyAssistantMessagePhase(response.output)
+    }
 
     const outputText = Array.from(this.messageItems.values())
       .map((snapshot) => this.snapshotText(snapshot))
@@ -956,6 +1085,9 @@ class ResponsesStreamRepairer {
 
     const response = this.syntheticResponseBase("completed")
     this.repairCompletedResponseItems(response)
+    if (this.options.assistantMessagePhase) {
+      applyAssistantMessagePhase(response.output)
+    }
     sanitizeResponseOutputArguments(response)
 
     const hasOutput =
@@ -965,6 +1097,7 @@ class ResponsesStreamRepairer {
       this.completedSeen = true
       return (
         prefix +
+        this.flushPendingMessageDoneFrames("final_answer") +
         this.synthesizeMissingOutputItemDoneFrames(response) +
         sse("response.completed", { type: "response.completed", response }) +
         this.syntheticDoneSuffix()
@@ -987,6 +1120,8 @@ export function transformResponsesSseText(
     modelOverride?: string
     repairIncompleteFinalItems?: boolean
     synthesizeFinalOnStreamEnd?: boolean
+    toolContext?: ToolContext
+    assistantMessagePhase?: boolean
   } = {},
 ) {
   const transformer = new ResponsesStreamRepairer(options)
@@ -1000,6 +1135,8 @@ export function createResponsesSseRepairStream(
     modelOverride?: string
     repairIncompleteFinalItems?: boolean
     synthesizeFinalOnStreamEnd?: boolean
+    toolContext?: ToolContext
+    assistantMessagePhase?: boolean
   } = {},
 ) {
   const repairer = new ResponsesStreamRepairer(options)

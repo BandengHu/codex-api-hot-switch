@@ -3,6 +3,7 @@ import "server-only"
 import { createReadStream, createWriteStream } from "node:fs"
 import {
   mkdir,
+  open,
   readdir,
   readFile,
   rename,
@@ -47,7 +48,7 @@ function parseSessionMeta(firstLine: string) {
 async function listRolloutFiles(rootDir: string): Promise<string[]> {
   let entries
   try {
-    entries = await readdir(rootDir, { withFileTypes: true })
+    entries = await readdir(/* turbopackIgnore: true */ rootDir, { withFileTypes: true })
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return []
     throw error
@@ -65,7 +66,7 @@ async function listRolloutFiles(rootDir: string): Promise<string[]> {
 }
 
 async function readFirstLine(filePath: string) {
-  const handle = await import("node:fs/promises").then((fs) => fs.open(filePath, "r"))
+  const handle = await open(/* turbopackIgnore: true */ filePath, "r")
   try {
     let position = 0
     let collected = Buffer.alloc(0)
@@ -101,8 +102,8 @@ async function readFirstLine(filePath: string) {
 async function restoreMtime(filePath: string, mtimeMs: number) {
   if (!Number.isFinite(mtimeMs)) return
   try {
-    const current = await stat(filePath)
-    await utimes(filePath, current.atime, new Date(mtimeMs))
+    const current = await stat(/* turbopackIgnore: true */ filePath)
+    await utimes(/* turbopackIgnore: true */ filePath, current.atime, new Date(mtimeMs))
   } catch {
     // mtime preservation is best effort; metadata content is the important part.
   }
@@ -110,7 +111,7 @@ async function restoreMtime(filePath: string, mtimeMs: number) {
 
 async function rewriteFirstLine(meta: RolloutMeta, nextFirstLine: string) {
   const current = await readFirstLine(meta.path)
-  const currentStat = await stat(meta.path)
+  const currentStat = await stat(/* turbopackIgnore: true */ meta.path)
   if (
     current.firstLine !== meta.firstLine ||
     current.offset !== meta.offset ||
@@ -121,7 +122,7 @@ async function rewriteFirstLine(meta: RolloutMeta, nextFirstLine: string) {
   }
 
   const tmpPath = `${meta.path}.switchgate-session-sync.${process.pid}.${Date.now()}.tmp`
-  const writer = createWriteStream(tmpPath, { encoding: "utf8" })
+  const writer = createWriteStream(/* turbopackIgnore: true */ tmpPath, { encoding: "utf8" })
   try {
     await new Promise<void>((resolve, reject) => {
       writer.on("error", reject)
@@ -133,16 +134,16 @@ async function rewriteFirstLine(meta: RolloutMeta, nextFirstLine: string) {
         writer.once("finish", resolve)
         return
       }
-      const reader = createReadStream(meta.path, { start: meta.offset })
+      const reader = createReadStream(/* turbopackIgnore: true */ meta.path, { start: meta.offset })
       reader.on("error", reject)
       reader.on("end", () => writer.end())
       writer.once("finish", resolve)
       reader.pipe(writer, { end: false })
     })
-    await rename(tmpPath, meta.path)
+    await rename(/* turbopackIgnore: true */ tmpPath, /* turbopackIgnore: true */ meta.path)
     await restoreMtime(meta.path, meta.mtimeMs)
   } catch (error) {
-    await rm(tmpPath, { force: true })
+    await rm(/* turbopackIgnore: true */ tmpPath, { force: true })
     throw error
   }
 }
@@ -156,7 +157,7 @@ export async function listRolloutMetas(home = codexHome()) {
       const firstLine = await readFirstLine(filePath)
       const record = parseSessionMeta(firstLine.firstLine)
       if (!record) continue
-      const fileStat = await stat(filePath)
+      const fileStat = await stat(/* turbopackIgnore: true */ filePath)
       metas.push({
         path: filePath,
         directory,
@@ -208,8 +209,8 @@ export async function moveRolloutFilesToBackupByIds(
   for (const meta of targets) {
     const rel = relative(home, meta.path)
     const target = join(backupDir, "deleted-rollouts", rel || basename(meta.path))
-    await mkdir(dirname(target), { recursive: true })
-    await rename(meta.path, target)
+    await mkdir(/* turbopackIgnore: true */ dirname(target), { recursive: true })
+    await rename(/* turbopackIgnore: true */ meta.path, /* turbopackIgnore: true */ target)
     moved += 1
   }
   return moved
@@ -222,9 +223,9 @@ export async function createRolloutDeleteBackupForIds(home: string, threadIds: s
     backupRoot(home),
     `${new Date().toISOString().replaceAll(":", "").replaceAll("-", "").replace(".", "")}-delete-${suffix}`,
   )
-  await mkdir(backupDir, { recursive: true })
+  await mkdir(/* turbopackIgnore: true */ backupDir, { recursive: true })
   await writeFile(
-    join(backupDir, "metadata.json"),
+    /* turbopackIgnore: true */ join(backupDir, "metadata.json"),
     `${JSON.stringify(
       {
         version: 1,
@@ -240,8 +241,8 @@ export async function createRolloutDeleteBackupForIds(home: string, threadIds: s
     "utf8",
   )
   try {
-    const globalState = await readFile(join(home, ".codex-global-state.json"), "utf8")
-    await writeFile(join(backupDir, ".codex-global-state.json"), globalState, "utf8")
+    const globalState = await readFile(/* turbopackIgnore: true */ join(home, ".codex-global-state.json"), "utf8")
+    await writeFile(/* turbopackIgnore: true */ join(backupDir, ".codex-global-state.json"), globalState, "utf8")
   } catch {
     // Global state is optional.
   }
@@ -252,10 +253,10 @@ export async function createRolloutDeleteBackupForIds(home: string, threadIds: s
 async function backupSessionIndexFiles(home: string, backupDir: string) {
   for (const relativePath of ["session_index.jsonl", "sqlite/session_index.jsonl"]) {
     try {
-      const content = await readFile(join(home, relativePath), "utf8")
+      const content = await readFile(/* turbopackIgnore: true */ join(home, relativePath), "utf8")
       const target = join(backupDir, "session-index", relativePath)
-      await mkdir(dirname(target), { recursive: true })
-      await writeFile(target, content, "utf8")
+      await mkdir(/* turbopackIgnore: true */ dirname(target), { recursive: true })
+      await writeFile(/* turbopackIgnore: true */ target, content, "utf8")
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
     }

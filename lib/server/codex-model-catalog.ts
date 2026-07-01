@@ -72,16 +72,18 @@ function enabledChatModels(snapshot: RoutingSnapshot) {
 
 function catalogModel(
   slug: string,
+  displayName: string,
   contextWindow: number,
   supportsReasoning: boolean,
   supportsVision: boolean,
   supportsSearch: boolean,
   priority: number,
 ) {
+  const label = displayName.trim() || slug
   return {
     slug,
-    display_name: slug,
-    description: slug,
+    display_name: label,
+    description: label,
     default_reasoning_level: supportsReasoning ? "medium" : "off",
     supported_reasoning_levels: supportsReasoning
       ? REASONING_LEVELS
@@ -119,6 +121,7 @@ export function buildCodexClientModelsResponse(snapshot: RoutingSnapshot) {
   const models = [
     catalogModel(
       CODEX_AUTO_MODEL_SLUG,
+      CODEX_AUTO_MODEL_DISPLAY_NAME,
       200000,
       true,
       true,
@@ -133,6 +136,7 @@ export function buildCodexClientModelsResponse(snapshot: RoutingSnapshot) {
     models.push(
       catalogModel(
         slug,
+        codexRoutedModelDisplayName(model, provider),
         model.contextLength,
         model.supportsReasoning,
         model.supportsVision,
@@ -153,18 +157,18 @@ export function buildOpenAIModelsResponse(snapshot: RoutingSnapshot) {
       object: "model",
       created: 0,
       owned_by: CODEX_MODEL_OWNER,
-      display_name: CODEX_AUTO_MODEL_SLUG,
+      display_name: CODEX_AUTO_MODEL_DISPLAY_NAME,
     },
   ]
 
-  for (const { model } of enabledChatModels(snapshot)) {
+  for (const { model, provider } of enabledChatModels(snapshot)) {
     const slug = codexRoutedModelSlug(model)
     data.push({
       id: slug,
       object: "model",
       created: 0,
       owned_by: CODEX_MODEL_OWNER,
-      display_name: slug,
+      display_name: codexRoutedModelDisplayName(model, provider),
     })
   }
 

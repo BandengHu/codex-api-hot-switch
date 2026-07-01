@@ -36,35 +36,6 @@ function isDeepSeekV4Model(model: string) {
 }
 
 function inferChatReasoningDialect(target: ProxyTarget): ReasoningDialect {
-  const providerHint = `${target.provider.name} ${target.provider.baseUrl} ${target.provider.protocol}`.toLowerCase()
-  if (providerHint.includes("openrouter")) {
-    return "openrouter-reasoning"
-  }
-  if (providerHint.includes("siliconflow")) return "siliconflow-enable-thinking"
-  if (
-    providerHint.includes("qwen") ||
-    providerHint.includes("dashscope") ||
-    providerHint.includes("bailian") ||
-    providerHint.includes("百炼") ||
-    providerHint.includes("千问")
-  ) {
-    return "qwen-enable-thinking"
-  }
-  if (providerHint.includes("deepseek")) return "deepseek-official"
-  if (providerHint.includes("minimax")) return "minimax-reasoning-split"
-  if (providerHint.includes("stepfun")) return "stepfun-low-high"
-  if (providerHint.includes("hunyuan") || providerHint.includes("tencent")) return "tencent-tokenhub-thinking"
-  if (
-    providerHint.includes("glm") ||
-    providerHint.includes("zhipu") ||
-    providerHint.includes("z.ai") ||
-    providerHint.includes("bigmodel") ||
-    providerHint.includes("智谱") ||
-    providerHint.includes("mimo")
-  ) {
-    return "glm-thinking"
-  }
-
   const lower = target.modelId.toLowerCase()
   if (lower.includes("openrouter") || lower.startsWith("openrouter/")) return "openrouter-reasoning"
   if (lower.includes("deepseek")) return "deepseek-official"
@@ -98,6 +69,34 @@ function inferChatReasoningDialect(target: ProxyTarget): ReasoningDialect {
   if (isOpenAIOModel(lower) || /^gpt-[5-9]/.test(lower)) {
     return "openai-reasoning-effort"
   }
+
+  const providerHint = `${target.provider.name} ${target.provider.baseUrl} ${target.provider.protocol}`.toLowerCase()
+  if (providerHint.includes("openrouter")) return "openrouter-reasoning"
+  if (providerHint.includes("siliconflow")) return "siliconflow-enable-thinking"
+  if (
+    providerHint.includes("qwen") ||
+    providerHint.includes("dashscope") ||
+    providerHint.includes("bailian") ||
+    providerHint.includes("百炼") ||
+    providerHint.includes("千问")
+  ) {
+    return "qwen-enable-thinking"
+  }
+  if (providerHint.includes("deepseek")) return "deepseek-official"
+  if (providerHint.includes("minimax")) return "minimax-reasoning-split"
+  if (providerHint.includes("stepfun")) return "stepfun-low-high"
+  if (providerHint.includes("hunyuan") || providerHint.includes("tencent")) return "tencent-tokenhub-thinking"
+  if (
+    providerHint.includes("glm") ||
+    providerHint.includes("zhipu") ||
+    providerHint.includes("z.ai") ||
+    providerHint.includes("bigmodel") ||
+    providerHint.includes("智谱") ||
+    providerHint.includes("mimo")
+  ) {
+    return "glm-thinking"
+  }
+
   return "none"
 }
 
@@ -105,9 +104,6 @@ export function resolveReasoningDialect(target: ProxyTarget): ReasoningDialect {
   const modelDialect = target.model?.reasoningDialect
   if (modelDialect && modelDialect !== "inherit" && modelDialect !== "auto") {
     return modelDialect
-  }
-  if (target.provider.reasoningDialect && target.provider.reasoningDialect !== "auto") {
-    return target.provider.reasoningDialect
   }
   return inferChatReasoningDialect(target)
 }
@@ -136,6 +132,12 @@ function mapReasoningEffort(effort: string, dialect: ReasoningDialect) {
       ? normalized
       : undefined
   }
+  if (dialect === "openai-reasoning-effort" || dialect === "volcengine-thinking") {
+    if (normalized === "xhigh") return "max"
+    return ["minimal", "low", "medium", "high", "max"].includes(normalized)
+      ? normalized
+      : undefined
+  }
   return ["minimal", "low", "medium", "high", "xhigh", "max"].includes(normalized)
     ? normalized
     : undefined
@@ -146,17 +148,6 @@ function mapThinkingBudget(effort: string) {
   if (normalized === "minimal" || normalized === "low") return 1024
   if (normalized === "high" || normalized === "xhigh" || normalized === "max") return 8192
   return 4096
-}
-
-function mapGlmReasoningEffort(effort: string) {
-  const normalized = effort.trim().toLowerCase()
-  if (normalized === "minimal") return "minimal"
-  if (normalized === "low") return "low"
-  if (normalized === "medium") return "medium"
-  if (normalized === "high") return "high"
-  if (normalized === "xhigh") return "xhigh"
-  if (normalized === "max") return "max"
-  return undefined
 }
 
 function mapQwenThinkingBudget(effort: string) {
@@ -220,9 +211,6 @@ export function applyChatReasoningOptions(
 
   if (dialect === "openrouter-reasoning") {
     result.reasoning = { effort: mapped }
-  } else if (dialect === "glm-thinking" && supportsGlmReasoningEffort(model)) {
-    const glmEffort = mapGlmReasoningEffort(effort)
-    if (glmEffort) result.reasoning_effort = glmEffort
   } else if (
     dialect === "openai-reasoning-effort" ||
     dialect === "deepseek-official" ||

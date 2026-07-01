@@ -3,6 +3,7 @@ import "server-only"
 import type { ReasoningEffort } from "@/lib/types"
 import { isChatCompletionsPath, isResponsesCompactPath, isResponsesPath } from "./common"
 import { expandCodexResponsesRequest } from "./codex-chat-history"
+import { buildToolContext, type ToolContext } from "./codex-tool-proxy"
 import { ProxyRequestBodyError } from "./content-encoding"
 import { canonicalToolArguments } from "./json-canonical"
 
@@ -14,6 +15,7 @@ export type CodexAdapter =
       requestIsStream: boolean
       requestedModel: string
       responseModelOverride?: string
+      toolContext?: ToolContext
     }
   | {
       type: "chat_completions"
@@ -606,20 +608,22 @@ export function prepareCodexOpenAICompatibleRequest(
       }
     }
     {
+      const toolContext = buildToolContext(passthrough.tools)
       applyHotSwitchOverrides(passthrough, model, reasoning)
       expandCodexResponsesRequest(passthrough)
-    }
-    const normalized = normalizeResponsesBodyForCodex(passthrough)
-    if (!isObject(normalized)) throw new Error("归一化后的 responses 请求体不是 JSON 对象")
-    return {
-      upstreamPath: "v1/responses",
-      body: normalized,
-      adapter: {
-        type: "passthrough",
-        requestIsStream: Boolean(normalized.stream),
-        requestedModel,
-        responseModelOverride: requestedModel || safeTrim(body.model) || undefined,
-      },
+      const normalized = normalizeResponsesBodyForCodex(passthrough)
+      if (!isObject(normalized)) throw new Error("归一化后的 responses 请求体不是 JSON 对象")
+      return {
+        upstreamPath: "v1/responses",
+        body: normalized,
+        adapter: {
+          type: "passthrough",
+          requestIsStream: Boolean(normalized.stream),
+          requestedModel,
+          responseModelOverride: requestedModel || safeTrim(body.model) || undefined,
+          toolContext,
+        },
+      }
     }
   }
 

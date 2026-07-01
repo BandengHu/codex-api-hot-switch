@@ -36,6 +36,7 @@ import {
 } from "./codex-chat-history"
 import {
   appendOutputLanguagePolicyToChatBody,
+  appendOutputLanguagePolicyToLatestChatUserMessage,
   appendOutputLanguagePolicyToResponsesBody,
 } from "./language-policy"
 import {
@@ -625,9 +626,11 @@ export function responsesToChatCompletions(body: AnyRecord, target: ProxyTarget)
   if (instructions) messages.push({ role: "system", content: instructions })
   appendResponsesInput(body.input, messages)
   normalizeChatMessages(messages)
+  appendOutputLanguagePolicyToLatestChatUserMessage(messages, target)
   backfillToolCallReasoningPlaceholders(messages, target)
   result.messages = collapseSystemMessagesToHead(messages)
 
+  const reasoningDialect = resolveReasoningDialect(target)
   const maxOutputTokens = body.max_output_tokens ?? body.max_tokens ?? body.max_completion_tokens
   if (maxOutputTokens != null) {
     result[isOpenAIOModel(model) ? "max_completion_tokens" : "max_tokens"] = maxOutputTokens
@@ -638,7 +641,7 @@ export function responsesToChatCompletions(body: AnyRecord, target: ProxyTarget)
   if (body.stream) {
     result.stream_options = { ...(isObject(body.stream_options) ? body.stream_options : {}), include_usage: true }
   }
-  applyChatReasoningOptions(result, body, resolveReasoningDialect(target), model)
+  applyChatReasoningOptions(result, body, reasoningDialect, model)
 
   const responseTools = Array.isArray(body.tools) ? body.tools : []
   const loadedTools = collectToolSearchOutputTools(body.input)
@@ -1690,10 +1693,24 @@ function finalizeChatSse(
   state: ChatSseAccum,
 ) {
   if (state.completed) return ""
-  state.completed = true
   let out = ensureResponseStarted(state)
   out += flushChatSseInlineThinkAtBoundary(state)
   out += finalizeChatSseReasoning(state)
+  const hasVisibleMessage = state.messageAdded && state.content.trim().length > 0
+  const hasToolCall = Array.from(state.toolCalls.values()).some((toolCall) =>
+    toolCall.name.trim().length > 0,
+  )
+  if (!hasVisibleMessage && !hasToolCall) {
+    return out + failedChatSse(
+      state,
+      state.reasoning.trim()
+        ? "上游 Chat 流式响应只返回了 reasoning_content，没有返回可见消息或工具调用"
+        : "上游 Chat 流式响应没有返回可见消息或工具调用",
+      "empty_visible_output",
+      serializedContext,
+    )
+  }
+  state.completed = true
   if (state.messageAdded) {
     // message 的 output_item.done 在此处（收尾）才发出，此时工具调用已全部累积完，
     // 可直接判定 phase：后面还有工具调用则该 message 是回合中途叙述（commentary），

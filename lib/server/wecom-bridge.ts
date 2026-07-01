@@ -136,7 +136,7 @@ function normalizeText(value: unknown) {
 
 function normalizePath(value: unknown) {
   const text = normalizeText(value)
-  return text ? resolve(text) : ""
+  return text ? resolve(/* turbopackIgnore: true */ text) : ""
 }
 
 function normalizePositiveInt(value: unknown, fallback: number) {
@@ -149,18 +149,19 @@ export function codexBridgeVendorRoot() {
     ? (process as NodeJS.Process & { resourcesPath: string }).resourcesPath
     : ""
   const candidates = [
-    join(process.cwd(), "integrations", "codexbridge"),
-    join(process.cwd(), "..", "integrations", "codexbridge"),
+    join(/* turbopackIgnore: true */ process.cwd(), "integrations", "codexbridge"),
+    join(/* turbopackIgnore: true */ process.cwd(), "..", "integrations", "codexbridge"),
     join(resourcesPath, "app", "integrations", "codexbridge"),
   ]
-  return candidates.map((candidate) => resolve(candidate)).find((candidate) =>
-    existsSync(join(candidate, "src", "cli.ts")) && existsSync(join(candidate, "package.json")),
-  ) || resolve(candidates[0])
+  return candidates.map((candidate) => resolve(/* turbopackIgnore: true */ candidate)).find((candidate) =>
+    existsSync(/* turbopackIgnore: true */ join(candidate, "src", "cli.ts")) &&
+    existsSync(/* turbopackIgnore: true */ join(candidate, "package.json")),
+  ) || resolve(/* turbopackIgnore: true */ candidates[0])
 }
 
 export async function readWecomBridgeSettings() {
   try {
-    const raw = await readFile(settingsPath(), "utf8")
+    const raw = await readFile(/* turbopackIgnore: true */ settingsPath(), "utf8")
     return normalizeSettings(JSON.parse(raw) as Partial<WecomBridgeSettings>)
   } catch {
     return defaultSettings()
@@ -169,8 +170,12 @@ export async function readWecomBridgeSettings() {
 
 export async function saveWecomBridgeSettings(settings: Partial<WecomBridgeSettings>) {
   const normalized = normalizeSettings(settings)
-  await mkdir(dirname(settingsPath()), { recursive: true })
-  await writeFile(settingsPath(), `${JSON.stringify(normalized, null, 2)}\n`, "utf8")
+  await mkdir(/* turbopackIgnore: true */ dirname(settingsPath()), { recursive: true })
+  await writeFile(
+    /* turbopackIgnore: true */ settingsPath(),
+    `${JSON.stringify(normalized, null, 2)}\n`,
+    "utf8",
+  )
   return normalized
 }
 
@@ -180,16 +185,16 @@ function serveLockPath(settings: WecomBridgeSettings) {
 
 function readJsonFile<T>(filePath: string): T | null {
   try {
-    return JSON.parse(readFileSync(filePath, "utf8")) as T
+    return JSON.parse(readFileSync(/* turbopackIgnore: true */ filePath, "utf8")) as T
   } catch {
     return null
   }
 }
 
 function readTextTail(filePath: string) {
-  if (!existsSync(filePath)) return ""
+  if (!existsSync(/* turbopackIgnore: true */ filePath)) return ""
   try {
-    const buffer = readFileSync(filePath)
+    const buffer = readFileSync(/* turbopackIgnore: true */ filePath)
     return buffer.subarray(Math.max(0, buffer.length - LOG_TAIL_BYTES)).toString("utf8")
   } catch (error) {
     return error instanceof Error ? error.message : String(error)
@@ -266,13 +271,13 @@ function setOptionalEnv(env: NodeJS.ProcessEnv, key: string, value: unknown) {
 
 function spawnCodexBridge(settings: WecomBridgeSettings) {
   const root = codexBridgeVendorRoot()
-  if (!existsSync(join(root, "src", "cli.ts"))) {
+  if (!existsSync(/* turbopackIgnore: true */ join(root, "src", "cli.ts"))) {
     throw new Error(`缺少 CodexBridge 源码：${root}`)
   }
-  mkdirSync(logDir(), { recursive: true })
-  mkdirSync(settings.stateDir, { recursive: true })
-  const stdout = createWriteStream(logPath("serveOut"), { flags: "a", encoding: "utf8" })
-  const stderr = createWriteStream(logPath("serveErr"), { flags: "a", encoding: "utf8" })
+  mkdirSync(/* turbopackIgnore: true */ logDir(), { recursive: true })
+  mkdirSync(/* turbopackIgnore: true */ settings.stateDir, { recursive: true })
+  const stdout = createWriteStream(/* turbopackIgnore: true */ logPath("serveOut"), { flags: "a", encoding: "utf8" })
+  const stderr = createWriteStream(/* turbopackIgnore: true */ logPath("serveErr"), { flags: "a", encoding: "utf8" })
   const tsxImport = resolveTsxImportSpecifier()
   const args = ["wecom", "serve", "--state-dir", settings.stateDir, "--cwd", settings.cwd]
   const child = spawn(process.execPath, ["--import", tsxImport, join(root, "src", "cli.ts"), ...args], {
@@ -298,12 +303,12 @@ function spawnCodexBridge(settings: WecomBridgeSettings) {
 
 function resolveTsxLoaderPath() {
   const candidates = [
-    join(process.cwd(), "node_modules", "tsx", "dist", "loader.mjs"),
-    join(process.cwd(), "vendor", "tsx", "dist", "loader.mjs"),
-    join(process.cwd(), "..", "node_modules", "tsx", "dist", "loader.mjs"),
-    join(process.cwd(), "..", "vendor", "tsx", "dist", "loader.mjs"),
+    join(/* turbopackIgnore: true */ process.cwd(), "node_modules", "tsx", "dist", "loader.mjs"),
+    join(/* turbopackIgnore: true */ process.cwd(), "vendor", "tsx", "dist", "loader.mjs"),
+    join(/* turbopackIgnore: true */ process.cwd(), "..", "node_modules", "tsx", "dist", "loader.mjs"),
+    join(/* turbopackIgnore: true */ process.cwd(), "..", "vendor", "tsx", "dist", "loader.mjs"),
   ]
-  const found = candidates.find((candidate) => existsSync(candidate))
+  const found = candidates.find((candidate) => existsSync(/* turbopackIgnore: true */ candidate))
   return found || "tsx"
 }
 
@@ -314,7 +319,7 @@ function resolveTsxImportSpecifier() {
 }
 
 function pathToFileUrl(filePath: string) {
-  return pathToFileURL(resolve(filePath)).href
+  return pathToFileURL(resolve(/* turbopackIgnore: true */ filePath)).href
 }
 
 function buildDiagnostics(
@@ -381,7 +386,7 @@ function findCommandOnPath(command: string) {
 
 function buildStatus(settings: WecomBridgeSettings): WecomBridgeStatus {
   const vendorRoot = codexBridgeVendorRoot()
-  const available = existsSync(join(vendorRoot, "src", "cli.ts"))
+  const available = existsSync(/* turbopackIgnore: true */ join(vendorRoot, "src", "cli.ts"))
   const serve = reconcileServeStatus(settings)
   return {
     available,

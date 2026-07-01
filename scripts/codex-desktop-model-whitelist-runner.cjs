@@ -433,16 +433,17 @@ function injectionScript(catalog) {
 
   function descriptor(modelName) {
     const info = modelInfo(modelName);
+    const label = modelLabel(info.id);
     return {
       model: info.id,
       id: info.id,
       slug: info.id,
-      name: info.id,
-      displayName: info.id,
-      display_name: info.id,
-      description: info.id,
-      label: info.id,
-      title: info.id,
+      name: label,
+      displayName: label,
+      display_name: label,
+      description: label,
+      label,
+      title: label,
       owned_by: "codex_switchgate",
       hidden: false,
       isDefault: (state.catalog.default_model || state.catalog.model) === info.id,
