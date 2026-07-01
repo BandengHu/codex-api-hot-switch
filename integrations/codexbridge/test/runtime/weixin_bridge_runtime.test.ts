@@ -42,6 +42,13 @@ interface RuntimeHarnessOptions {
   automationPollMs?: number;
   internalThreadCleanupMs?: number;
   pollEvents?: any[];
+  beginStream?: (payload: { externalScopeId: string }) =>
+    | {
+        push: (fullText: string) => Promise<boolean> | boolean;
+        finish: (fullText: string) => Promise<boolean> | boolean;
+        abort: () => void;
+      }
+    | null;
 }
 
 function makeRuntime({
@@ -60,6 +67,7 @@ function makeRuntime({
   automationPollMs = 30_000,
   internalThreadCleanupMs = 0,
   pollEvents = null,
+  beginStream,
 }: RuntimeHarnessOptions) {
   return new WeixinBridgeRuntime({
     platformPlugin: {
@@ -92,6 +100,13 @@ function makeRuntime({
       async sendTyping(payload: { externalScopeId: string; status: 'start' | 'stop' }) {
         await sendTyping?.(payload);
       },
+      ...(beginStream
+        ? {
+            async beginStream(payload: { externalScopeId: string }) {
+              return beginStream(payload);
+            },
+          }
+        : {}),
       async sendMedia(payload: { externalScopeId: string; filePath: string; caption?: string | null }) {
         const result = await sendMedia?.(payload);
         return result ?? {
@@ -1536,6 +1551,79 @@ test('WeixinBridgeRuntime merges commentary and final-answer progress into the p
     { externalScopeId: 'wxid_1', content: '我先检查一下上下文。' },
     { externalScopeId: 'wxid_1', content: '最终答案第一段。\n\n最终答案第二段。' },
   ]);
+});
+
+test('WeixinBridgeRuntime 单气泡实时流收尾保留行动说明，不被最终答案覆盖', async () => {
+  const pushes: string[] = [];
+  let finished = '';
+  const runtime = makeRuntime({
+    sendText: async () => {},
+    beginStream: () => ({
+      push: (fullText: string) => {
+        pushes.push(fullText);
+        return true;
+      },
+      finish: (fullText: string) => {
+        finished = fullText;
+        return true;
+      },
+      abort: () => {},
+    }),
+    coordinator: {
+      async handleInboundEvent(_event: any, options: any = {}) {
+        await options.onProgress?.({
+          text: '我先看一下文件。',
+          delta: '我先看一下文件。',
+          outputKind: 'commentary',
+        });
+        await options.onProgress?.({
+          text: '结论是 X。',
+          delta: '结论是 X。',
+          outputKind: 'final_answer',
+        });
+        return completeResponse('结论是 X。');
+      },
+    },
+  });
+
+  await runtime.runOnce();
+
+  // 收尾气泡必须同时包含中途行动说明与最终答案，行动说明在前。
+  assert.equal(finished, '我先看一下文件。\n\n结论是 X。');
+});
+
+test('WeixinBridgeRuntime 单气泡实时流：最终答案已含行动说明时不重复拼接', async () => {
+  let finished = '';
+  const runtime = makeRuntime({
+    sendText: async () => {},
+    beginStream: () => ({
+      push: () => true,
+      finish: (fullText: string) => {
+        finished = fullText;
+        return true;
+      },
+      abort: () => {},
+    }),
+    coordinator: {
+      async handleInboundEvent(_event: any, options: any = {}) {
+        await options.onProgress?.({
+          text: '我先看一下文件。',
+          delta: '我先看一下文件。',
+          outputKind: 'commentary',
+        });
+        await options.onProgress?.({
+          text: '我先看一下文件。\n\n结论是 X。',
+          delta: '我先看一下文件。\n\n结论是 X。',
+          outputKind: 'final_answer',
+        });
+        return completeResponse('我先看一下文件。\n\n结论是 X。');
+      },
+    },
+  });
+
+  await runtime.runOnce();
+
+  assert.equal(finished, '我先看一下文件。\n\n结论是 X。');
 });
 
 test('WeixinBridgeRuntime dedupes overlapping cumulative final-answer updates in the preview stream', async () => {

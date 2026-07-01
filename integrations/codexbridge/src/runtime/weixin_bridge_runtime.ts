@@ -114,6 +114,10 @@ interface StreamState {
   liveText: string;
   liveStreamPushPromise: Promise<void> | null;
   liveTextIsPlaceholder: boolean;
+  // 单气泡实时流下累积的“行动说明”(commentary) 文本。final_answer 只含最终答案，
+  // 收尾 finish() 会用最终答案整体替换气泡，导致中途行动说明被覆盖丢失，
+  // 因此单独保留 commentary，收尾时与最终答案拼接后回填，保住过程叙述。
+  commentaryText: string;
 }
 
 interface ScheduledDispatch {
@@ -733,6 +737,10 @@ export class WeixinBridgeRuntime {
         streamState.liveTextIsPlaceholder = false;
       }
       streamState.liveText += delta;
+      // 单独留存行动说明增量，收尾时用于把过程叙述拼回最终气泡，避免被最终答案覆盖。
+      if (progress.outputKind === 'commentary') {
+        streamState.commentaryText += delta;
+      }
       this.ensureLiveStreamPush(event, streamState);
       return;
     }
@@ -917,7 +925,11 @@ export class WeixinBridgeRuntime {
     if (!streamState.liveStreamReady || !streamState.liveStream || streamState.liveStreamFailed) {
       return null;
     }
-    const content = String(finalText ?? '').trim() || streamState.liveText.trim();
+    // 单气泡收尾：finish() 会用回填内容整体替换气泡，若只回填最终答案，中途的行动说明
+    // 就被覆盖丢失。这里把留存的行动说明与最终答案拼接后再回填，保住过程叙述。
+    const body = String(finalText ?? '').trim();
+    const content = combineCommentaryWithFinal(streamState.commentaryText, body)
+      || streamState.liveText.trim();
     const ok = await streamState.liveStream.finish(content);
     if (!ok) {
       streamState.liveStreamFailed = true;
@@ -2070,6 +2082,7 @@ function createStreamState(): StreamState {
     liveText: '',
     liveStreamPushPromise: null,
     liveTextIsPlaceholder: false,
+    commentaryText: '',
   };
 }
 
@@ -2082,6 +2095,24 @@ function extractResponseMessageText(response: RuntimeResponse): string {
       .join('\n\n')
       .trim()
     : '';
+}
+
+// 把单气泡实时流中累积的行动说明(commentary)与最终答案拼接。
+// commentary 为空则只返回最终答案；最终答案为空则只返回行动说明；
+// 若最终答案已包含该行动说明(去掉首尾空白后前缀相同)，避免重复拼接。
+function combineCommentaryWithFinal(commentary: string, finalBody: string): string {
+  const commentaryText = String(commentary ?? '').trim();
+  const body = String(finalBody ?? '').trim();
+  if (!commentaryText) {
+    return body;
+  }
+  if (!body) {
+    return commentaryText;
+  }
+  if (body.startsWith(commentaryText) || body.includes(commentaryText)) {
+    return body;
+  }
+  return `${commentaryText}\n\n${body}`;
 }
 
 function extractResponseArtifactMessages(response: RuntimeResponse): OutputArtifact[] {
