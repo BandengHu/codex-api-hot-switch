@@ -311,6 +311,25 @@ async function serverAlreadyRunning() {
   }
 }
 
+async function ensureWecomBridgeAutostart() {
+  try {
+    const statusResponse = await fetch(`${appUrl()}/api/wecom-bridge`, { cache: "no-store" })
+    if (!statusResponse.ok) return
+    const status = await statusResponse.json()
+    const settings = status?.settings || {}
+    const serveState = status?.serve?.state || "idle"
+    if (!settings.enabled || !settings.botId || !settings.secret) return
+    if (["running", "starting", "external-running", "stopping"].includes(serveState)) return
+    await fetch(`${appUrl()}/api/wecom-bridge`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "serve-start" }),
+    })
+  } catch (error) {
+    console.error("企业微信机器人自动启动失败", error)
+  }
+}
+
 function startDevServer() {
   const root = appRoot()
   const runtime = currentRuntime()
@@ -387,9 +406,11 @@ async function ensureServer(options = {}) {
         message: `已连接正在运行的本地中转服务：${endpointLabel()}`,
         owned: false,
       })
+      await ensureWecomBridgeAutostart()
       return
     }
     await startOwnedServer()
+    await ensureWecomBridgeAutostart()
   })().finally(() => {
     serverStartPromise = null
   })

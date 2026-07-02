@@ -554,6 +554,28 @@ function scheduleAutoRestart(delay: number) {
   autoRestartTimer.unref?.()
 }
 
+export async function autostartWecomBridgeServeIfEnabled() {
+  const settings = await readWecomBridgeSettings()
+  if (!settings.enabled || !settings.botId || !settings.secret) return
+  if (serveProcess?.pid && !serveProcess.killed) return
+  if (autoRestartTimer) return
+  const reconciled = reconcileServeStatus(settings)
+  if (reconciled.state === "external-running") {
+    serveStatus = reconciled
+    return
+  }
+  if (["running", "starting", "stopping"].includes(reconciled.state)) return
+  manualStopRequested = false
+  autoRestartCount = 0
+  serveStatus = {
+    state: "starting",
+    owned: true,
+    startedAt: new Date().toISOString(),
+    message: "正在随 SwitchGate 启动企业微信机器人服务",
+  }
+  launchServeProcess(settings)
+}
+
 export async function startWecomBridgeServe(): Promise<WecomBridgeMutationResult> {
   // (auto-restart helpers defined above)
   const settings = await readWecomBridgeSettings()

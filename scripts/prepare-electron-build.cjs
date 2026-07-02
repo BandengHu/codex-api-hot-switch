@@ -31,6 +31,16 @@ async function copyDir(from, to) {
   await fs.cp(from, to, { recursive: true })
 }
 
+async function copyPackageDir(from, to) {
+  await fs.rm(to, { recursive: true, force: true })
+  await fs.cp(from, to, { recursive: true, dereference: true })
+  const packageJsonPath = path.join(to, "package.json")
+  if (!(await exists(packageJsonPath))) return
+  const packageJson = JSON.parse(await fs.readFile(packageJsonPath, "utf8"))
+  if (packageJson.bundleDependencies || packageJson.bundledDependencies) return
+  await fs.rm(path.join(to, "node_modules"), { recursive: true, force: true })
+}
+
 async function removePath(...parts) {
   await fs.rm(path.join(...parts), { recursive: true, force: true })
 }
@@ -86,6 +96,123 @@ async function pruneDuplicatedTopLevelVendorPackages(vendorDir) {
     if (keepTopLevel.has(entry.name.toLowerCase())) continue
     await removePath(vendorDir, entry.name)
   }
+}
+
+async function restoreTsxRuntimeDependencies(vendorDir) {
+  const sourceTsxDir = await fs.realpath(path.join(root, "node_modules", "tsx"))
+  const sourceTsxNodeModules = path.dirname(sourceTsxDir)
+  const sourceEsbuildDir = await fs.realpath(path.join(sourceTsxNodeModules, "esbuild"))
+  const sourceEsbuildNodeModules = path.dirname(sourceEsbuildDir)
+  const sourceEsbuildBinaryDir = await fs.realpath(
+    path.join(sourceEsbuildNodeModules, "@esbuild", "win32-x64"),
+  )
+  const targetTsxNodeModules = path.join(vendorDir, "tsx", "node_modules")
+
+  await copyDir(sourceEsbuildDir, path.join(targetTsxNodeModules, "esbuild"))
+  await copyDir(
+    sourceEsbuildBinaryDir,
+    path.join(targetTsxNodeModules, "@esbuild", "win32-x64"),
+  )
+}
+
+function packageInstallPath(nodeModulesDir, packageName, ...parts) {
+  return path.join(nodeModulesDir, ...packageName.split("/"), ...parts)
+}
+
+function shouldCopyOptionalPackage(packageName) {
+  if (packageName.startsWith("@esbuild/")) return packageName === "@esbuild/win32-x64"
+  return true
+}
+
+async function resolvePackageJsonFromNodeModules(packageName, searchPaths) {
+  for (const searchPath of searchPaths) {
+    let current = searchPath
+    while (current !== path.dirname(current)) {
+      if (path.basename(current) === "node_modules") {
+        const candidate = packageInstallPath(current, packageName, "package.json")
+        if (await exists(candidate)) return candidate
+      }
+      current = path.dirname(current)
+    }
+  }
+  const rootCandidate = packageInstallPath(path.join(root, "node_modules"), packageName, "package.json")
+  return (await exists(rootCandidate)) ? rootCandidate : ""
+}
+
+async function resolvePackageJsonFromPnpmStore(packageName) {
+  const pnpmDir = path.join(root, "node_modules", ".pnpm")
+  if (!(await exists(pnpmDir))) return ""
+  const prefix = `${packageName.replace("/", "+")}@`
+  const entries = (await fs.readdir(pnpmDir))
+    .filter((entry) => entry.startsWith(prefix))
+    .sort()
+  for (const entry of entries) {
+    const candidate = packageInstallPath(path.join(pnpmDir, entry, "node_modules"), packageName, "package.json")
+    if (await exists(candidate)) return candidate
+  }
+  return ""
+}
+
+async function copyRuntimePackageClosure(packageName, targetNodeModules, seen, required, searchPaths) {
+  if (seen.has(packageName)) return
+  let packageJsonPath = ""
+  try {
+    packageJsonPath = require.resolve(`${packageName}/package.json`, { paths: searchPaths })
+  } catch (error) {
+    packageJsonPath = await resolvePackageJsonFromNodeModules(packageName, searchPaths)
+    if (!packageJsonPath) packageJsonPath = await resolvePackageJsonFromPnpmStore(packageName)
+    try {
+      if (!packageJsonPath) {
+        let current = path.dirname(require.resolve(packageName, { paths: searchPaths }))
+        while (current !== path.dirname(current)) {
+          const candidate = path.join(current, "package.json")
+          if (await exists(candidate)) {
+            const candidateJson = JSON.parse(await fs.readFile(candidate, "utf8"))
+            if (candidateJson.name === packageName) {
+              packageJsonPath = candidate
+              break
+            }
+          }
+          current = path.dirname(current)
+        }
+      }
+    } catch {}
+    if (!packageJsonPath) {
+      if (!required) return
+      throw new Error(`打包 CodexBridge 运行依赖失败，找不到 ${packageName}：${error.message}`)
+    }
+  }
+
+  seen.add(packageName)
+  const packageDir = await fs.realpath(path.dirname(packageJsonPath))
+  const targetDir = packageInstallPath(targetNodeModules, packageName)
+  await copyPackageDir(packageDir, targetDir)
+
+  const packageJson = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"))
+  const dependencies = Object.keys(packageJson.dependencies || {}).sort()
+  for (const dependency of dependencies) {
+    await copyRuntimePackageClosure(dependency, targetNodeModules, seen, true, [packageDir, root])
+  }
+  const optionalDependencies = Object.keys(packageJson.optionalDependencies || {})
+    .filter(shouldCopyOptionalPackage)
+    .sort()
+  for (const dependency of optionalDependencies) {
+    await copyRuntimePackageClosure(dependency, targetNodeModules, seen, false, [packageDir, root])
+  }
+}
+
+async function copyCodexBridgeRuntimeNodeModules(codexBridgeDir) {
+  const packageJsonPath = path.join(codexBridgeDir, "package.json")
+  if (!(await exists(packageJsonPath))) return
+  const packageJson = JSON.parse(await fs.readFile(packageJsonPath, "utf8"))
+  const targetNodeModules = path.join(codexBridgeDir, "node_modules")
+  await fs.rm(targetNodeModules, { recursive: true, force: true })
+  await fs.mkdir(targetNodeModules, { recursive: true })
+  const seen = new Set()
+  for (const dependency of Object.keys(packageJson.dependencies || {}).sort()) {
+    await copyRuntimePackageClosure(dependency, targetNodeModules, seen, true, [codexBridgeDir, root])
+  }
+  await pruneNonRuntimeFiles(targetNodeModules)
 }
 
 async function prunePackagedVendor(vendorDir) {
@@ -176,15 +303,18 @@ async function main() {
     )
   }
   if (await exists(path.join(root, "integrations", "codexbridge"))) {
+    const codexBridgeDir = path.join(electronServerDir, "integrations", "codexbridge")
     await copyDir(
       path.join(root, "integrations", "codexbridge"),
-      path.join(electronServerDir, "integrations", "codexbridge"),
+      codexBridgeDir,
     )
+    await copyCodexBridgeRuntimeNodeModules(codexBridgeDir)
   }
   await fs.rename(
     path.join(electronServerDir, "node_modules"),
     path.join(electronServerDir, "vendor"),
   )
+  await restoreTsxRuntimeDependencies(path.join(electronServerDir, "vendor"))
   await prunePackagedVendor(path.join(electronServerDir, "vendor"))
 
   await copyDir(path.join(root, "electron"), path.join(electronShellDir, "electron"))
