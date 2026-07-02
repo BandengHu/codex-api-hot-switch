@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import { Cpu, Loader2 } from "lucide-react"
+import { FloatingDevtoolsGuard } from "@/components/floating-devtools-guard"
 import type { ConsoleSnapshot } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -81,6 +82,7 @@ export function FloatingBallView() {
         postMessage("context-menu")
       }}
     >
+      <FloatingDevtoolsGuard />
       <button
         type="button"
         aria-label="打开热切换面板"

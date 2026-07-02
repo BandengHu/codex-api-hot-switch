@@ -11,11 +11,17 @@ import {
 } from "./common"
 import { appendOutputLanguagePolicyToResponsesBody } from "./language-policy"
 
+type AnyRecord = Record<string, any>
+
 export interface OpenAICompatibleBuiltRequest {
   url: string
   init: RequestInit
   rewrittenBody: unknown
   adapter: CodexAdapter
+}
+
+function isObject(value: unknown): value is AnyRecord {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value))
 }
 
 function joinOpenAICompatibleUrl(baseUrl: string, path: string) {
@@ -38,6 +44,54 @@ function codexAdapterRequestsStream(adapter: CodexAdapter) {
     : adapter.requestIsStream
 }
 
+function isDashScopeQwenResponsesTarget(target: ProxyTarget) {
+  if (target.provider.protocol !== "openai-responses") return false
+  if (target.provider.rawResponsesPassthrough === true) return false
+  const providerHint = `${target.provider.name} ${target.provider.baseUrl}`.toLowerCase()
+  return (
+    providerHint.includes("dashscope") ||
+    providerHint.includes("aliyuncs") ||
+    providerHint.includes("bailian") ||
+    providerHint.includes("百炼") ||
+    providerHint.includes("千问")
+  )
+}
+
+function normalizeDashScopeQwenResponsesEffort(effort: unknown) {
+  if (typeof effort !== "string") return undefined
+  const normalized = effort.trim().toLowerCase()
+  if (normalized === "off" || normalized === "disabled") return "none"
+  if (normalized === "xhigh" || normalized === "max") return "high"
+  if (["none", "minimal", "low", "medium", "high"].includes(normalized)) {
+    return normalized
+  }
+  return undefined
+}
+
+function normalizeDashScopeQwenResponsesReasoning(
+  body: unknown,
+  target: ProxyTarget,
+  upstreamPath: string,
+) {
+  if (!isDashScopeQwenResponsesTarget(target)) return
+  if (upstreamPath.replace(/^\/+/, "").split("?")[0] !== "v1/responses") return
+  if (!isObject(body)) return
+
+  const existingReasoning = isObject(body.reasoning) ? body.reasoning : undefined
+  const requestedEffort =
+    target.reasoning === "off"
+      ? "none"
+      : existingReasoning?.effort ?? body.reasoning_effort
+  const effort = normalizeDashScopeQwenResponsesEffort(requestedEffort)
+  if (!effort) return
+
+  body.reasoning = {
+    ...(existingReasoning || {}),
+    effort,
+  }
+  delete body.reasoning_effort
+}
+
 export function buildOpenAICompatibleRequest(
   target: ProxyTarget,
   path: string,
@@ -53,6 +107,7 @@ export function buildOpenAICompatibleRequest(
       rawResponsesPassthrough: Boolean(target.provider.rawResponsesPassthrough),
     },
   )
+  normalizeDashScopeQwenResponsesReasoning(prepared.body, target, prepared.upstreamPath)
   appendOutputLanguagePolicyToResponsesBody(prepared.body, target)
 
   return {

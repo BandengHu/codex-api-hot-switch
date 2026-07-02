@@ -1626,6 +1626,184 @@ test('WeixinBridgeRuntime 单气泡实时流：最终答案已含行动说明时
   assert.equal(finished, '我先看一下文件。\n\n结论是 X。');
 });
 
+test('WeixinBridgeRuntime 单气泡实时流：行动说明已含最终答案时不重复收尾', async () => {
+  let finished = '';
+  const runtime = makeRuntime({
+    sendText: async () => {},
+    beginStream: () => ({
+      push: () => true,
+      finish: (fullText: string) => {
+        finished = fullText;
+        return true;
+      },
+      abort: () => {},
+    }),
+    coordinator: {
+      async handleInboundEvent(_event: any, options: any = {}) {
+        await options.onProgress?.({
+          text: '我先看一下这个项目的目录结构和最近的文件变动情况，从侧面判断进展。\n\n从 git 提交记录和文件结构看，这个项目进展很顺利，核心引擎已经基本完成。',
+          delta: '我先看一下这个项目的目录结构和最近的文件变动情况，从侧面判断进展。\n\n从 git 提交记录和文件结构看，这个项目进展很顺利，核心引擎已经基本完成。',
+          outputKind: 'commentary',
+        });
+        return completeResponse('从 git 提交记录和文件结构看，这个项目进展很顺利，核心引擎已经基本完成。');
+      },
+    },
+  });
+
+  await runtime.runOnce();
+
+  assert.equal(
+    finished,
+    '我先看一下这个项目的目录结构和最近的文件变动情况，从侧面判断进展。\n\n从 git 提交记录和文件结构看，这个项目进展很顺利，核心引擎已经基本完成。',
+  );
+});
+
+test('WeixinBridgeRuntime 单气泡实时流：行动说明中间已含最终答案时不重复收尾', async () => {
+  let finished = '';
+  const commentary = [
+    '我先看一下这个项目的目录结构和最近的文件变动情况，从侧面判断进展。',
+    '从 git 提交记录和文件结构看，这个项目进展很顺利，核心引擎已经基本完成。',
+    '不过我只能看到文件系统层面的状态，看不到其他 Codex 会话的对话内容或实时执行进度。',
+  ].join('\n\n');
+  const runtime = makeRuntime({
+    sendText: async () => {},
+    beginStream: () => ({
+      push: () => true,
+      finish: (fullText: string) => {
+        finished = fullText;
+        return true;
+      },
+      abort: () => {},
+    }),
+    coordinator: {
+      async handleInboundEvent(_event: any, options: any = {}) {
+        await options.onProgress?.({
+          text: commentary,
+          delta: commentary,
+          outputKind: 'commentary',
+        });
+        return completeResponse('从 git 提交记录和文件结构看，这个项目进展很顺利，核心引擎已经基本完成。');
+      },
+    },
+  });
+
+  await runtime.runOnce();
+
+  assert.equal(finished, commentary);
+});
+
+test('WeixinBridgeRuntime 单气泡实时流：Markdown 差异不导致最终答案重复', async () => {
+  let finished = '';
+  const commentary = '从 git 提交记录和文件结构看，这个项目进展很顺利，核心引擎已经基本完成。';
+  const runtime = makeRuntime({
+    sendText: async () => {},
+    beginStream: () => ({
+      push: () => true,
+      finish: (fullText: string) => {
+        finished = fullText;
+        return true;
+      },
+      abort: () => {},
+    }),
+    coordinator: {
+      async handleInboundEvent(_event: any, options: any = {}) {
+        await options.onProgress?.({
+          text: commentary,
+          delta: commentary,
+          outputKind: 'commentary',
+        });
+        return completeResponse('从 git 提交记录和文件结构看，这个项目**进展很顺利，核心引擎已经基本完成**。');
+      },
+    },
+  });
+
+  await runtime.runOnce();
+
+  assert.equal(finished, commentary);
+});
+
+test('WeixinBridgeRuntime 单气泡实时流去重累计 final-answer 更新', async () => {
+  const pushes: string[] = [];
+  let finished = '';
+  const runtime = makeRuntime({
+    sendText: async () => {
+      throw new Error('final sendText should not be used for live streaming');
+    },
+    beginStream: () => ({
+      push: (fullText: string) => {
+        pushes.push(fullText);
+        return true;
+      },
+      finish: (fullText: string) => {
+        finished = fullText;
+        return true;
+      },
+      abort: () => {},
+    }),
+    coordinator: {
+      async handleInboundEvent(_event: any, options: any = {}) {
+        await options.onProgress?.({
+          text: '第一段。',
+          delta: '第一段。',
+          outputKind: 'final_answer',
+        });
+        await options.onProgress?.({
+          text: '第一段。\n\n第二段。',
+          delta: '第一段。\n\n第二段。',
+          outputKind: 'final_answer',
+        });
+        return completeResponse('第一段。\n\n第二段。');
+      },
+    },
+  });
+
+  await runtime.runOnce();
+
+  assert.deepEqual(pushes, ['第一段。\n\n第二段。']);
+  assert.equal(finished, '第一段。\n\n第二段。');
+});
+
+test('WeixinBridgeRuntime 单气泡实时流去重累计 delta 快照', async () => {
+  const pushes: string[] = [];
+  let finished = '';
+  const runtime = makeRuntime({
+    sendText: async () => {
+      throw new Error('final sendText should not be used for live streaming');
+    },
+    beginStream: () => ({
+      push: (fullText: string) => {
+        pushes.push(fullText);
+        return true;
+      },
+      finish: (fullText: string) => {
+        finished = fullText;
+        return true;
+      },
+      abort: () => {},
+    }),
+    coordinator: {
+      async handleInboundEvent(_event: any, options: any = {}) {
+        await options.onProgress?.({
+          text: '',
+          delta: '第一段。\n\n第二段。',
+          outputKind: 'final_answer',
+        });
+        await options.onProgress?.({
+          text: '',
+          delta: '第一段。\n\n第二段。',
+          outputKind: 'final_answer',
+        });
+        return completeResponse('第一段。\n\n第二段。');
+      },
+    },
+  });
+
+  await runtime.runOnce();
+
+  assert.deepEqual(pushes, ['第一段。\n\n第二段。']);
+  assert.equal(finished, '第一段。\n\n第二段。');
+});
+
 test('WeixinBridgeRuntime dedupes overlapping cumulative final-answer updates in the preview stream', async () => {
   const sent: Array<{ externalScopeId: string; content: string }> = [];
   const runtime = makeRuntime({

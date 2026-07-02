@@ -12,6 +12,7 @@ const nextConfig = {
   output: "standalone",
   distDir: process.env.NEXT_DIST_DIR || ".next",
   allowedDevOrigins: ["127.0.0.1", "localhost"],
+  devIndicators: false,
   outputFileTracingIncludes: {
     "/api/codex-desktop/plugins": ["./scripts/codex-desktop-plugins-runner.cjs"],
     "/api/codex-desktop/model-whitelist": [

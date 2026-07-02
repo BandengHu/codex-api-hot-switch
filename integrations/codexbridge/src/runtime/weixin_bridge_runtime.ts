@@ -808,7 +808,9 @@ export class WeixinBridgeRuntime {
     if (!ok) {
       streamState.liveStreamFailed = true;
       this.fallbackLiveToPreview(event, streamState);
+      return;
     }
+    streamState.streamedText = text;
   }
 
   fallbackLiveToPreview(event: InboundTextEvent, streamState: StreamState): void {
@@ -2099,7 +2101,7 @@ function extractResponseMessageText(response: RuntimeResponse): string {
 
 // 把单气泡实时流中累积的行动说明(commentary)与最终答案拼接。
 // commentary 为空则只返回最终答案；最终答案为空则只返回行动说明；
-// 若最终答案已包含该行动说明(去掉首尾空白后前缀相同)，避免重复拼接。
+// 若其中一侧已包含另一侧，或 commentary 尾部与 final 开头重叠，避免收尾重复拼接。
 function combineCommentaryWithFinal(commentary: string, finalBody: string): string {
   const commentaryText = String(commentary ?? '').trim();
   const body = String(finalBody ?? '').trim();
@@ -2109,8 +2111,25 @@ function combineCommentaryWithFinal(commentary: string, finalBody: string): stri
   if (!body) {
     return commentaryText;
   }
+  const comparableCommentary = normalizeLiveStreamDedupText(commentaryText);
+  const comparableBody = normalizeLiveStreamDedupText(body);
   if (body.startsWith(commentaryText) || body.includes(commentaryText)) {
     return body;
+  }
+  if (
+    commentaryText.includes(body)
+    || (comparableBody && comparableCommentary.includes(comparableBody))
+  ) {
+    return commentaryText;
+  }
+  if (commentaryText.endsWith(body)) {
+    return commentaryText;
+  }
+  const maxOverlap = Math.min(commentaryText.length, body.length);
+  for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
+    if (commentaryText.slice(-overlap) === body.slice(0, overlap)) {
+      return `${commentaryText}${body.slice(overlap)}`.trim();
+    }
   }
   return `${commentaryText}\n\n${body}`;
 }
@@ -2216,7 +2235,13 @@ function trimOverlappingPreviewDelta(streamState: StreamState, delta: string): s
   if (!existing) {
     return incoming;
   }
-  if (existing.endsWith(incoming)) {
+  const comparableExisting = normalizeLiveStreamDedupText(existing);
+  const comparableIncoming = normalizeLiveStreamDedupText(incoming);
+  if (
+    existing.endsWith(incoming)
+    || existing.includes(incoming)
+    || (comparableIncoming && comparableExisting.includes(comparableIncoming))
+  ) {
     return '';
   }
   const maxOverlap = Math.min(existing.length, incoming.length);
@@ -2228,7 +2253,20 @@ function trimOverlappingPreviewDelta(streamState: StreamState, delta: string): s
   return incoming;
 }
 
+function normalizeLiveStreamDedupText(value: string): string {
+  return normalizeComparableText(value)
+    .replace(/[*_`~]+/g, '')
+    .replace(/^[ \t]*[-*+]\s+/gm, '')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+}
+
 function getPreviewComparisonText(streamState: StreamState): string {
+  if (streamState.liveText && !streamState.liveTextIsPlaceholder) {
+    return streamState.pendingPreview
+      ? `${streamState.liveText}\n\n${streamState.pendingPreview}`
+      : streamState.liveText;
+  }
   if (streamState.streamedText && streamState.pendingPreview) {
     return `${streamState.streamedText}\n\n${streamState.pendingPreview}`;
   }

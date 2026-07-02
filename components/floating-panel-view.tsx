@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import { ExternalLink, Loader2, Power, X } from "lucide-react"
+import { FloatingDevtoolsGuard } from "@/components/floating-devtools-guard"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import {
@@ -182,6 +183,7 @@ export function FloatingPanelView() {
 
   return (
     <main className="h-dvh w-dvw overflow-hidden bg-transparent p-2">
+      <FloatingDevtoolsGuard />
       <section className="flex h-full flex-col rounded-lg border border-border bg-popover/96 text-popover-foreground shadow-xl shadow-black/20 backdrop-blur-md">
         <header className="flex items-center justify-between border-b border-border px-3 py-2">
           <div className="min-w-0">

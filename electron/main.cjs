@@ -837,6 +837,7 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      preload: preloadPath(),
       sandbox: true,
     },
   })

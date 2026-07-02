@@ -1,8 +1,5 @@
 import "server-only"
 
-const MAX_REASONING_SCAN_CHARS = 2400
-const MAX_ACTION_NOTE_CHARS = 90
-
 function hasCjk(text: string) {
   return /[\u3400-\u9fff]/.test(text)
 }
@@ -39,9 +36,6 @@ function trimActionNote(text: string) {
     .replace(/^[\s"'`>*\-•·。！？!?,，:：;；]+/, "")
     .replace(/[\s"'`<]+$/g, "")
     .trim()
-  if (result.length > MAX_ACTION_NOTE_CHARS) {
-    result = result.slice(0, MAX_ACTION_NOTE_CHARS).replace(/[，,、:：;；\s]+$/g, "")
-  }
   if (result && !/[。！？!?]$/.test(result)) result += "。"
   return result
 }
@@ -63,8 +57,7 @@ function isLikelyNoisy(text: string) {
 export function deriveVisibleActionNoteFromReasoning(reasoning: unknown) {
   const normalized = normalizeReasoningText(reasoning)
   if (!normalized || !hasCjk(normalized)) return ""
-  const tail = normalized.slice(-MAX_REASONING_SCAN_CHARS)
-  const sentences = splitSentences(tail)
+  const sentences = splitSentences(normalized)
   for (let index = sentences.length - 1; index >= 0; index -= 1) {
     const candidate = trimActionNote(sentences[index])
     if (!candidate || isLikelyNoisy(candidate)) continue
