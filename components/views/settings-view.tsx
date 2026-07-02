@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { CircleDot, Download, ImageIcon, LifeBuoy, Upload, Save } from "lucide-react"
+import { CircleDot, Download, ImageIcon, LifeBuoy, RefreshCw, Upload, Save } from "lucide-react"
 import {
   Card,
   CardContent,
@@ -56,6 +56,7 @@ export function SettingsView() {
   const { settings, providers, modelsByProvider, updateSettings, replaceSnapshot } =
     useConsole()
   const [draft, setDraft] = useState(settings)
+  const [restartingServer, setRestartingServer] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -153,6 +154,18 @@ export function SettingsView() {
     }
   }
 
+  function handleRestartServer() {
+    const bridge = window.codexHotSwitchFloating
+    if (!bridge) {
+      toast.error("只能在安装版桌面壳里重启本地服务")
+      return
+    }
+    setRestartingServer(true)
+    bridge.send("codex-hot-switch-console", { type: "restart-server" })
+    toast.success("正在重启本地中转服务")
+    window.setTimeout(() => setRestartingServer(false), 2500)
+  }
+
   function handleExport() {
     exportConsoleConfig()
     toast.success("正在导出配置")
@@ -201,8 +214,24 @@ export function SettingsView() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">本地服务</CardTitle>
-          <CardDescription>中转服务监听地址与接管开关</CardDescription>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <CardTitle className="text-base">本地服务</CardTitle>
+              <CardDescription>中转服务监听地址与接管开关</CardDescription>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRestartServer}
+              disabled={restartingServer}
+            >
+              <RefreshCw
+                data-icon="inline-start"
+                className={restartingServer ? "animate-spin" : undefined}
+              />
+              重启服务
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           <FieldGroup>
@@ -598,6 +627,21 @@ export function SettingsView() {
                 <FieldDescription>占位项，后续接入安全存储。</FieldDescription>
               </Field>
             </div>
+            <Field orientation="horizontal">
+              <div className="flex flex-col gap-0.5">
+                <FieldLabel htmlFor="s-full-logs">保存完整请求详情</FieldLabel>
+                <FieldDescription>
+                  默认关闭。开启后完整 raw/rewritten 请求按日志 ID 分文件保存；列表仍只保留摘要，避免状态文件膨胀。
+                </FieldDescription>
+              </div>
+              <Switch
+                id="s-full-logs"
+                checked={draft.fullRequestLoggingEnabled === true}
+                onCheckedChange={(value) =>
+                  setDraft((d) => ({ ...d, fullRequestLoggingEnabled: value }))
+                }
+              />
+            </Field>
           </FieldGroup>
         </CardContent>
       </Card>

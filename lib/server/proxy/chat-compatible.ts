@@ -39,6 +39,7 @@ import {
   appendOutputLanguagePolicyToLatestChatUserMessage,
   appendOutputLanguagePolicyToResponsesBody,
 } from "./language-policy"
+import { deriveVisibleActionNoteFromReasoning } from "./action-note"
 import {
   buildCustomToolCallHistory,
   buildToolContext,
@@ -1343,6 +1344,7 @@ function applyChatSseFullMessageSnapshot(
   if (toolCalls.length > 0) {
     out += flushChatSseInlineThinkAtBoundary(state)
     out += finalizeChatSseReasoning(state)
+    out += pushChatSseActionNoteFromReasoning(state)
     for (const [position, toolCall] of toolCalls.entries()) {
       out += mergeChatSseToolCallDelta(state, toolCall, position, toolContext, {
         replaceArguments: true,
@@ -1457,6 +1459,12 @@ function pushChatSseTextDelta(state: ChatSseAccum, content: string) {
     delta: content,
   })
   return out
+}
+
+function pushChatSseActionNoteFromReasoning(state: ChatSseAccum) {
+  if (state.messageAdded || state.content.trim()) return ""
+  const note = deriveVisibleActionNoteFromReasoning(state.reasoning)
+  return note ? pushChatSseTextDelta(state, note) : ""
 }
 
 function drainCompleteInlineThink(state: ChatSseAccum) {
@@ -1664,6 +1672,7 @@ function chatSseTextToResponsesSse(
     if (Array.isArray(payload.tool_calls)) {
       out += flushChatSseInlineThinkAtBoundary(state)
       out += finalizeChatSseReasoning(state)
+      out += pushChatSseActionNoteFromReasoning(state)
       const toolContext = deserializeToolContext(serializedContext)
       for (const [position, toolCall] of payload.tool_calls.entries()) {
         out += mergeChatSseToolCallDelta(state, toolCall, position, toolContext)
@@ -1671,6 +1680,7 @@ function chatSseTextToResponsesSse(
     } else if (isObject(payload.function_call)) {
       out += flushChatSseInlineThinkAtBoundary(state)
       out += finalizeChatSseReasoning(state)
+      out += pushChatSseActionNoteFromReasoning(state)
       const toolContext = deserializeToolContext(serializedContext)
       out += mergeChatSseToolCallDelta(
         state,

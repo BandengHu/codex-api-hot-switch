@@ -2,6 +2,10 @@ import "server-only"
 
 import { appendLog, getRoutingSnapshot } from "@/lib/server/state-store"
 import {
+  appendRequestLogDetails,
+  registerRequestLogDetailSource,
+} from "@/lib/server/request-log-details"
+import {
   buildCodexClientModelsResponse,
   buildOpenAIModelsResponse,
 } from "@/lib/server/codex-model-catalog"
@@ -64,6 +68,10 @@ import {
   extractFinalResponseFromSse,
   transformResponsesSseText,
 } from "./responses-sse"
+import {
+  createQwenResponsesDiagnosticStream,
+  writeQwenResponsesStreamFallthroughDiagnostic,
+} from "./qwen-responses-diagnostics"
 import {
   toOpenAIChatFromAnthropic,
   toOpenAIResponseFromAnthropic,
@@ -182,6 +190,11 @@ function makeLog(params: {
     responseSummary: params.responseSummary,
     expectChinesePolicy: shouldApplyOutputLanguagePolicy(params.target),
   })
+  registerRequestLogDetailSource(log, {
+    enabled: params.target.fullRequestLoggingEnabled === true,
+    rawBody: params.body,
+    rewrittenBody: params.rewrittenBody,
+  })
   return log
 }
 
@@ -232,6 +245,7 @@ function makeEarlyFailureLog(params: {
 }
 
 function appendLogDetached(log: RequestLog) {
+  void appendRequestLogDetails(log).catch(() => undefined)
   void appendLanguagePolicyDiagnostic(log).catch(() => undefined)
   void appendLog(log).catch(() => undefined)
 }
@@ -709,9 +723,16 @@ async function maybeAdaptOpenAICompatibleStream(
     })
   }
 
+  const diagnosticSource = createQwenResponsesDiagnosticStream(source, {
+    startedAt,
+    target,
+    statusCode: upstream.status,
+    rewrittenBody: built.rewrittenBody,
+  })
+
   const stream =
     adapter.type === "chat_completions"
-      ? source
+      ? diagnosticSource
           .pipeThrough(createResponsesSseRepairStream({
             synthesizeFinalOnStreamEnd: true,
           }))
@@ -721,7 +742,7 @@ async function maybeAdaptOpenAICompatibleStream(
               adapter.reverseToolNameMap,
             ),
           )
-      : source.pipeThrough(
+      : diagnosticSource.pipeThrough(
           createResponsesSseRepairStream({
             modelOverride: adapter.responseModelOverride,
             synthesizeFinalOnStreamEnd: true,
@@ -1042,13 +1063,17 @@ function requestHasExplicitHostedWebSearchIntent(body: unknown) {
   if (explicitToolUse) return true
 
   const explicitWeb =
-    /(?:联网|上网|全网|外网|互联网|网页搜索|网络搜索|搜索网页|搜索网络|查官网|看官网|官网|官方网站|网站|网页|链接|url|https?:\/\/|www\.|google|bing|百度|必应|search the web|browse the web|look up online|online search)/i
+    /(?:联网|上网|全网|外网|互联网|网页搜索|网络搜索|搜索网页|搜索网络|查官网|看官网|官网|官方网站|网站|网页|链接|url|https?:\/\/|www\.|github|gitlab|google|bing|百度|必应|search the web|browse the web|look up online|online search)/i
   if (explicitWeb.test(text)) return true
+
+  const localCodeTask =
+    /(?:只允许修改|允许修改|禁止修改|验收命令|不要提交 git|worktree|pyproject\.toml|uv\.lock|pytest|docs\/|data\/|engine\/src|engine\/tests)/i
+  if (localCodeTask.test(text)) return false
 
   const action =
     /(?:搜|搜索|检索|查询|查一下|查下|查查|查找|查阅|查证|核实|核对|验证|确认|看看|看一下|帮我看|look up|search|find out|check|verify|confirm)/i
   const externalContext =
-    /(?:最新|最近|当前|现在|今天|昨日|昨天|明天|本周|本月|实时|新闻|公告|发布|上线|更新|版本|release|changelog|github|issue|pull request|npm|pypi|pip|官网|网站|网页|文档|docs|api|sdk|价格|行情|汇率|政策|法规|规则|标准|排名|榜单|论文|paper|资料|来源|出处)/i
+    /(?:最新|最近|当前|现在|今天|昨日|昨天|明天|本周|本月|实时|新闻|公告|发布|上线|更新|版本|release|changelog|github|issue|pull request|npm|pypi|pip|官网|网站|网页|价格|行情|汇率|政策|法规|规则|标准|排名|榜单|论文|paper|资料|来源|出处)/i
   return action.test(text) && externalContext.test(text)
 }
 
@@ -1089,6 +1114,27 @@ function shouldRelayWebSearch(target: ProxyTarget, path: string, body: unknown) 
 
 function requestWantsStream(body: unknown) {
   return isObject(body) && body.stream === true
+}
+
+function shouldDiagnoseOpenAIResponsesStreamFallthrough(params: {
+  target: ProxyTarget
+  path: string
+  body: unknown
+  built: BuiltRequest
+  upstream: Response
+}) {
+  if (!params.upstream.ok) return false
+  if (!isOpenAIResponsesProtocol(params.target.provider.protocol)) return false
+  if (params.target.provider.rawResponsesPassthrough) return false
+  if (!isResponsesPath(params.path)) return false
+  if (requestWantsStream(params.body)) return true
+  const rewrittenBody = params.built.rewrittenBody
+  if (isObject(rewrittenBody) && rewrittenBody.stream === true) return true
+  const adapter = params.built.adapter
+  if (!adapter) return false
+  if (adapter.type === "chat_completions") return adapter.stream === true
+  if (adapter.type === "passthrough") return adapter.requestIsStream === true
+  return false
 }
 
 function isOpenAIOfficialProvider(target: ProxyTarget) {
@@ -1355,6 +1401,27 @@ function mergeRelayOutputItems(response: unknown, items: AnyRecord[]) {
     ...output,
   ]
   return { ...response, output: merged }
+}
+
+function responseFromRelayPayload(payload: unknown, built: BuiltRequest) {
+  if (typeof payload !== "string") return payload
+  const text = payload.trimStart()
+  if (!text.startsWith("event:") && !text.startsWith("data:")) return payload
+
+  const repaired = transformResponsesSseText(text, {
+    modelOverride:
+      built.adapter?.type === "passthrough"
+        ? built.adapter.responseModelOverride
+        : undefined,
+    synthesizeFinalOnStreamEnd: true,
+    toolContext:
+      built.adapter?.type === "passthrough"
+        ? built.adapter.toolContext
+        : undefined,
+    assistantMessagePhase: true,
+  })
+  const capture = extractFinalResponseFromSse(repaired.text)
+  return capture.final || capture.failed || payload
 }
 
 function responseOutputText(response: unknown) {
@@ -1688,7 +1755,8 @@ async function handleRelayWebSearchResponses(params: {
       })
     }
 
-    const transformed = transformResponse(params.target, params.path, payload, currentBuilt, {
+    const responsePayload = responseFromRelayPayload(payload, currentBuilt)
+    const transformed = transformResponse(params.target, params.path, responsePayload, currentBuilt, {
       recordHistory: false,
     })
     const calls = extractRelayWebSearchCalls(transformed)
@@ -1696,7 +1764,7 @@ async function handleRelayWebSearchResponses(params: {
       const response = mergeRelayOutputItems(transformed, relayedItems)
       return relayResponse({
         response,
-        payload,
+        payload: responsePayload,
         statusCode: upstream.status,
         built: currentBuilt,
         startedAt: params.startedAt,
@@ -1775,6 +1843,7 @@ export async function handleProxyPost(parts: string[], request: Request) {
     body = filterPrivateParams(imageApiRequest?.body ?? rawBody).body
     const snapshot = await getRoutingSnapshot()
     target = resolveTarget(snapshot, body)
+    target.fullRequestLoggingEnabled = snapshot.settings.fullRequestLoggingEnabled === true
     target = applyAuxiliaryRouting(snapshot, body, target)
     if (!target.provider.enabled) {
       throw new Error(`供应商「${target.provider.name}」已停用`)
@@ -1829,6 +1898,25 @@ export async function handleProxyPost(parts: string[], request: Request) {
       path,
     })
     if (successResponse) return successResponse
+
+    if (shouldDiagnoseOpenAIResponsesStreamFallthrough({
+      target,
+      path: effectivePath,
+      body,
+      built,
+      upstream,
+    })) {
+      await writeQwenResponsesStreamFallthroughDiagnostic({
+        target,
+        startedAt,
+        path: effectivePath,
+        statusCode: upstream.status,
+        upstream,
+        rawBody: rawBody ?? body,
+        rewrittenBody: built.rewrittenBody,
+        adapter: built.adapter,
+      }).catch(() => null)
+    }
 
     let payload = await parseJsonSafe(upstream)
     const attemptedRectifiers = new Set<RectifierKind>()

@@ -215,9 +215,12 @@ function normalizeResponsesInputItem(item: unknown): unknown {
   } else if (out.type === "function_call_output") {
     const callId = callIdFromInputItem(out)
     if (callId) out.call_id = callId
+    out.output = contentToText(out.output ?? out.content ?? out.text ?? "")
     for (const key of ["callId", "tool_call_id", "toolCallId", "item_id", "itemId"]) {
       delete out[key]
     }
+    delete out.content
+    delete out.text
   }
   return out
 }
@@ -284,7 +287,7 @@ export function normalizeResponsesBodyForCodex(body: unknown) {
   if (!isObject(body)) return body
   const out = { ...body }
   out.instructions = typeof out.instructions === "string" ? out.instructions : ""
-  out.stream = true
+  out.stream = body.stream === false ? false : true
   out.store = false
 
   const previousResponseId = safeTrim(out.previous_response_id)

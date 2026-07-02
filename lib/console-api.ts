@@ -7,6 +7,7 @@ import type {
   Provider,
   ProviderTestResult,
   ReasoningEffort,
+  RequestLogDetail,
 } from "@/lib/types"
 import type {
   CodexConfigMutationResult,
@@ -48,6 +49,12 @@ async function parseResponse<T>(response: Response): Promise<T> {
 export async function fetchConsoleSnapshot(): Promise<ConsoleSnapshot> {
   return parseResponse<ConsoleSnapshot>(
     await fetch("/api/console", { cache: "no-store" }),
+  )
+}
+
+export async function fetchRequestLogDetail(id: string): Promise<RequestLogDetail> {
+  return parseResponse<RequestLogDetail>(
+    await fetch(`/api/logs/${encodeURIComponent(id)}`, { cache: "no-store" }),
   )
 }
 

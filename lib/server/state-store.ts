@@ -46,6 +46,7 @@ const STATE_VERSION = 1
 const MAX_LOGS = 500
 const MAX_TOKEN_STATS = 2000
 const DAY_MS = 24 * 60 * 60 * 1000
+const MAX_LOG_FIELD_CHARS = 4000
 
 let writeQueue: Promise<unknown> = Promise.resolve()
 let snapshotCache: ConsoleSnapshot | null = null
@@ -66,6 +67,23 @@ function cloneRoutingSnapshot(snapshot: ConsoleSnapshot): RoutingSnapshot {
     mappings: structuredClone(snapshot.mappings),
     runtime: structuredClone(snapshot.runtime),
     settings: structuredClone(snapshot.settings),
+  }
+}
+
+function truncateStoredLogField(value: unknown) {
+  const text = typeof value === "string" ? value : String(value ?? "")
+  return text.length > MAX_LOG_FIELD_CHARS
+    ? `${text.slice(0, MAX_LOG_FIELD_CHARS)}... [stored log field truncated]`
+    : text
+}
+
+function normalizeStoredLog(log: RequestLog): RequestLog {
+  return {
+    ...log,
+    rawRequest: truncateStoredLogField(log.rawRequest),
+    rewrittenRequest: truncateStoredLogField(log.rewrittenRequest),
+    responseSummary: truncateStoredLogField(log.responseSummary),
+    ...(log.errorStack ? { errorStack: truncateStoredLogField(log.errorStack) } : {}),
   }
 }
 
@@ -197,6 +215,10 @@ function normalizeSettings(
       typeof settings.tokenStatsResetAt === "string" && settings.tokenStatsResetAt.trim()
         ? settings.tokenStatsResetAt
         : seed.tokenStatsResetAt,
+    fullRequestLoggingEnabled:
+      typeof settings.fullRequestLoggingEnabled === "boolean"
+        ? settings.fullRequestLoggingEnabled
+        : seed.fullRequestLoggingEnabled,
   }
 }
 
@@ -382,6 +404,7 @@ function pruneLogs(logs: RequestLog[], settings: Settings) {
       return !Number.isFinite(timestamp) || timestamp >= cutoff
     })
     .slice(0, MAX_LOGS)
+    .map(normalizeStoredLog)
 }
 
 function normalizeTokenStats(value: unknown, logs: RequestLog[]): TokenStatEntry[] {
@@ -555,7 +578,7 @@ export async function appendLog(log: RequestLog): Promise<ConsoleSnapshot> {
   // 主链路热路径：只更新内存缓存并标脏，落盘交给节流定时器合并执行，
   // 避免每条请求都对整快照做深拷贝 + 全量 normalize + 同步 JSON.stringify 写盘。
   const cache = await loadSnapshot()
-  cache.logs.unshift(log)
+  cache.logs.unshift(normalizeStoredLog(log))
   if (cache.logs.length > MAX_LOGS) cache.logs.length = MAX_LOGS
   const tokenStat = tokenStatFromLog(log)
   if (tokenStat) {

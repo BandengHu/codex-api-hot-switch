@@ -11,6 +11,10 @@ const CJK_RE = /[\u3400-\u9fff]/
 const ENGLISH_ACTION_RE =
   /\b(?:I'll|I will|Let me|I'm going to|I am going to|Now I'll|Now I will|I'll inspect|I'll run|I'll check|I'll read|I'll update|I'll add|I'll verify|I'll look|I'll use|Now add|Now wire|Now capture|Let me read|Let me inspect|Let me check|Let me run)\b[^"\n\r]{0,160}/gi
 
+function diagnosticsEnabled() {
+  return process.env.CODEX_HOT_SWITCH_LANGUAGE_POLICY_DIAGNOSTICS === "1"
+}
+
 interface DiagnosticSource {
   rawBody?: unknown
   rewrittenBody?: unknown
@@ -109,6 +113,7 @@ export function registerLanguagePolicyDiagnosticSource(
 }
 
 export async function appendLanguagePolicyDiagnostic(log: RequestLog) {
+  if (!diagnosticsEnabled()) return
   const source = rawSources.get(log)
   if (source?.expectChinesePolicy === false) return
 

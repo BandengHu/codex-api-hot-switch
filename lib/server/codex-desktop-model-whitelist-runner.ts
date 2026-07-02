@@ -8,6 +8,8 @@ import type {
   CodexDesktopModelWhitelistStatus,
 } from "@/lib/codex-desktop-model-whitelist-types"
 import type { Settings } from "@/lib/types"
+import { syncCodexModelCatalog } from "./codex-config"
+import { getSnapshot } from "./state-store"
 
 const execFileAsync = promisify(execFile)
 const RUNNER_TIMEOUT_MS = 120_000
@@ -61,27 +63,34 @@ export function getCodexDesktopModelWhitelistStatus(
   return runCodexDesktopModelWhitelistAction<CodexDesktopModelWhitelistStatus>("status", settings)
 }
 
-export function injectCodexDesktopModelWhitelist(
+async function syncModelCatalogBeforeWhitelistMutation() {
+  await syncCodexModelCatalog(await getSnapshot())
+}
+
+export async function injectCodexDesktopModelWhitelist(
   settings: Settings,
 ): Promise<CodexDesktopModelWhitelistMutationResult> {
+  await syncModelCatalogBeforeWhitelistMutation()
   return runCodexDesktopModelWhitelistAction<CodexDesktopModelWhitelistMutationResult>(
     "inject",
     settings,
   )
 }
 
-export function launchCodexDesktopWithModelWhitelist(
+export async function launchCodexDesktopWithModelWhitelist(
   settings: Settings,
 ): Promise<CodexDesktopModelWhitelistMutationResult> {
+  await syncModelCatalogBeforeWhitelistMutation()
   return runCodexDesktopModelWhitelistAction<CodexDesktopModelWhitelistMutationResult>(
     "launch",
     settings,
   )
 }
 
-export function restartCodexDesktopWithModelWhitelist(
+export async function restartCodexDesktopWithModelWhitelist(
   settings: Settings,
 ): Promise<CodexDesktopModelWhitelistMutationResult> {
+  await syncModelCatalogBeforeWhitelistMutation()
   return runCodexDesktopModelWhitelistAction<CodexDesktopModelWhitelistMutationResult>(
     "restart",
     settings,

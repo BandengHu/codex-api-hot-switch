@@ -6,7 +6,7 @@
   "private": true,
   "main": "electron/main.cjs",
   "scripts": {
-    "dev": "next dev --webpack --port 8787",
+    "dev": "next dev --port 8787",
     "build": "next build",
     "preview": "npm exec --yes pnpm@10.21.0 -- build && node scripts/start-standalone.cjs",
     "desktop": "electron .",

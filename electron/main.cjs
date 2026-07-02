@@ -610,6 +610,9 @@ function setupFloatingIpc() {
     if (message?.type === "request-desktop-state") {
       broadcastDesktopState()
     }
+    if (message?.type === "restart-server") {
+      restartOwnedServer()
+    }
   })
 
   ipcMain.on("codex-hot-switch-floating-panel", (event, message) => {

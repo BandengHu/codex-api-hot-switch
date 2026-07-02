@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import {
   AlertTriangle,
   CheckCircle2,
@@ -46,7 +46,7 @@ function PathLine({ label, value }: { label: string; value: string }) {
 
 export function CodexModelWhitelistPanel() {
   const [status, setStatus] = useState<CodexDesktopModelWhitelistStatus | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
   const [working, setWorking] = useState<"refresh" | "inject" | "launch" | "restart" | null>(null)
   const [error, setError] = useState("")
 
@@ -62,10 +62,6 @@ export function CodexModelWhitelistPanel() {
       setWorking(null)
     }
   }
-
-  useEffect(() => {
-    void refresh()
-  }, [])
 
   async function handleInject() {
     setWorking("inject")
@@ -146,6 +142,18 @@ export function CodexModelWhitelistPanel() {
           <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
             <AlertTriangle className="size-4" />
             {error}
+          </div>
+        ) : null}
+
+        {!loading && !status && !error ? (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border px-3 py-2">
+            <div className="text-sm text-muted-foreground">
+              打开页面时不自动探测 Codex / CDP / 模型接口，避免触发 dev server 内存飙升。
+            </div>
+            <Button variant="outline" onClick={() => void refresh()} disabled={busy}>
+              {working === "refresh" ? <Spinner data-icon="inline-start" /> : <RefreshCw data-icon="inline-start" />}
+              检查状态
+            </Button>
           </div>
         ) : null}
 

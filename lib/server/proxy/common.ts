@@ -21,6 +21,7 @@ export interface ProxyTarget {
   reasoning: ReasoningEffort
   mappingId?: string
   paused: boolean
+  fullRequestLoggingEnabled?: boolean
 }
 
 export function joinUrl(baseUrl: string, path: string) {

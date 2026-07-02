@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { AlertTriangle, RefreshCw } from "lucide-react"
 import {
   Card,
@@ -36,10 +36,12 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Empty, EmptyHeader, EmptyTitle, EmptyDescription } from "@/components/ui/empty"
 import { StatusCodeBadge, ReasoningBadge } from "@/components/status-badges"
 import { useConsole } from "@/lib/console-store"
-import type { RequestLog } from "@/lib/types"
+import { fetchRequestLogDetail } from "@/lib/console-api"
+import type { RequestLog, RequestLogDetail } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { useResizableSheetWidth } from "@/components/views/use-resizable-sheet-width"
 
@@ -47,6 +49,7 @@ const LOG_DETAIL_WIDTH_KEY = "codex-hot-switch-log-detail-width"
 const DETAIL_MIN_WIDTH = 480
 const DETAIL_MAX_WIDTH = 1120
 const DETAIL_DEFAULT_WIDTH = 720
+const LOGS_PAGE_SIZE = 20
 
 function fmtTime(iso: string) {
   const d = new Date(iso)
@@ -76,6 +79,26 @@ function tokenSummary(log: RequestLog) {
   return "—"
 }
 
+function paginationItems(currentPage: number, pageCount: number) {
+  const items: Array<number | "ellipsis"> = []
+  const pushPage = (page: number) => {
+    if (page < 1 || page > pageCount || items.includes(page)) return
+    items.push(page)
+  }
+  const pushEllipsis = () => {
+    if (items[items.length - 1] !== "ellipsis") items.push("ellipsis")
+  }
+
+  pushPage(1)
+  if (currentPage > 4) pushEllipsis()
+  for (let page = currentPage - 2; page <= currentPage + 2; page += 1) {
+    pushPage(page)
+  }
+  if (currentPage < pageCount - 3) pushEllipsis()
+  if (pageCount > 1) pushPage(pageCount)
+  return items
+}
+
 function TokenMetric({
   label,
   value,
@@ -100,7 +123,12 @@ export function LogsView() {
   const [statusFilter, setStatusFilter] = useState("all")
   const [providerFilter, setProviderFilter] = useState("all")
   const [modelFilter, setModelFilter] = useState("all")
+  const [page, setPage] = useState(1)
+  const [pageInput, setPageInput] = useState("1")
   const [selected, setSelected] = useState<RequestLog | null>(null)
+  const [detail, setDetail] = useState<RequestLogDetail | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState("")
   const {
     isResizing,
     sheetStyle,
@@ -124,6 +152,66 @@ export function LogsView() {
       return true
     })
   }, [logs, statusFilter, providerFilter, modelFilter])
+
+  useEffect(() => {
+    setPage(1)
+  }, [statusFilter, providerFilter, modelFilter])
+
+  const pageCount = Math.max(1, Math.ceil(filtered.length / LOGS_PAGE_SIZE))
+  const currentPage = Math.min(page, pageCount)
+  const pageStart = filtered.length === 0 ? 0 : (currentPage - 1) * LOGS_PAGE_SIZE + 1
+  const pageEnd = Math.min(filtered.length, currentPage * LOGS_PAGE_SIZE)
+  const pageLogs = useMemo(() => {
+    const start = (currentPage - 1) * LOGS_PAGE_SIZE
+    return filtered.slice(start, start + LOGS_PAGE_SIZE)
+  }, [filtered, currentPage])
+  const pageItems = useMemo(
+    () => paginationItems(currentPage, pageCount),
+    [currentPage, pageCount],
+  )
+
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount)
+  }, [page, pageCount])
+
+  useEffect(() => {
+    setPageInput(String(currentPage))
+  }, [currentPage])
+
+  useEffect(() => {
+    if (!selected) {
+      setDetail(null)
+      setDetailError("")
+      setDetailLoading(false)
+      return
+    }
+    let cancelled = false
+    setDetail(null)
+    setDetailError("")
+    setDetailLoading(true)
+    void fetchRequestLogDetail(selected.id)
+      .then((value) => {
+        if (!cancelled) setDetail(value)
+      })
+      .catch((error) => {
+        if (!cancelled) setDetailError(error instanceof Error ? error.message : String(error))
+      })
+      .finally(() => {
+        if (!cancelled) setDetailLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [selected])
+
+  const jumpToPage = () => {
+    const nextPage = Number.parseInt(pageInput, 10)
+    if (!Number.isFinite(nextPage)) {
+      setPageInput(String(currentPage))
+      return
+    }
+    setPage(Math.max(1, Math.min(pageCount, nextPage)))
+  }
 
   const uniqueFinalModels = Array.from(new Set(logs.map((l) => l.finalModelId)))
 
@@ -153,7 +241,7 @@ export function LogsView() {
             <div>
               <CardTitle className="text-base">最近请求</CardTitle>
               <CardDescription>
-                共 {logs.length} 条 · 当前显示 {filtered.length} 条
+                共 {logs.length} 条 · 匹配 {filtered.length} 条 · 当前 {pageStart}-{pageEnd} 条
               </CardDescription>
             </div>
             <div className="flex flex-wrap items-end gap-3">
@@ -243,7 +331,7 @@ export function LogsView() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map((l) => {
+                {pageLogs.map((l) => {
                   const provider = providers.find((p) => p.id === l.finalProviderId)
                   return (
                     <TableRow
@@ -292,6 +380,68 @@ export function LogsView() {
               </TableBody>
             </Table>
           )}
+          {filtered.length > 0 ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-3 text-sm text-muted-foreground">
+              <span>
+                每页 {LOGS_PAGE_SIZE} 条 · 第 {currentPage} / {pageCount} 页
+              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((value) => Math.max(1, value - 1))}
+                  disabled={currentPage <= 1}
+                >
+                  上一页
+                </Button>
+                <div className="flex items-center gap-1">
+                  {pageItems.map((item, index) =>
+                    item === "ellipsis" ? (
+                      <span
+                        key={`ellipsis-${index}`}
+                        className="flex h-8 min-w-7 items-center justify-center px-1 text-xs text-muted-foreground"
+                      >
+                        ...
+                      </span>
+                    ) : (
+                      <Button
+                        key={item}
+                        variant={item === currentPage ? "default" : "outline"}
+                        size="sm"
+                        className="h-8 min-w-8 px-2"
+                        onClick={() => setPage(item)}
+                      >
+                        {item}
+                      </Button>
+                    ),
+                  )}
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((value) => Math.min(pageCount, value + 1))}
+                  disabled={currentPage >= pageCount}
+                >
+                  下一页
+                </Button>
+                <div className="ml-1 flex items-center gap-1">
+                  <span className="text-xs">跳至</span>
+                  <Input
+                    className="h-8 w-16 text-center font-mono text-xs"
+                    inputMode="numeric"
+                    value={pageInput}
+                    onChange={(event) => setPageInput(event.target.value.replace(/\D/g, ""))}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") jumpToPage()
+                    }}
+                  />
+                  <Button variant="outline" size="sm" onClick={jumpToPage}>
+                    跳转
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -356,22 +506,36 @@ export function LogsView() {
               ) : null}
 
               <div className="flex flex-col gap-1.5">
-                <h3 className="text-sm font-medium">原始请求摘要</h3>
-                <CodeBlock text={selected.rawRequest} />
+                <h3 className="text-sm font-medium">
+                  原始请求{detail?.hasFullRawRequest ? "（完整）" : "摘要"}
+                </h3>
+                {detailLoading ? (
+                  <div className="rounded-md border px-3 py-2 text-sm text-muted-foreground">
+                    正在读取日志详情...
+                  </div>
+                ) : null}
+                {detailError ? (
+                  <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                    {detailError}
+                  </div>
+                ) : null}
+                <CodeBlock text={detail?.rawRequest ?? selected.rawRequest} />
               </div>
 
               <Separator />
 
               <div className="flex flex-col gap-1.5">
-                <h3 className="text-sm font-medium">重写后的请求摘要</h3>
-                <CodeBlock text={selected.rewrittenRequest} />
+                <h3 className="text-sm font-medium">
+                  重写后的请求{detail?.hasFullRewrittenRequest ? "（完整）" : "摘要"}
+                </h3>
+                <CodeBlock text={detail?.rewrittenRequest ?? selected.rewrittenRequest} />
               </div>
 
               <Separator />
 
               <div className="flex flex-col gap-1.5">
                 <h3 className="text-sm font-medium">响应摘要</h3>
-                <CodeBlock text={selected.responseSummary} />
+                <CodeBlock text={detail?.responseSummary ?? selected.responseSummary} />
               </div>
 
               {selected.errorStack ? (

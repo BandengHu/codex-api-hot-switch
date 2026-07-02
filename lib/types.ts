@@ -138,6 +138,15 @@ export interface RequestLog {
   errorStack?: string
 }
 
+export interface RequestLogDetail {
+  id: string
+  rawRequest: string
+  rewrittenRequest: string
+  responseSummary: string
+  hasFullRawRequest: boolean
+  hasFullRewrittenRequest: boolean
+}
+
 export interface RuntimeConfig {
   takeover: TakeoverStatus
   activeProviderId: string
@@ -164,6 +173,7 @@ export interface Settings {
   imageGenerationProviderId: string
   imageGenerationModelId: string
   logRetentionDays: number
+  fullRequestLoggingEnabled: boolean
   keyStorage: string
   floatingBallEnabled: boolean
   floatingBallPosition?: FloatingBallPosition
