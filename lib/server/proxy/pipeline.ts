@@ -468,6 +468,12 @@ function parseSseFrames(text: string) {
 function recordResponsesSseText(text: string, requestBody?: unknown) {
   for (const payload of parseSseFrames(text)) {
     if (!payload || payload === "[DONE]") continue
+    if (
+      !payload.includes('"response.completed"') &&
+      !payload.includes('"response.output_item.done"')
+    ) {
+      continue
+    }
     let value: unknown
     try {
       value = JSON.parse(payload)
@@ -489,7 +495,6 @@ function recordResponsesSseText(text: string, requestBody?: unknown) {
 
 function createResponsesHistoryRecorderStream(requestBody?: unknown) {
   const decoder = new TextDecoder()
-  const encoder = new TextEncoder()
   let buffer = ""
   return new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
@@ -502,13 +507,12 @@ function createResponsesHistoryRecorderStream(requestBody?: unknown) {
         buffer = buffer.slice(end)
         recordResponsesSseText(head, requestBody)
       }
-      controller.enqueue(encoder.encode(text))
+      controller.enqueue(chunk)
     },
-    flush(controller) {
+    flush() {
       const tail = decoder.decode()
       if (tail) {
         buffer += tail
-        controller.enqueue(encoder.encode(tail))
       }
       if (buffer) recordResponsesSseText(buffer, requestBody)
     },

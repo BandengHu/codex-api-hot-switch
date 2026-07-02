@@ -59,7 +59,7 @@ function thinkingBudget(reasoning: ReasoningEffort) {
 
 function supportsAdaptiveThinking(modelId: string) {
   return (
-    /(?:claude-)?(?:opus-4-(?:6|7|8)|sonnet-4-6)(?:\b|-)/i.test(modelId)
+    /(?:claude-)?(?:opus-4-(?:6|7|8)|sonnet-4-6|sonnet-5)(?:\b|-)/i.test(modelId)
   )
 }
 
@@ -70,8 +70,16 @@ function hasAlwaysOnAdaptiveThinking(modelId: string) {
 function supportsAdaptiveXHigh(modelId: string) {
   return (
     /(?:claude-)?(?:fable|mythos)-5(?:\b|-)/i.test(modelId) ||
-    /(?:claude-)?opus-4-(?:7|8)(?:\b|-)/i.test(modelId)
+    /(?:claude-)?(?:opus-4-(?:7|8)|sonnet-5)(?:\b|-)/i.test(modelId)
   )
+}
+
+function supportsExplicitThinkingDisabled(modelId: string) {
+  return /(?:claude-)?sonnet-5(?:\b|-)/i.test(modelId)
+}
+
+function shouldOmitSamplingParameters(modelId: string) {
+  return /(?:claude-)?(?:sonnet-5|fable-5|mythos-5|opus-4-(?:7|8))(?:\b|-)/i.test(modelId)
 }
 
 function adaptiveThinkingEffort(modelId: string, reasoning: ReasoningEffort) {
@@ -109,16 +117,24 @@ function anthropicThinkingConfig(
   }
 
   if (hasAlwaysOnAdaptiveThinking(modelId)) {
+    const headroomReasoning = reasoning === "off" ? "auto" : reasoning
     const effort = adaptiveThinkingEffort(modelId, reasoning)
     return {
-      maxTokens: maxTokensWithThinkingHeadroom(reasoning, maxOutputTokens),
+      maxTokens: maxTokensWithThinkingHeadroom(headroomReasoning, maxOutputTokens),
       thinking: reasoning === "off" ? undefined : summarizedAdaptiveThinking(),
       outputConfig: effort ? { effort } : undefined,
     }
   }
 
   if (supportsAdaptiveThinking(modelId)) {
-    if (reasoning === "off") return { maxTokens: maxOutputTokens, thinking: undefined }
+    if (reasoning === "off") {
+      return {
+        maxTokens: maxOutputTokens,
+        thinking: supportsExplicitThinkingDisabled(modelId)
+          ? { type: "disabled" }
+          : undefined,
+      }
+    }
     if (reasoning === "auto") {
       return {
         maxTokens: maxTokensWithThinkingHeadroom(reasoning, maxOutputTokens),
@@ -580,9 +596,11 @@ function buildAnthropicBody(canonical: NativeCanonicalRequest, target: ProxyTarg
   if (canonical.instructions) {
     body.system = [{ type: "text", text: canonical.instructions }]
   }
-  if (canonical.temperature != null) body.temperature = canonical.temperature
-  if (canonical.topP != null) body.top_p = canonical.topP
-  if (canonical.topK != null) body.top_k = canonical.topK
+  if (!shouldOmitSamplingParameters(canonical.modelId)) {
+    if (canonical.temperature != null) body.temperature = canonical.temperature
+    if (canonical.topP != null) body.top_p = canonical.topP
+    if (canonical.topK != null) body.top_k = canonical.topK
+  }
   if (canonical.stopSequences.length > 0) body.stop_sequences = canonical.stopSequences
   if (canonical.tools.length > 0) {
     body.tools = canonical.tools.map((tool) => ({

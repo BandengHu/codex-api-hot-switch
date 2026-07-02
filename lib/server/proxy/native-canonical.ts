@@ -28,6 +28,9 @@ import {
 
 type AnyRecord = Record<string, any>
 
+const DEFAULT_MAX_OUTPUT_TOKENS = 4096
+const ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS = 32768
+
 export type NativeProtocol = "anthropic" | "gemini"
 export type NativeSource = "chat_completions" | "responses"
 
@@ -156,14 +159,20 @@ function booleanOption(body: unknown, keys: string[]) {
   return undefined
 }
 
-function outputTokenLimit(body: unknown) {
+function defaultOutputTokenLimit(target: ProxyTarget) {
+  return target.provider.protocol === "anthropic"
+    ? ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS
+    : DEFAULT_MAX_OUTPUT_TOKENS
+}
+
+function outputTokenLimit(body: unknown, target: ProxyTarget) {
   if (isObject(body) && typeof body.text?.max_output_tokens === "number") {
     const value = body.text.max_output_tokens
     if (Number.isFinite(value)) return value
   }
   return (
     numericOption(body, ["max_tokens", "max_output_tokens", "max_completion_tokens"]) ??
-    4096
+    defaultOutputTokenLimit(target)
   )
 }
 
@@ -723,7 +732,7 @@ export function buildNativeCanonicalRequest(
       (body as AnyRecord)?.stop_sequences,
     ),
     responseFormat: normalizeResponseFormat(prepared.body, body),
-    maxOutputTokens: outputTokenLimit(body),
+    maxOutputTokens: outputTokenLimit(body, target),
     temperature: numericOption(body, ["temperature"]),
     topP: numericOption(body, ["top_p"]),
     topK: numericOption(body, ["top_k", "topK"]),

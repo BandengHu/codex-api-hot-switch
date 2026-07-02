@@ -39,6 +39,22 @@ export interface ProviderPresetDraft {
 
 const CLAUDE_PRESET_MODELS: ProviderPresetModel[] = [
   {
+    displayName: "Claude Fable 5",
+    modelId: "claude-fable-5",
+    capabilities: ["chat", "reasoning", "vision", "tools"],
+    contextLength: 272000,
+    supportsReasoning: true,
+    supportsVision: true,
+  },
+  {
+    displayName: "Claude Sonnet 5",
+    modelId: "claude-sonnet-5",
+    capabilities: ["chat", "reasoning", "vision", "tools"],
+    contextLength: 400000,
+    supportsReasoning: true,
+    supportsVision: true,
+  },
+  {
     displayName: "Claude Opus 4.8",
     modelId: "claude-opus-4-8",
     capabilities: ["chat", "reasoning", "vision", "tools"],
@@ -65,14 +81,12 @@ const CLAUDE_PRESET_MODELS: ProviderPresetModel[] = [
 ]
 
 const CLAUDE_DEPRECATED_MODEL_IDS = [
-  "claude-fable-5",
   "claude-mythos-5",
   "claude-opus-4-6",
   "claude-opus-4-7",
 ]
 
 const CLAUDE_REPLACEMENT_MODEL_IDS = {
-  "claude-fable-5": "claude-opus-4-8",
   "claude-mythos-5": "claude-opus-4-8",
   "claude-opus-4-6": "claude-opus-4-8",
   "claude-opus-4-7": "claude-opus-4-8",
