@@ -17,6 +17,10 @@ if (!fs.existsSync(serverFile)) {
 }
 
 copyDirSync(path.join(root, ".next", "static"), path.join(standaloneDir, ".next", "static"))
+copyDirSync(
+  path.join(root, ".next", "server", "chunks"),
+  path.join(standaloneDir, ".next", "server", "chunks"),
+)
 copyDirSync(path.join(root, "public"), path.join(standaloneDir, "public"))
 fs.mkdirSync(path.join(standaloneDir, "scripts"), { recursive: true })
 for (const runner of [

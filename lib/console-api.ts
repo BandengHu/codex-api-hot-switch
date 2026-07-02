@@ -33,16 +33,37 @@ import type {
   WecomBridgeStatus,
 } from "@/lib/wecom-bridge-types"
 
+function parseJsonText(text: string): unknown {
+  if (!text.trim()) return null
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    return null
+  }
+}
+
+function errorMessageFromBody(body: unknown): string {
+  if (typeof body === "string") return body
+  if (!body || typeof body !== "object") return ""
+  const record = body as Record<string, unknown>
+  const error = record.error
+  if (typeof error === "string") return error
+  if (error && typeof error === "object") {
+    const nested = error as Record<string, unknown>
+    if (typeof nested.message === "string") return nested.message
+    if (typeof nested.error === "string") return nested.error
+  }
+  if (typeof record.message === "string") return record.message
+  return ""
+}
+
 async function parseResponse<T>(response: Response): Promise<T> {
   if (response.ok) return (await response.json()) as T
-  let message = `${response.status} ${response.statusText}`
-  try {
-    const body = (await response.json()) as { error?: string }
-    if (body.error) message = body.error
-  } catch {
-    const text = await response.text()
-    if (text) message = text
-  }
+  const text = await response.text()
+  const message =
+    errorMessageFromBody(parseJsonText(text)) ||
+    text.trim() ||
+    `${response.status} ${response.statusText}`
   throw new Error(message)
 }
 

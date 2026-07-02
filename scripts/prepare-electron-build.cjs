@@ -154,6 +154,10 @@ async function main() {
   for (const artifact of tracedBuildArtifacts) {
     await fs.rm(path.join(standaloneDir, artifact), { recursive: true, force: true })
   }
+  await copyDir(
+    path.join(root, ".next", "server", "chunks"),
+    path.join(standaloneDir, ".next", "server", "chunks"),
+  )
   await copyDir(path.join(root, ".next", "static"), path.join(standaloneDir, ".next", "static"))
   await copyDir(path.join(root, "public"), path.join(standaloneDir, "public"))
 
