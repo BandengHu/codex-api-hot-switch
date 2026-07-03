@@ -145,7 +145,12 @@ export function CodexPluginDoctorPanel() {
               <PathLine label="Codex Home" value={status.codexHome} />
               <PathLine label="旧配置插件源" value={status.activeMarketplaceSource || "未配置"} />
               <PathLine label="本地插件缓存" value={status.stableMarketplacePath} />
-              <PathLine label="最新 Codex 安装目录" value={status.latestInstallPath} />
+              <PathLine
+                label={`最新 Codex 安装目录${status.latestInstallKind ? ` · ${status.latestInstallKind}` : ""}`}
+                value={status.latestInstallPath}
+              />
+              <PathLine label="Codex resources 路径" value={status.latestResourcesPath} />
+              <PathLine label="官方 bundled 插件源" value={status.latestBundledMarketplacePath} />
             </div>
 
             <div className="grid gap-2 sm:grid-cols-5">
@@ -199,6 +204,16 @@ export function CodexPluginDoctorPanel() {
                 插件路径和 native host 当前正常
               </div>
             )}
+
+            {status.notes?.length ? (
+              <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+                <ul className="space-y-1">
+                  {status.notes.map((note) => (
+                    <li key={note}>{note}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
 
             <div className="overflow-hidden rounded-md border">
               <Table>

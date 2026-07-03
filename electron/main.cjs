@@ -29,6 +29,7 @@ const SERVER_HEALTH_POLL_MS = 5000
 const SERVER_RESTART_DELAY_MS = 1500
 const SERVER_MAX_RESTARTS = 5
 const SERVER_RESTART_WINDOW_MS = 5 * 60 * 1000
+const SERVER_NODE_OPTIONS = ["--max-old-space-size=1024"]
 
 app.setName(APP_STORAGE_NAME)
 
@@ -337,7 +338,7 @@ function startDevServer() {
   if (!existsSync(nextBin)) {
     throw new Error(`缺少 Next 开发服务入口：${nextBin}`)
   }
-  serverProcess = spawn(process.execPath, [nextBin, "dev", "--hostname", runtime.host, "--port", String(runtime.port)], {
+  serverProcess = spawn(process.execPath, [...SERVER_NODE_OPTIONS, nextBin, "dev", "--hostname", runtime.host, "--port", String(runtime.port)], {
     cwd: root,
     env: {
       ...process.env,
@@ -363,7 +364,7 @@ function startPackagedServer() {
   if (!existsSync(vendorPath)) {
     throw new Error(`缺少 Next 服务依赖目录：${vendorPath}`)
   }
-  serverProcess = spawn(process.execPath, [serverFile], {
+  serverProcess = spawn(process.execPath, [...SERVER_NODE_OPTIONS, serverFile], {
     cwd: root,
     env: {
       ...process.env,

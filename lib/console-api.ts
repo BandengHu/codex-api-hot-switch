@@ -7,7 +7,9 @@ import type {
   Provider,
   ProviderTestResult,
   ReasoningEffort,
+  RequestLog,
   RequestLogDetail,
+  TokenStatEntry,
 } from "@/lib/types"
 import type {
   CodexConfigMutationResult,
@@ -79,14 +81,38 @@ export async function fetchRequestLogDetail(id: string): Promise<RequestLogDetai
   )
 }
 
+export async function fetchRequestLogs(): Promise<RequestLog[]> {
+  return parseResponse<RequestLog[]>(
+    await fetch("/api/logs", { cache: "no-store" }),
+  )
+}
+
+export async function fetchTokenStats(): Promise<TokenStatEntry[]> {
+  return parseResponse<TokenStatEntry[]>(
+    await fetch("/api/token-stats", { cache: "no-store" }),
+  )
+}
+
+export async function fetchConsoleTelemetry(): Promise<{
+  logs: RequestLog[]
+  tokenStats: TokenStatEntry[]
+}> {
+  const [logs, tokenStats] = await Promise.all([
+    fetchRequestLogs(),
+    fetchTokenStats(),
+  ])
+  return { logs, tokenStats }
+}
+
 export async function saveConsoleSnapshot(
   snapshot: ConsoleSnapshot,
 ): Promise<ConsoleSnapshot> {
+  const { logs: _logs, tokenStats: _tokenStats, ...configSnapshot } = snapshot
   return parseResponse<ConsoleSnapshot>(
     await fetch("/api/console", {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(snapshot),
+      body: JSON.stringify(configSnapshot),
     }),
   )
 }

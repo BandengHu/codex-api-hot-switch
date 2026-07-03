@@ -5,7 +5,7 @@ import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { initialSnapshot } from "@/lib/mock-data"
 import { isChatModel, isImageGenerationModel } from "@/lib/model-capabilities"
-import { tokenStatFromLog } from "@/lib/token-stats"
+import { appendTelemetryLog, importLegacyTelemetry } from "@/lib/server/telemetry-store"
 import { REASONING_DIALECTS } from "@/lib/types"
 import type {
   ConsoleSnapshot,
@@ -19,7 +19,6 @@ import type {
   RoutingSnapshot,
   RuntimeConfig,
   Settings,
-  TokenStatEntry,
 } from "@/lib/types"
 
 function defaultDataDir() {
@@ -43,18 +42,9 @@ function defaultDataDir() {
 const DATA_DIR = process.env.CODEX_HOT_SWITCH_DATA_DIR || defaultDataDir()
 const STATE_PATH = join(DATA_DIR, "hot-switch-state.json")
 const STATE_VERSION = 1
-const MAX_LOGS = 500
-const MAX_TOKEN_STATS = 2000
-const DAY_MS = 24 * 60 * 60 * 1000
-const MAX_LOG_FIELD_CHARS = 4000
 
 let writeQueue: Promise<unknown> = Promise.resolve()
 let snapshotCache: ConsoleSnapshot | null = null
-// 节流写盘：日志写入只更新内存缓存并标脏，由定时器合并落盘，避免每条请求都做整快照深拷贝/序列化阻塞主链路。
-let pendingFlushTimer: ReturnType<typeof setTimeout> | null = null
-let pendingFlushPromise: Promise<void> | null = null
-let resolvePendingFlush: (() => void) | null = null
-const LOG_FLUSH_DELAY_MS = 1000
 
 function cloneSnapshot(snapshot: ConsoleSnapshot): ConsoleSnapshot {
   return JSON.parse(JSON.stringify(snapshot)) as ConsoleSnapshot
@@ -67,23 +57,6 @@ function cloneRoutingSnapshot(snapshot: ConsoleSnapshot): RoutingSnapshot {
     mappings: structuredClone(snapshot.mappings),
     runtime: structuredClone(snapshot.runtime),
     settings: structuredClone(snapshot.settings),
-  }
-}
-
-function truncateStoredLogField(value: unknown) {
-  const text = typeof value === "string" ? value : String(value ?? "")
-  return text.length > MAX_LOG_FIELD_CHARS
-    ? `${text.slice(0, MAX_LOG_FIELD_CHARS)}... [stored log field truncated]`
-    : text
-}
-
-function normalizeStoredLog(log: RequestLog): RequestLog {
-  return {
-    ...log,
-    rawRequest: truncateStoredLogField(log.rawRequest),
-    rewrittenRequest: truncateStoredLogField(log.rewrittenRequest),
-    responseSummary: truncateStoredLogField(log.responseSummary),
-    ...(log.errorStack ? { errorStack: truncateStoredLogField(log.errorStack) } : {}),
   }
 }
 
@@ -377,15 +350,13 @@ function normalizeSnapshot(value: Partial<ConsoleSnapshot>): ConsoleSnapshot {
           activeProviderId: settings.defaultProviderId,
           activeModelId: settings.defaultModelId,
         }
-  const logs = pruneLogs(Array.isArray(value.logs) ? value.logs : seed.logs, settings)
-  const tokenStats = normalizeTokenStats(value.tokenStats, logs)
   return removeInvalidProviderModels({
     version: STATE_VERSION,
     providers,
     models,
     mappings: Array.isArray(value.mappings) ? value.mappings : seed.mappings,
-    logs,
-    tokenStats,
+    logs: [],
+    tokenStats: [],
     runtime: normalizedRuntime,
     settings,
   })
@@ -395,57 +366,11 @@ async function ensureDataDir() {
   await mkdir(DATA_DIR, { recursive: true })
 }
 
-function pruneLogs(logs: RequestLog[], settings: Settings) {
-  const retentionDays = Math.max(1, Number(settings.logRetentionDays) || 1)
-  const cutoff = Date.now() - retentionDays * DAY_MS
-  return logs
-    .filter((log) => {
-      const timestamp = Date.parse(log.timestamp)
-      return !Number.isFinite(timestamp) || timestamp >= cutoff
-    })
-    .slice(0, MAX_LOGS)
-    .map(normalizeStoredLog)
-}
-
-function normalizeTokenStats(value: unknown, logs: RequestLog[]): TokenStatEntry[] {
-  if (Array.isArray(value) && value.length > 0) {
-    return value
-      .filter((entry): entry is TokenStatEntry => {
-        if (!entry || typeof entry !== "object") return false
-        const stat = entry as Partial<TokenStatEntry>
-        return (
-          typeof stat.id === "string" &&
-          typeof stat.timestamp === "string" &&
-          typeof stat.providerId === "string" &&
-          typeof stat.modelId === "string" &&
-          typeof stat.codexModel === "string" &&
-          Number.isFinite(stat.statusCode) &&
-          Number.isFinite(stat.inputTokens) &&
-          Number.isFinite(stat.outputTokens) &&
-          Number.isFinite(stat.totalTokens)
-        )
-      })
-      .map((entry) => ({
-        ...entry,
-        cachedInputTokens: Number(entry.cachedInputTokens) || 0,
-        cacheCreationInputTokens: Number(entry.cacheCreationInputTokens) || 0,
-        reasoningTokens: Number(entry.reasoningTokens) || 0,
-      }))
-      .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp))
-      .slice(0, MAX_TOKEN_STATS)
-  }
-
-  return logs
-    .map(tokenStatFromLog)
-    .filter((entry): entry is TokenStatEntry => Boolean(entry))
-    .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp))
-    .slice(0, MAX_TOKEN_STATS)
-}
-
 async function writeState(snapshot: ConsoleSnapshot) {
   await ensureDataDir()
   const tempPath = `${STATE_PATH}.${process.pid}.${Date.now()}.tmp`
-  await writeFile(tempPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8")
+  const { logs: _logs, tokenStats: _tokenStats, ...configSnapshot } = snapshot
+  await writeFile(tempPath, `${JSON.stringify(configSnapshot, null, 2)}\n`, "utf8")
   await rename(tempPath, STATE_PATH)
 }
 
@@ -453,7 +378,19 @@ async function loadSnapshot(): Promise<ConsoleSnapshot> {
   if (snapshotCache) return snapshotCache
   try {
     const raw = await readFile(STATE_PATH, "utf8")
-    snapshotCache = normalizeSnapshot(JSON.parse(raw) as Partial<ConsoleSnapshot>)
+    const parsed = JSON.parse(raw) as Partial<ConsoleSnapshot>
+    const normalized = normalizeSnapshot(parsed)
+    snapshotCache = normalized
+    if (Array.isArray(parsed.logs) || Array.isArray(parsed.tokenStats)) {
+      await importLegacyTelemetry(
+        {
+          logs: parsed.logs,
+          tokenStats: parsed.tokenStats,
+        },
+        normalized.settings,
+      )
+      await writeState(normalized)
+    }
     return snapshotCache
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
@@ -480,44 +417,8 @@ function enqueueStateMutation<T>(task: () => Promise<T>): Promise<T> {
   return run
 }
 
-// 把当前内存缓存（已含最新日志）通过同一写队列落盘，与 updateSnapshot 串行，避免相互覆盖。
-function flushLogsNow(): Promise<void> {
-  if (pendingFlushTimer) {
-    clearTimeout(pendingFlushTimer)
-    pendingFlushTimer = null
-  }
-  const resolve = resolvePendingFlush
-  resolvePendingFlush = null
-  pendingFlushPromise = null
-  return enqueueStateMutation(async () => {
-    if (snapshotCache) await writeState(snapshotCache)
-  }).then(
-    () => resolve?.(),
-    () => resolve?.(),
-  )
-}
-
-function scheduleLogFlush() {
-  if (!pendingFlushPromise) {
-    pendingFlushPromise = new Promise<void>((resolve) => {
-      resolvePendingFlush = resolve
-    })
-  }
-  if (pendingFlushTimer) return
-  pendingFlushTimer = setTimeout(() => {
-    pendingFlushTimer = null
-    void flushLogsNow()
-  }, LOG_FLUSH_DELAY_MS)
-  // 不要让节流定时器拖住进程退出。
-  pendingFlushTimer.unref?.()
-}
-
-// 供读取路径在返回前确保已落盘的最新日志可见（getSnapshot 已 await writeQueue，
-// 这里额外把内存中尚未触发写盘的脏日志立即冲刷，保证导出/读取的一致性）。
 export async function flushPendingLogs(): Promise<void> {
-  if (pendingFlushPromise) {
-    await flushLogsNow()
-  }
+  await Promise.resolve()
 }
 
 export async function getSnapshot(): Promise<ConsoleSnapshot> {
@@ -543,12 +444,6 @@ export async function updateSnapshot(
   return enqueueStateMutation(async () => {
     const current = cloneSnapshot(await loadSnapshot())
     const normalized = normalizeSnapshot(updater(current))
-    // appendLog 在主链路里原地追加日志到内存缓存，updateSnapshot 的深拷贝可能错过
-    // await 期间新写入的日志/统计；回写前用缓存中最新的两者覆盖，避免丢日志。
-    if (snapshotCache) {
-      normalized.logs = snapshotCache.logs.slice(0, MAX_LOGS)
-      normalized.tokenStats = snapshotCache.tokenStats.slice(0, MAX_TOKEN_STATS)
-    }
     await persistSnapshot(normalized)
     return cloneSnapshot(normalized)
   })
@@ -575,18 +470,9 @@ export async function replaceSettings(settings: Settings) {
 }
 
 export async function appendLog(log: RequestLog): Promise<ConsoleSnapshot> {
-  // 主链路热路径：只更新内存缓存并标脏，落盘交给节流定时器合并执行，
-  // 避免每条请求都对整快照做深拷贝 + 全量 normalize + 同步 JSON.stringify 写盘。
-  const cache = await loadSnapshot()
-  cache.logs.unshift(normalizeStoredLog(log))
-  if (cache.logs.length > MAX_LOGS) cache.logs.length = MAX_LOGS
-  const tokenStat = tokenStatFromLog(log)
-  if (tokenStat) {
-    cache.tokenStats.unshift(tokenStat)
-    if (cache.tokenStats.length > MAX_TOKEN_STATS) cache.tokenStats.length = MAX_TOKEN_STATS
-  }
-  scheduleLogFlush()
-  return cache
+  const snapshot = await loadSnapshot()
+  await appendTelemetryLog(log, snapshot.settings)
+  return snapshot
 }
 
 export async function exportSnapshotText(): Promise<string> {

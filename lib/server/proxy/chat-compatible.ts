@@ -721,7 +721,12 @@ function chatReasoningText(message: AnyRecord) {
 
 function chatMessageText(message: AnyRecord) {
   if (typeof message.content === "string") {
-    const answer = splitLeadingThinkBlock(message.content)?.answer ?? message.content
+    const split = splitLeadingThinkBlock(message.content)
+    const answer = split
+      ? split.answer
+      : stripLeadingThinkOpenTag(message.content) == null
+        ? message.content
+        : ""
     return answer || safeTrim(message.refusal)
   }
   return contentToText(message.content) || safeTrim(message.refusal)
@@ -975,7 +980,10 @@ export function transformChatCompatibleResponse(
   adapter: ChatCompatibleAdapter,
   options: { recordHistory?: boolean } = {},
 ) {
-  if (adapter.type === "chat_compatible_passthrough") return payload
+  if (adapter.type === "chat_compatible_passthrough") {
+    if (!isObject(payload) || !adapter.requestedModel) return payload
+    return { ...payload, model: adapter.requestedModel }
+  }
   const response = chatCompletionToResponse(
     payload,
     adapter.originalRequest,

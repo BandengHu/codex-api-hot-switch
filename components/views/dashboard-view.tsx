@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import {
   Activity,
   AlertTriangle,
@@ -56,11 +56,16 @@ export function DashboardView() {
     setTakeover,
     updateProvider,
     replaceSnapshot,
+    refreshTelemetry,
     loading,
     error,
   } =
     useConsole()
   const [testing, setTesting] = useState(false)
+
+  useEffect(() => {
+    void refreshTelemetry()
+  }, [refreshTelemetry])
 
   const provider = getProvider(runtime.activeProviderId)
   const model = getModel(runtime.activeModelId)

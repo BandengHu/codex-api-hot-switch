@@ -52,12 +52,37 @@ function chromeManifestPath() {
   return path.join(localAppData(), "OpenAI", "extension", `${NATIVE_HOST_NAME}.json`)
 }
 
-function windowsAppsRoot() {
-  return path.join(process.env.ProgramFiles || "C:\\Program Files", "WindowsApps")
+function uniquePaths(paths) {
+  const seen = new Set()
+  const result = []
+  for (const filePath of paths) {
+    if (!filePath) continue
+    const key = normalizeSlashes(path.resolve(filePath)).toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(filePath)
+  }
+  return result
+}
+
+function windowsAppsRoots() {
+  return uniquePaths([
+    process.env.ProgramFiles ? path.join(process.env.ProgramFiles, "WindowsApps") : "",
+    process.env.ProgramW6432 ? path.join(process.env.ProgramW6432, "WindowsApps") : "",
+    "C:\\Program Files\\WindowsApps",
+  ])
 }
 
 function codexBinRoot() {
   return path.join(localAppData(), "OpenAI", "Codex", "bin")
+}
+
+function standaloneCodexCandidateRoots() {
+  return uniquePaths([
+    path.join(localAppData(), "OpenAI", "Codex", "bin"),
+    path.join(localAppData(), "OpenAI", "Codex"),
+    path.join(localAppData(), "Programs", "OpenAI", "Codex"),
+  ])
 }
 
 async function exists(filePath) {
@@ -176,28 +201,94 @@ function parseVersionFromInstallPath(filePath) {
   return match?.[1] || ""
 }
 
-async function listLatestCodexInstallPath() {
-  let entries = []
-  try {
-    entries = await fs.readdir(windowsAppsRoot())
-  } catch {
-    return ""
+async function resourcesPathFromInstallPath(installPath) {
+  if (!installPath) return ""
+  for (const candidate of uniquePaths([
+    path.join(installPath, "app", "resources"),
+    path.join(installPath, "resources"),
+    path.join(installPath, "..", "resources"),
+    path.join(installPath, "..", "app", "resources"),
+  ])) {
+    if (await exists(candidate)) return candidate
   }
+  return ""
+}
 
-  const candidates = entries
-    .filter((name) => /^OpenAI\.Codex_.+_x64__/i.test(name))
-    .map((name) => path.join(windowsAppsRoot(), name))
-    .sort((a, b) =>
-      parseVersionFromInstallPath(b).localeCompare(
-        parseVersionFromInstallPath(a),
-        undefined,
-        { numeric: true },
-      ),
-    )
+async function bundledMarketplacePathFromInstallPath(installPath) {
+  const resourcesPath = await resourcesPathFromInstallPath(installPath)
+  return resourcesPath ? path.join(resourcesPath, "plugins", BUNDLED_MARKETPLACE_ID) : ""
+}
+
+async function listWindowsAppCodexInstallPaths() {
+  const candidates = []
+  for (const root of windowsAppsRoots()) {
+    let entries = []
+    try {
+      entries = await fs.readdir(root)
+    } catch {
+      continue
+    }
+    for (const name of entries) {
+      if (/^OpenAI\.Codex_.+_x64__/i.test(name)) {
+        candidates.push(path.join(root, name))
+      }
+    }
+  }
+  return uniquePaths(candidates).sort((a, b) =>
+    parseVersionFromInstallPath(b).localeCompare(
+      parseVersionFromInstallPath(a),
+      undefined,
+      { numeric: true },
+    ),
+  )
+}
+
+async function normalizeStandaloneCodexPath(candidate) {
+  if (!candidate) return ""
+  const base = path.basename(candidate).toLowerCase()
+  if ((base === "codex.exe" || base === "codex") && (await exists(candidate))) {
+    return path.dirname(candidate)
+  }
+  for (const appDir of uniquePaths([
+    candidate,
+    path.join(candidate, "app"),
+  ])) {
+    if (
+      (await exists(path.join(appDir, "Codex.exe"))) ||
+      (await exists(path.join(appDir, "codex.exe")))
+    ) {
+      return appDir
+    }
+  }
+  return ""
+}
+
+async function listStandaloneCodexInstallPaths() {
+  const paths = []
+  for (const candidate of standaloneCodexCandidateRoots()) {
+    const appDir = await normalizeStandaloneCodexPath(candidate)
+    if (!appDir) continue
+    paths.push(appDir)
+  }
+  return uniquePaths(paths)
+}
+
+function installKindFromPath(installPath) {
+  if (!installPath) return ""
+  return /[\\/]WindowsApps[\\/]OpenAI\.Codex_/i.test(installPath)
+    ? "WindowsApps"
+    : "Standalone"
+}
+
+async function listLatestCodexInstallPath() {
+  const candidates = [
+    ...(await listWindowsAppCodexInstallPaths()),
+    ...(await listStandaloneCodexInstallPaths()),
+  ]
 
   for (const candidate of candidates) {
-    const bundled = path.join(candidate, "app", "resources", "plugins", BUNDLED_MARKETPLACE_ID)
-    if (await exists(bundled)) return candidate
+    const bundled = await bundledMarketplacePathFromInstallPath(candidate)
+    if (bundled && (await exists(bundled))) return candidate
   }
   return candidates[0] || ""
 }
@@ -294,8 +385,12 @@ async function chromeManifestOk() {
 async function getStatus() {
   const latestInstallPath = await listLatestCodexInstallPath()
   const latestInstallVersion = parseVersionFromInstallPath(latestInstallPath)
-  const latestBundledMarketplacePath = latestInstallPath
-    ? path.join(latestInstallPath, "app", "resources", "plugins", BUNDLED_MARKETPLACE_ID)
+  const latestInstallKind = installKindFromPath(latestInstallPath)
+  const latestResourcesPath = latestInstallPath
+    ? await resourcesPathFromInstallPath(latestInstallPath)
+    : ""
+  const latestBundledMarketplacePath = latestResourcesPath
+    ? path.join(latestResourcesPath, "plugins", BUNDLED_MARKETPLACE_ID)
     : ""
   const configText = await readTextIfExists(configPath())
   const expectedPluginVersion =
@@ -330,6 +425,10 @@ async function getStatus() {
   if (!chromeHostOk) issues.push("Chrome native host 配置需要修复")
   if (!manifestOk) issues.push("Chrome native messaging manifest 不可用")
   if (!paths.codexCliPath) issues.push("没有找到 Codex CLI 可执行文件")
+  const notes = [
+    "本工具只修复 bundled 插件文件、latest 缓存、Chrome native host 与 manifest；不会注入或篡改 Codex 桌面端插件 UI。",
+    "如果这里全部健康但 @Chrome 仍不显示，通常是 Codex 桌面端登录态、API 模式或前端过滤导致，需要从桌面端插件页启用或重启桌面端验证。",
+  ]
 
   return {
     codexHome: codexHome(),
@@ -341,6 +440,8 @@ async function getStatus() {
     activeMarketplaceUsesStableSource: Boolean(configuredMarketplaceSource && samePath(activeMarketplaceSource, stablePath)),
     latestInstallPath,
     latestInstallVersion,
+    latestInstallKind,
+    latestResourcesPath,
     latestBundledMarketplacePath,
     latestBundledMarketplaceExists: Boolean(
       latestBundledMarketplacePath && (await exists(latestBundledMarketplacePath)),
@@ -362,6 +463,7 @@ async function getStatus() {
     plugins,
     healthy: issues.length === 0,
     issues,
+    notes,
   }
 }
 
@@ -514,6 +616,8 @@ async function writeChromeNativeHosts(version, paths, backupDir) {
   const filePath = chromeNativeHostsPath()
   await fs.mkdir(path.dirname(filePath), { recursive: true })
   await backupExisting(filePath, backupDir)
+  const installPath = await listLatestCodexInstallPath()
+  const resourcesPath = installPath ? await resourcesPathFromInstallPath(installPath) : ""
   const browserClientPath = path.join(chromeLatestPath(), "scripts", "browser-client.mjs")
   const extensionHostPath = path.join(
     chromeLatestPath(),
@@ -538,7 +642,7 @@ async function writeChromeNativeHosts(version, paths, backupDir) {
         pluginVersion: version,
         proxyHost: "127.0.0.1",
         proxyPort: 0,
-        resourcesPath: path.join((await listLatestCodexInstallPath()) || "", "app", "resources"),
+        resourcesPath,
         updatedAt: new Date().toISOString(),
       },
     ],
@@ -569,7 +673,7 @@ async function writeChromeManifest(backupDir) {
 async function repair() {
   const latestInstallPath = await listLatestCodexInstallPath()
   if (!latestInstallPath) throw new Error("没有找到当前 Codex 桌面端安装目录")
-  const bundled = path.join(latestInstallPath, "app", "resources", "plugins", BUNDLED_MARKETPLACE_ID)
+  const bundled = await bundledMarketplacePathFromInstallPath(latestInstallPath)
   if (!(await exists(bundled))) throw new Error(`当前 Codex 安装包缺少 bundled 插件源：${bundled}`)
   if (!(await requiredFilesOk(bundled, "chrome"))) {
     throw new Error("当前 Codex 安装包内的 Chrome 插件不完整，无法作为修复源")

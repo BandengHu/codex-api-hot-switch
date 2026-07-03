@@ -57,8 +57,11 @@ export async function fetchWithProviderTimeout(
     if (controller.signal.aborted && abortState.cause === "client") {
       throw new Error("客户端已取消请求，上游请求已中止")
     }
-    if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+    if (controller.signal.aborted && abortState.cause === "timeout") {
       throw new Error(`上游请求超时：超过 ${timeoutMs}ms 未响应`)
+    }
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("上游连接被中止")
     }
     throw error
   } finally {

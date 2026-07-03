@@ -1821,7 +1821,28 @@ async function handleRelayWebSearchResponses(params: {
     currentBody = nextRelayBody(currentBody, transformed, calls, results)
   }
 
-  throw new Error(`web_search 连续调用超过 ${WEB_SEARCH_RELAY_MAX_TURNS} 轮，已停止`)
+  const message = `web_search 连续调用超过 ${WEB_SEARCH_RELAY_MAX_TURNS} 轮，已停止`
+  if (currentBuilt) {
+    appendLogDetached(
+      makeLog({
+        startedAt: params.startedAt,
+        body: params.rawBody,
+        target: params.target,
+        statusCode: 429,
+        rewrittenBody: currentBuilt.rewrittenBody,
+        responseSummary: message,
+        error: message,
+      }),
+    )
+  }
+  return relayErrorResponse({
+    target: params.target,
+    stream: params.stream,
+    statusCode: 429,
+    message,
+    type: "web_search_relay_error",
+    code: "web_search_relay_max_turns",
+  })
 }
 
 export async function handleProxyPost(parts: string[], request: Request) {

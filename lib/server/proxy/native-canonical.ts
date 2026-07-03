@@ -29,7 +29,7 @@ import {
 type AnyRecord = Record<string, any>
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 4096
-const ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS = 32768
+const ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS = 4096
 
 export type NativeProtocol = "anthropic" | "gemini"
 export type NativeSource = "chat_completions" | "responses"
@@ -397,6 +397,7 @@ function nativeToolsAndContext(body: AnyRecord) {
   const nativeCompatibleTools = responsesToolsToChatTools(
     [...responseTools, ...loadedTools],
     toolContext,
+    { applyPatchExample: true },
   )
   return {
     toolContext,

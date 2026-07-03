@@ -11,7 +11,10 @@ import {
   type ReactNode,
 } from "react"
 import {
+  fetchConsoleTelemetry,
   fetchConsoleSnapshot,
+  fetchRequestLogs,
+  fetchTokenStats,
   saveConsoleSnapshot,
 } from "@/lib/console-api"
 import {
@@ -45,6 +48,9 @@ interface ConsoleState extends ConsoleSnapshot {
   saving: boolean
   error: string | null
   refresh: () => Promise<void>
+  refreshLogs: () => Promise<void>
+  refreshTokenStats: () => Promise<void>
+  refreshTelemetry: () => Promise<void>
   replaceSnapshot: (snapshot: ConsoleSnapshot) => void
   // providers
   addProvider: (p: Provider) => void
@@ -78,10 +84,19 @@ function normalizeDefault(snapshot: ConsoleSnapshot): ConsoleSnapshot {
   return {
     ...snapshot,
     logs: snapshot.logs ?? [],
+    tokenStats: snapshot.tokenStats ?? [],
     providers: snapshot.providers ?? [],
     models: snapshot.models ?? [],
     mappings: snapshot.mappings ?? [],
   }
+}
+
+function mergeConfigSnapshot(prev: ConsoleSnapshot, next: ConsoleSnapshot): ConsoleSnapshot {
+  return normalizeDefault({
+    ...next,
+    logs: prev.logs,
+    tokenStats: prev.tokenStats,
+  })
 }
 
 export function ConsoleProvider({ children }: { children: ReactNode }) {
@@ -98,12 +113,42 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
     setLoading(true)
     try {
       const next = await fetchConsoleSnapshot()
-      setSnapshot(normalizeDefault(next))
+      setSnapshot((prev) => mergeConfigSnapshot(prev, next))
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setLoading(false)
+    }
+  }, [])
+
+  const refreshLogs = useCallback(async () => {
+    try {
+      const logs = await fetchRequestLogs()
+      setSnapshot((prev) => ({ ...prev, logs }))
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [])
+
+  const refreshTokenStats = useCallback(async () => {
+    try {
+      const tokenStats = await fetchTokenStats()
+      setSnapshot((prev) => ({ ...prev, tokenStats }))
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [])
+
+  const refreshTelemetry = useCallback(async () => {
+    try {
+      const { logs, tokenStats } = await fetchConsoleTelemetry()
+      setSnapshot((prev) => ({ ...prev, logs, tokenStats }))
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
     }
   }, [])
 
@@ -143,7 +188,7 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
         void saveConsoleSnapshot(optimistic)
           .then((saved) => {
             if (currentSaveVersion === saveVersion.current) {
-              setSnapshot(normalizeDefault(saved))
+              setSnapshot((prev) => mergeConfigSnapshot(prev, saved))
               setError(null)
             }
           })
@@ -174,7 +219,11 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
       saving,
       error,
       refresh,
-      replaceSnapshot: (next) => setSnapshot(normalizeDefault(next)),
+      refreshLogs,
+      refreshTokenStats,
+      refreshTelemetry,
+      replaceSnapshot: (next) =>
+        setSnapshot((prev) => mergeConfigSnapshot(prev, next)),
       addProvider: (p) =>
         persist((prev) => {
           const nextProviders = p.isDefault
@@ -394,7 +443,17 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
       modelsByProvider: (providerId) =>
         models.filter((m) => m.providerId === providerId),
     }
-  }, [snapshot, loading, saving, error, refresh, persist])
+  }, [
+    snapshot,
+    loading,
+    saving,
+    error,
+    refresh,
+    refreshLogs,
+    refreshTokenStats,
+    refreshTelemetry,
+    persist,
+  ])
 
   return (
     <ConsoleContext.Provider value={value}>{children}</ConsoleContext.Provider>

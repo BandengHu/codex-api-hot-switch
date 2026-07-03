@@ -259,7 +259,7 @@ function toolSearchProxyTool() {
   )
 }
 
-const APPLY_PATCH_EXAMPLE = [
+export const APPLY_PATCH_EXAMPLE = [
   "Minimal valid patch (note the *** Begin Patch / *** End Patch envelope, the *** Update File: header, and that each body line starts with a space for context, - to remove, or + to add):",
   "*** Begin Patch",
   "*** Update File: path/to/file.ts",
@@ -270,6 +270,16 @@ const APPLY_PATCH_EXAMPLE = [
   "*** End Patch",
 ].join("\n")
 
+export const APPLY_PATCH_BASE_DESCRIPTION = [
+  "Apply file edits with the Codex apply_patch FREEFORM patch format.",
+  "Always put the complete patch text in the input field. Do not split it into structured operations and do not use shell commands as a substitute when apply_patch is available.",
+].join("\n\n")
+
+export const APPLY_PATCH_FUNCTION_DESCRIPTION = [
+  APPLY_PATCH_BASE_DESCRIPTION,
+  APPLY_PATCH_EXAMPLE,
+].join("\n\n")
+
 function applyPatchProxyTool(
   name: string,
   description: string,
@@ -278,8 +288,7 @@ function applyPatchProxyTool(
 ) {
   const parts = [
     description.trim(),
-    "This is the Codex apply_patch FREEFORM tool. Put the complete patch text in the input field, including *** Begin Patch and *** End Patch. Do not split the patch into structured operations.",
-    includeExample ? APPLY_PATCH_EXAMPLE : "",
+    includeExample ? APPLY_PATCH_FUNCTION_DESCRIPTION : APPLY_PATCH_BASE_DESCRIPTION,
     metadata ? `Original Codex custom tool metadata: ${metadata}` : "",
   ].filter(Boolean)
   return genericCustomProxyTool(name, parts.join("\n\n"))

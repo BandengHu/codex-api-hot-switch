@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { AlertTriangle, RefreshCw } from "lucide-react"
 import {
   Card,
@@ -119,7 +119,8 @@ function TokenMetric({
 }
 
 export function LogsView() {
-  const { logs, providers, refresh, loading } = useConsole()
+  const { logs, providers, refreshLogs } = useConsole()
+  const [logsLoading, setLogsLoading] = useState(false)
   const [statusFilter, setStatusFilter] = useState("all")
   const [providerFilter, setProviderFilter] = useState("all")
   const [modelFilter, setModelFilter] = useState("all")
@@ -139,6 +140,19 @@ export function LogsView() {
     maxWidth: DETAIL_MAX_WIDTH,
     defaultWidth: DETAIL_DEFAULT_WIDTH,
   })
+
+  const handleRefreshLogs = useCallback(async () => {
+    setLogsLoading(true)
+    try {
+      await refreshLogs()
+    } finally {
+      setLogsLoading(false)
+    }
+  }, [refreshLogs])
+
+  useEffect(() => {
+    void handleRefreshLogs()
+  }, [handleRefreshLogs])
 
   const filtered = useMemo(() => {
     return logs.filter((l) => {
@@ -225,10 +239,10 @@ export function LogsView() {
               中转层处理的最近请求，错误信息直接暴露真实原因
             </p>
           </div>
-          <Button variant="outline" onClick={() => void refresh()} disabled={loading}>
+          <Button variant="outline" onClick={() => void handleRefreshLogs()} disabled={logsLoading}>
             <RefreshCw
               data-icon="inline-start"
-              className={loading ? "animate-spin" : undefined}
+              className={logsLoading ? "animate-spin" : undefined}
             />
             刷新
           </Button>

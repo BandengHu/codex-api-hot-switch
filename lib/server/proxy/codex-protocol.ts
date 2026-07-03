@@ -3,7 +3,11 @@ import "server-only"
 import type { ReasoningEffort } from "@/lib/types"
 import { isChatCompletionsPath, isResponsesCompactPath, isResponsesPath } from "./common"
 import { expandCodexResponsesRequest } from "./codex-chat-history"
-import { buildToolContext, type ToolContext } from "./codex-tool-proxy"
+import {
+  APPLY_PATCH_FUNCTION_DESCRIPTION,
+  buildToolContext,
+  type ToolContext,
+} from "./codex-tool-proxy"
 import { ProxyRequestBodyError } from "./content-encoding"
 import { canonicalToolArguments } from "./json-canonical"
 
@@ -230,10 +234,13 @@ function isApplyPatchToolName(name: unknown) {
 }
 
 function buildApplyPatchFunctionTool(source: AnyRecord = {}) {
+  const sourceDescription = safeTrim(source.description)
   return {
     type: "function",
     name: "apply_patch",
-    description: safeTrim(source.description) || "Apply a patch to files.",
+    description: sourceDescription
+      ? `${sourceDescription}\n\n${APPLY_PATCH_FUNCTION_DESCRIPTION}`
+      : APPLY_PATCH_FUNCTION_DESCRIPTION,
     parameters: {
       type: "object",
       properties: {

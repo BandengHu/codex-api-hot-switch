@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { BarChart3, Coins, RotateCcw, TrendingUp } from "lucide-react"
 import {
   Card,
@@ -379,8 +379,12 @@ function TokenLineChart({ points }: { points: ChartPoint[] }) {
 }
 
 export function TokenStatsView() {
-  const { tokenStats, settings, replaceSnapshot } = useConsole()
+  const { tokenStats, settings, replaceSnapshot, refreshTokenStats } = useConsole()
   const [range, setRange] = useState<RangeMode>("day")
+  useEffect(() => {
+    void refreshTokenStats()
+  }, [refreshTokenStats])
+
   const sinceReset = useMemo(
     () => tokenStatsSince(tokenStats, settings.tokenStatsResetAt),
     [settings.tokenStatsResetAt, tokenStats],

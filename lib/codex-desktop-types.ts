@@ -17,6 +17,8 @@ export interface CodexDesktopPluginStatus {
   activeMarketplaceUsesStableSource: boolean
   latestInstallPath: string
   latestInstallVersion: string
+  latestInstallKind: string
+  latestResourcesPath: string
   latestBundledMarketplacePath: string
   latestBundledMarketplaceExists: boolean
   stableMarketplaceExists: boolean
@@ -36,6 +38,7 @@ export interface CodexDesktopPluginStatus {
   plugins: CodexDesktopPluginCheck[]
   healthy: boolean
   issues: string[]
+  notes: string[]
 }
 
 export interface CodexDesktopPluginRepairResult {

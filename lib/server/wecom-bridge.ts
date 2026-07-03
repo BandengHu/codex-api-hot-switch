@@ -4,7 +4,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process"
 import { createWriteStream, existsSync, mkdirSync, readFileSync } from "node:fs"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
-import { basename, dirname, join, resolve } from "node:path"
+import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import type {
   WecomBridgeCommandHelpItem,
@@ -136,7 +136,10 @@ function normalizeText(value: unknown) {
 
 function normalizePath(value: unknown) {
   const text = normalizeText(value)
-  return text ? resolve(/* turbopackIgnore: true */ text) : ""
+  if (!text) return ""
+  return isAbsolute(text)
+    ? resolve(/* turbopackIgnore: true */ text)
+    : resolve(/* turbopackIgnore: true */ hotSwitchDataRoot(), text)
 }
 
 function normalizePositiveInt(value: unknown, fallback: number) {
