@@ -538,17 +538,41 @@ export function buildResponsesBodyFromChatCompletions(body: unknown) {
   }
 }
 
+function openAIResponsesReasoningModeModel(model: string) {
+  const normalized = model.trim()
+  const proMatch = normalized.match(/^(gpt-5\.6-(?:luna|terra|sol))-pro$/i)
+  if (!proMatch) return { model: normalized }
+  return {
+    model: proMatch[1],
+    reasoningMode: "pro" as const,
+  }
+}
+
 export function applyHotSwitchOverrides(body: AnyRecord, model: string, reasoning: ReasoningEffort) {
-  body.model = model
+  const modelOverride = openAIResponsesReasoningModeModel(model)
+  body.model = modelOverride.model
   if (reasoning === "off") {
     delete body.reasoning
     delete body.reasoning_effort
+    if (modelOverride.reasoningMode) {
+      body.reasoning = { mode: modelOverride.reasoningMode }
+    }
     return
   }
-  if (reasoning === "auto") return
+  if (reasoning === "auto") {
+    if (modelOverride.reasoningMode) {
+      body.reasoning = isObject(body.reasoning)
+        ? { ...body.reasoning, mode: modelOverride.reasoningMode }
+        : { mode: modelOverride.reasoningMode }
+    }
+    return
+  }
   body.reasoning = isObject(body.reasoning)
     ? { ...body.reasoning, effort: reasoning }
     : { effort: reasoning, summary: "auto" }
+  if (modelOverride.reasoningMode) {
+    body.reasoning.mode = modelOverride.reasoningMode
+  }
 }
 
 export function prepareCodexOpenAICompatibleRequest(

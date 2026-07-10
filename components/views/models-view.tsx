@@ -56,7 +56,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { MappingFormDialog } from "@/components/models/mapping-form-dialog"
 import { ModelFormDialog } from "@/components/models/model-form-dialog"
-import { testModel } from "@/lib/console-api"
+import { fetchConsoleSnapshot, testModel } from "@/lib/console-api"
 import { useConsole } from "@/lib/console-store"
 import { isChatModel, isImageGenerationModel } from "@/lib/model-capabilities"
 import {
@@ -74,6 +74,7 @@ export function ModelsView() {
     providers,
     models,
     mappings,
+    replaceSnapshot,
     modelsByProvider,
     getProvider,
     getModel,
@@ -131,6 +132,15 @@ export function ModelsView() {
     }
   }
 
+  async function handleRefresh() {
+    try {
+      replaceSnapshot(await fetchConsoleSnapshot())
+      toast.success("模型列表已刷新")
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -140,10 +150,16 @@ export function ModelsView() {
             按供应商管理模型能力，并配置 Codex 请求的强制映射规则
           </p>
         </div>
-        <Button onClick={() => openAddModel()}>
-          <Plus data-icon="inline-start" />
-          新增模型
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={handleRefresh}>
+            <RefreshCw data-icon="inline-start" />
+            刷新
+          </Button>
+          <Button onClick={() => openAddModel()}>
+            <Plus data-icon="inline-start" />
+            新增模型
+          </Button>
+        </div>
       </div>
 
       {/* 映射规则 */}

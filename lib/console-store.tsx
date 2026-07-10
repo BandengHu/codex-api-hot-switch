@@ -157,6 +157,22 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
   }, [refresh])
 
   useEffect(() => {
+    const handleFocus = () => {
+      void refresh()
+    }
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") void refresh()
+    }
+
+    window.addEventListener("focus", handleFocus)
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+    return () => {
+      window.removeEventListener("focus", handleFocus)
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+    }
+  }, [refresh])
+
+  useEffect(() => {
     const unsubscribe = window.codexHotSwitchFloating?.onDesktopMessage?.(
       (message) => {
         if (
