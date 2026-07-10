@@ -172,6 +172,7 @@ export interface Settings {
   auxiliaryProviderId: string
   auxiliaryModelId: string
   auxiliaryReasoning: ReasoningEffort
+  codexSubagentModelSlugs: string[]
   imageGenerationProviderId: string
   imageGenerationModelId: string
   logRetentionDays: number
@@ -225,12 +226,12 @@ export const PROTOCOL_LABELS: Record<ProtocolType, string> = {
 
 export const REASONING_LABELS: Record<ReasoningEffort, string> = {
   off: "关闭",
-  minimal: "低",
+  minimal: "极低",
   low: "低",
   medium: "中",
   high: "高",
   xhigh: "超高",
-  max: "超高",
+  max: "最大",
   auto: "自动",
 }
 

@@ -29,6 +29,18 @@ export interface CodexConfigStatus {
   currentModelCatalogPath: string
   targetBaseUrl: string
   targetModelCatalogPath: string
+  subagentRoles: {
+    directoryPath: string
+    synced: boolean
+    roles: Array<{
+      name: string
+      path: string
+      exists: boolean
+      currentModel: string
+      expectedModel: string
+      synced: boolean
+    }>
+  }
   webSearchMcp: {
     serverName: string
     installed: boolean

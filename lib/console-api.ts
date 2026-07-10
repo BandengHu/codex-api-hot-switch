@@ -254,6 +254,18 @@ export async function syncCodexModelCatalog(): Promise<CodexConfigMutationResult
   )
 }
 
+export async function syncCodexSubagentRoles(
+  subagentModelSlugs: string[],
+): Promise<CodexConfigMutationResult> {
+  return parseResponse<CodexConfigMutationResult>(
+    await fetch("/api/codex-config", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "sync-subagent-roles", subagentModelSlugs }),
+    }),
+  )
+}
+
 export async function installCodexWebSearchMcp(): Promise<CodexConfigMutationResult> {
   return parseResponse<CodexConfigMutationResult>(
     await fetch("/api/codex-config", {

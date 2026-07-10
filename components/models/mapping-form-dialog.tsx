@@ -39,10 +39,12 @@ import { toast } from "sonner"
 const OVERRIDE_OPTIONS: (ReasoningEffort | "inherit")[] = [
   "inherit",
   "off",
+  "minimal",
   "low",
   "medium",
   "high",
   "xhigh",
+  "max",
   "auto",
 ]
 

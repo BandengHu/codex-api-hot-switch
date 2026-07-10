@@ -41,7 +41,7 @@ import {
 import { REASONING_LABELS, type ReasoningEffort, type WebSearchMode } from "@/lib/types"
 import { toast } from "sonner"
 
-const REASONING_OPTIONS: ReasoningEffort[] = ["off", "low", "medium", "high", "xhigh", "auto"]
+const REASONING_OPTIONS: ReasoningEffort[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]
 
 declare global {
   interface Window {

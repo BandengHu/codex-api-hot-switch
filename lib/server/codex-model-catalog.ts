@@ -1,12 +1,19 @@
 import "server-only"
 
+import {
+  CODEX_AUTO_MODEL_DISPLAY_NAME,
+  CODEX_AUTO_MODEL_SLUG,
+  codexRoutedModelSlug,
+} from "@/lib/codex-model-slug"
 import { isChatModel } from "@/lib/model-capabilities"
 import type { Model, Provider, RoutingSnapshot } from "@/lib/types"
 import { supportsRelayWebSearchProvider } from "./proxy/web-search-relay"
 
-export const CODEX_AUTO_MODEL_SLUG = "switchgate__auto"
-export const CODEX_AUTO_MODEL_DISPLAY_NAME = "自动"
-const CODEX_ROUTED_MODEL_PREFIX = "switchgate__"
+export {
+  CODEX_AUTO_MODEL_DISPLAY_NAME,
+  CODEX_AUTO_MODEL_SLUG,
+  codexRoutedModelSlug,
+}
 const CODEX_MODEL_OWNER = "codex_switchgate"
 
 const REASONING_LEVELS = [
@@ -15,22 +22,11 @@ const REASONING_LEVELS = [
   { effort: "medium", description: "中推理" },
   { effort: "high", description: "高推理" },
   { effort: "xhigh", description: "超高推理" },
+  { effort: "max", description: "最大推理" },
 ]
 
 function providersById(snapshot: RoutingSnapshot) {
   return new Map(snapshot.providers.map((provider) => [provider.id, provider]))
-}
-
-function routeIdPart(value: string) {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "_")
-    .replace(/^_+|_+$/g, "") || "model"
-}
-
-export function codexRoutedModelSlug(model: Model) {
-  return `${CODEX_ROUTED_MODEL_PREFIX}${routeIdPart(model.id)}`
 }
 
 function codexRoutedModelDisplayName(model: Model, provider: Provider) {

@@ -3,6 +3,12 @@ import "server-only"
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+import {
+  CODEX_AUTO_MODEL_SLUG,
+  CODEX_SUBAGENT_ROLE_COUNT,
+  codexRoutedModelSlug,
+  defaultCodexSubagentModelSlugs,
+} from "@/lib/codex-model-slug"
 import { initialSnapshot } from "@/lib/mock-data"
 import { isChatModel, isImageGenerationModel } from "@/lib/model-capabilities"
 import { appendTelemetryLog, importLegacyTelemetry } from "@/lib/server/telemetry-store"
@@ -130,11 +136,6 @@ function normalizeModel(model: Model): Model {
   }
 }
 
-function normalizeReasoningEffort(value: ReasoningEffort): ReasoningEffort {
-  if (value === "minimal") return "low"
-  if (value === "max") return "xhigh"
-  return value
-}
 function normalizeFloatingBallPosition(value: unknown): FloatingBallPosition | undefined {
   if (!value || typeof value !== "object") return undefined
   const position = value as Partial<FloatingBallPosition>
@@ -149,13 +150,23 @@ function normalizeWebSearchMode(value: unknown, fallback: WebSearchMode): WebSea
     : fallback
 }
 
+function normalizeCodexSubagentModelSlugs(value: unknown, fallback: string[]) {
+  const source = Array.isArray(value) ? value : fallback
+  return Array.from({ length: CODEX_SUBAGENT_ROLE_COUNT }, (_, index) => {
+    const slug = source[index]
+    return typeof slug === "string" && slug.trim()
+      ? slug.trim()
+      : CODEX_AUTO_MODEL_SLUG
+  })
+}
+
 function normalizeSettings(
   rawSettings: Partial<Settings> & { imageGenerationModel?: unknown },
   seed: Settings,
 ): Settings {
   const { imageGenerationModel: _removedImageGenerationModel, ...settings } =
     rawSettings
-  const defaultReasoning = normalizeReasoningEffort(settings.defaultReasoning ?? seed.defaultReasoning)
+  const defaultReasoning = settings.defaultReasoning ?? seed.defaultReasoning
   return {
     ...seed,
     ...settings,
@@ -173,8 +184,10 @@ function normalizeSettings(
       typeof settings.auxiliaryModelId === "string" && settings.auxiliaryModelId.trim()
         ? settings.auxiliaryModelId
         : seed.auxiliaryModelId,
-    auxiliaryReasoning: normalizeReasoningEffort(
-      settings.auxiliaryReasoning ?? seed.auxiliaryReasoning,
+    auxiliaryReasoning: settings.auxiliaryReasoning ?? seed.auxiliaryReasoning,
+    codexSubagentModelSlugs: normalizeCodexSubagentModelSlugs(
+      settings.codexSubagentModelSlugs,
+      seed.codexSubagentModelSlugs ?? defaultCodexSubagentModelSlugs(),
     ),
     imageGenerationProviderId:
       typeof settings.imageGenerationProviderId === "string" &&
@@ -303,6 +316,15 @@ function normalizeSnapshot(value: Partial<ConsoleSnapshot>): ConsoleSnapshot {
     ? sortBuiltInModels(value.models.map(normalizeModel))
     : sortBuiltInModels(seed.models)
   const settings = normalizeSettings(value.settings ?? {}, seed.settings)
+  const validCodexSubagentModelSlugs = new Set([
+    CODEX_AUTO_MODEL_SLUG,
+    ...models
+      .filter((model) => model.enabled && isChatModel(model))
+      .map(codexRoutedModelSlug),
+  ])
+  settings.codexSubagentModelSlugs = settings.codexSubagentModelSlugs.map((slug) =>
+    validCodexSubagentModelSlugs.has(slug) ? slug : CODEX_AUTO_MODEL_SLUG,
+  )
   const validDefaultModel =
     models.some((model) => model.id === settings.defaultModelId && isChatModel(model))
   if (!validDefaultModel) {
@@ -351,7 +373,7 @@ function normalizeSnapshot(value: Partial<ConsoleSnapshot>): ConsoleSnapshot {
     runtimeModel && isChatModel(runtimeModel)
       ? {
           ...runtime,
-          reasoning: normalizeReasoningEffort(runtime.reasoning),
+          reasoning: runtime.reasoning,
         }
       : {
           ...runtime,

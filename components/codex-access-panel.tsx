@@ -1,8 +1,9 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   AlertTriangle,
+  Bot,
   CheckCircle2,
   ListRestart,
   PlugZap,
@@ -21,25 +22,50 @@ import { Badge } from "@/components/ui/badge"
 import { Spinner } from "@/components/ui/spinner"
 import { Separator } from "@/components/ui/separator"
 import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Field, FieldLabel } from "@/components/ui/field"
+import {
   fetchCodexConfigStatus,
+  fetchConsoleSnapshot,
   installCodexConfig,
   installCodexWebSearchMcp,
   removeCodexWebSearchMcp,
   restoreCodexConfig,
   syncCodexModelCatalog,
+  syncCodexSubagentRoles,
 } from "@/lib/console-api"
+import {
+  CODEX_AUTO_MODEL_DISPLAY_NAME,
+  CODEX_AUTO_MODEL_SLUG,
+  CODEX_SUBAGENT_ROLE_COUNT,
+  codexRoutedModelSlug,
+  defaultCodexSubagentModelSlugs,
+} from "@/lib/codex-model-slug"
 import type { CodexConfigStatus } from "@/lib/codex-config-types"
 import { toast } from "sonner"
 import { CodexConfigBackupManager } from "@/components/codex-config-backup-manager"
+import { useConsole } from "@/lib/console-store"
+import { isChatModel } from "@/lib/model-capabilities"
 
 export function CodexAccessPanel() {
+  const { settings, providers, models, replaceSnapshot } = useConsole()
   const [status, setStatus] = useState<CodexConfigStatus | null>(null)
+  const [subagentModelSlugs, setSubagentModelSlugs] = useState(
+    settings.codexSubagentModelSlugs ?? defaultCodexSubagentModelSlugs(),
+  )
   const [loading, setLoading] = useState(true)
   const [working, setWorking] = useState<
     | "install"
     | "restore"
     | "refresh"
     | "sync-model-catalog"
+    | "sync-subagent-roles"
     | "install-web-search-mcp"
     | "remove-web-search-mcp"
     | null
@@ -62,6 +88,28 @@ export function CodexAccessPanel() {
   useEffect(() => {
     void refresh()
   }, [])
+
+  useEffect(() => {
+    setSubagentModelSlugs(
+      settings.codexSubagentModelSlugs ?? defaultCodexSubagentModelSlugs(),
+    )
+  }, [settings.codexSubagentModelSlugs])
+
+  const subagentModelOptions = useMemo(() => {
+    const providerById = new Map(providers.map((provider) => [provider.id, provider]))
+    return [
+      {
+        value: CODEX_AUTO_MODEL_SLUG,
+        label: CODEX_AUTO_MODEL_DISPLAY_NAME,
+      },
+      ...models
+        .filter((model) => model.enabled && isChatModel(model))
+        .map((model) => ({
+          value: codexRoutedModelSlug(model),
+          label: `${model.displayName} · ${providerById.get(model.providerId)?.name || model.providerId}`,
+        })),
+    ]
+  }, [models, providers])
 
   async function handleInstall() {
     setWorking("install")
@@ -94,6 +142,20 @@ export function CodexAccessPanel() {
     try {
       const result = await syncCodexModelCatalog()
       setStatus(result.status)
+      toast.success(result.message)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setWorking(null)
+    }
+  }
+
+  async function handleSyncSubagentRoles() {
+    setWorking("sync-subagent-roles")
+    try {
+      const result = await syncCodexSubagentRoles(subagentModelSlugs)
+      setStatus(result.status)
+      replaceSnapshot(await fetchConsoleSnapshot())
       toast.success(result.message)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
@@ -176,7 +238,7 @@ export function CodexAccessPanel() {
             <span className="flex flex-col items-start gap-0.5">
               <span className="font-medium">一键设置本地中转模型</span>
               <span className="text-xs font-normal opacity-80">
-                写入自动模型、模型目录和 web_search MCP，重启 Codex 后生效
+                写入模型目录、子智能体角色和 web_search MCP，重启 Codex 后生效
               </span>
             </span>
           </Button>
@@ -244,6 +306,72 @@ export function CodexAccessPanel() {
                 <code className="break-all rounded bg-muted px-2 py-1 font-mono text-xs">
                   {status.currentModelCatalogPath || "未设置"}
                 </code>
+              </div>
+            </div>
+            <Separator />
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-2">
+                    <Bot className="size-4 text-muted-foreground" />
+                    <span className="text-sm font-medium">自定义子智能体角色</span>
+                    <Badge variant={status.subagentRoles.synced ? "default" : "secondary"}>
+                      {status.subagentRoles.synced ? "已同步" : "待同步"}
+                    </Badge>
+                  </div>
+                  <code className="break-all font-mono text-xs text-muted-foreground">
+                    {status.subagentRoles.directoryPath}
+                  </code>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleSyncSubagentRoles()}
+                  disabled={busy}
+                >
+                  {working === "sync-subagent-roles" ? (
+                    <Spinner data-icon="inline-start" />
+                  ) : (
+                    <ListRestart data-icon="inline-start" />
+                  )}
+                  保存并同步
+                </Button>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                {Array.from({ length: CODEX_SUBAGENT_ROLE_COUNT }, (_, index) => (
+                  <Field key={index}>
+                    <FieldLabel htmlFor={`codex-subagent-${index + 1}`}>
+                      子智能体 {index + 1}
+                    </FieldLabel>
+                    <Select
+                      value={subagentModelSlugs[index] || CODEX_AUTO_MODEL_SLUG}
+                      onValueChange={(value) =>
+                        setSubagentModelSlugs((current) =>
+                          Array.from(
+                            { length: CODEX_SUBAGENT_ROLE_COUNT },
+                            (_, slot) =>
+                              slot === index
+                                ? value
+                                : current[slot] || CODEX_AUTO_MODEL_SLUG,
+                          ),
+                        )
+                      }
+                    >
+                      <SelectTrigger id={`codex-subagent-${index + 1}`} className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          {subagentModelOptions.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                ))}
               </div>
             </div>
             <Separator />

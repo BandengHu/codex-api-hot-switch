@@ -3,11 +3,12 @@ import "server-only"
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises"
 import { delimiter } from "node:path"
 import { dirname, join, resolve } from "node:path"
+import { CODEX_AUTO_MODEL_SLUG } from "@/lib/codex-model-slug"
 import type {
   CodexConfigMutationResult,
   CodexConfigStatus,
 } from "@/lib/codex-config-types"
-import { buildCodexClientModelsResponse, CODEX_AUTO_MODEL_SLUG } from "@/lib/server/codex-model-catalog"
+import { buildCodexClientModelsResponse } from "@/lib/server/codex-model-catalog"
 import { getSnapshot } from "@/lib/server/state-store"
 import {
   codexConfigBackupRoot,
@@ -17,6 +18,11 @@ import {
   restoreCodexConfigBackup,
   updateCodexConfigBackupNote,
 } from "./codex-config-backups"
+import {
+  getCodexSubagentRolesStatus,
+  removeCodexSubagentRoles,
+  syncCodexSubagentRoles,
+} from "./codex-subagent-roles"
 import type { ConsoleSnapshot, Settings } from "@/lib/types"
 
 const NEW_CONFIG_PROVIDER_ID = "codex_local_access"
@@ -27,7 +33,7 @@ const MODEL_CATALOG_NAME = "codex-switchgate-model-catalog.json"
 const WEB_SEARCH_MCP_SERVER_NAME = "switchgate_web_search"
 const WEB_SEARCH_MCP_SCRIPT_NAME = "switchgate-web-search-mcp.cjs"
 
-function codexHome() {
+export function codexHome() {
   return process.env.CODEX_HOME || join(process.env.USERPROFILE || process.cwd(), ".codex")
 }
 
@@ -395,6 +401,7 @@ export async function getCodexConfigStatus(settings: Settings): Promise<CodexCon
     currentModelCatalogPath,
     targetBaseUrl: expectedBaseUrl,
     targetModelCatalogPath: expectedCatalogPath,
+    subagentRoles: await getCodexSubagentRolesStatus(codexHome(), settings),
     webSearchMcp: webSearchMcpStatus(text),
   }
 }
@@ -412,7 +419,9 @@ export async function installCodexConfig(settings: Settings): Promise<CodexConfi
     })
   }
   await ensureAuthPlaceholder()
-  await syncCodexModelCatalog()
+  const snapshot = await getSnapshot()
+  await syncCodexModelCatalog(snapshot)
+  await syncCodexSubagentRoles(codexHome(), snapshot)
   const nextConfig = installWebSearchMcpConfigText(
     installConfigText(current, targetBaseUrl(settings), modelCatalogPath()),
   )
@@ -424,8 +433,8 @@ export async function installCodexConfig(settings: Settings): Promise<CodexConfi
   return {
     status: await getCodexConfigStatus(settings),
     message: current
-      ? "已写入 Codex 配置和 web_search MCP，并已创建配置前自动备份"
-      : "已创建 Codex 配置和 web_search MCP",
+      ? "已写入 Codex 配置、子智能体角色和 web_search MCP，并已创建配置前自动备份"
+      : "已创建 Codex 配置、子智能体角色和 web_search MCP",
   }
 }
 
@@ -460,6 +469,7 @@ export async function restoreCodexConfig(
     authPath: authPath(),
     backupId: targetBackupId,
   })
+  await removeCodexSubagentRoles(codexHome())
   return {
     status: await getCodexConfigStatus(settings),
     message: `已恢复 Codex 配置备份：${targetBackupId}`,

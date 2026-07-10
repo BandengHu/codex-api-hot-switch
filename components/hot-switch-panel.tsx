@@ -28,7 +28,7 @@ import { REASONING_LABELS, type ReasoningEffort } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 
-const REASONING_OPTIONS: ReasoningEffort[] = ["off", "low", "medium", "high", "xhigh", "auto"]
+const REASONING_OPTIONS: ReasoningEffort[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]
 
 export function HotSwitchPanel({ compact = false }: { compact?: boolean }) {
   const {

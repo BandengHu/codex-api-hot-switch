@@ -7,6 +7,7 @@ import type {
   RuntimeConfig,
   Settings,
 } from "./types"
+import { defaultCodexSubagentModelSlugs } from "./codex-model-slug"
 
 export const initialProviders: Provider[] = [
   {
@@ -288,6 +289,7 @@ export const initialSettings: Settings = {
   auxiliaryProviderId: "prov-openai",
   auxiliaryModelId: "m-gpt54-mini",
   auxiliaryReasoning: "low",
+  codexSubagentModelSlugs: defaultCodexSubagentModelSlugs(),
   imageGenerationProviderId: "prov-openai",
   imageGenerationModelId: "m-gpt-image-2",
   logRetentionDays: 14,
