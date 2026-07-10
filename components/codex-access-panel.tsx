@@ -23,6 +23,8 @@ import { Separator } from "@/components/ui/separator"
 import {
   fetchCodexConfigStatus,
   installCodexConfig,
+  installCodexWebSearchMcp,
+  removeCodexWebSearchMcp,
   restoreCodexConfig,
   syncCodexModelCatalog,
 } from "@/lib/console-api"
@@ -34,7 +36,13 @@ export function CodexAccessPanel() {
   const [status, setStatus] = useState<CodexConfigStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [working, setWorking] = useState<
-    "install" | "restore" | "refresh" | "sync-model-catalog" | null
+    | "install"
+    | "restore"
+    | "refresh"
+    | "sync-model-catalog"
+    | "install-web-search-mcp"
+    | "remove-web-search-mcp"
+    | null
   >(null)
   const [error, setError] = useState("")
 
@@ -94,6 +102,32 @@ export function CodexAccessPanel() {
     }
   }
 
+  async function handleInstallWebSearchMcp() {
+    setWorking("install-web-search-mcp")
+    try {
+      const result = await installCodexWebSearchMcp()
+      setStatus(result.status)
+      toast.success(result.message)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setWorking(null)
+    }
+  }
+
+  async function handleRemoveWebSearchMcp() {
+    setWorking("remove-web-search-mcp")
+    try {
+      const result = await removeCodexWebSearchMcp()
+      setStatus(result.status)
+      toast.success(result.message)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setWorking(null)
+    }
+  }
+
   const busy = Boolean(working)
   const installed = status?.installed
 
@@ -142,7 +176,7 @@ export function CodexAccessPanel() {
             <span className="flex flex-col items-start gap-0.5">
               <span className="font-medium">一键设置本地中转模型</span>
               <span className="text-xs font-normal opacity-80">
-                写入自动模型和模型目录，重启 Codex 后下拉生效
+                写入自动模型、模型目录和 web_search MCP，重启 Codex 后生效
               </span>
             </span>
           </Button>
@@ -210,6 +244,64 @@ export function CodexAccessPanel() {
                 <code className="break-all rounded bg-muted px-2 py-1 font-mono text-xs">
                   {status.currentModelCatalogPath || "未设置"}
                 </code>
+              </div>
+            </div>
+            <Separator />
+            <div className="flex flex-col gap-3 rounded-md border bg-muted/20 p-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">web_search MCP 工具</span>
+                    <Badge variant={status.webSearchMcp.installed ? "default" : "secondary"}>
+                      {status.webSearchMcp.installed ? "已写入" : "未写入"}
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    注册为 Codex 本地 MCP server，后续可替代中转内置 web_search relay。
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void handleInstallWebSearchMcp()}
+                    disabled={busy}
+                  >
+                    {working === "install-web-search-mcp" ? (
+                      <Spinner data-icon="inline-start" />
+                    ) : (
+                      <PlugZap data-icon="inline-start" />
+                    )}
+                    一键启用
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void handleRemoveWebSearchMcp()}
+                    disabled={busy || !status.webSearchMcp.installed}
+                  >
+                    {working === "remove-web-search-mcp" ? (
+                      <Spinner data-icon="inline-start" />
+                    ) : (
+                      <RotateCcw data-icon="inline-start" />
+                    )}
+                    移除
+                  </Button>
+                </div>
+              </div>
+              <div className="grid gap-2 text-xs md:grid-cols-2">
+                <div className="flex flex-col gap-1">
+                  <span className="text-muted-foreground">MCP 名称</span>
+                  <code className="break-all rounded bg-background px-2 py-1 font-mono">
+                    {status.webSearchMcp.serverName}
+                  </code>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-muted-foreground">脚本路径</span>
+                  <code className="break-all rounded bg-background px-2 py-1 font-mono">
+                    {status.webSearchMcp.scriptPath}
+                  </code>
+                </div>
               </div>
             </div>
             <Separator />

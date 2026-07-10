@@ -26,6 +26,7 @@ fs.mkdirSync(path.join(standaloneDir, "scripts"), { recursive: true })
 for (const runner of [
   "codex-desktop-plugins-runner.cjs",
   "codex-desktop-model-whitelist-runner.cjs",
+  "switchgate-web-search-mcp.cjs",
 ]) {
   fs.copyFileSync(
     path.join(root, "scripts", runner),

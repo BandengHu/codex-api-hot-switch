@@ -254,6 +254,26 @@ export async function syncCodexModelCatalog(): Promise<CodexConfigMutationResult
   )
 }
 
+export async function installCodexWebSearchMcp(): Promise<CodexConfigMutationResult> {
+  return parseResponse<CodexConfigMutationResult>(
+    await fetch("/api/codex-config", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "install-web-search-mcp" }),
+    }),
+  )
+}
+
+export async function removeCodexWebSearchMcp(): Promise<CodexConfigMutationResult> {
+  return parseResponse<CodexConfigMutationResult>(
+    await fetch("/api/codex-config", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "remove-web-search-mcp" }),
+    }),
+  )
+}
+
 export async function fetchCodexDesktopPluginStatus(): Promise<CodexDesktopPluginStatus> {
   return parseResponse<CodexDesktopPluginStatus>(
     await fetch("/api/codex-desktop/plugins", { cache: "no-store" }),

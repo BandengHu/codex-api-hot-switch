@@ -292,6 +292,7 @@ export const initialSettings: Settings = {
   imageGenerationModelId: "m-gpt-image-2",
   logRetentionDays: 14,
   fullRequestLoggingEnabled: false,
+  webSearchMode: "builtin",
   keyStorage: "系统钥匙串（占位）",
   floatingBallEnabled: true,
   tokenStatsResetAt: "1970-01-01T00:00:00.000Z",

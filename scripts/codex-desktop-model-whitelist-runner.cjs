@@ -1,6 +1,7 @@
 const fs = require("node:fs/promises")
 const os = require("node:os")
 const path = require("node:path")
+const net = require("node:net")
 const { execFile, spawn } = require("node:child_process")
 const WebSocket = require("ws")
 
@@ -9,6 +10,7 @@ const DEFAULT_RELAY_BASE_URL = "http://127.0.0.1:8787"
 const CDP_TIMEOUT_MS = 5000
 const INJECT_RETRY_COUNT = 20
 const INJECT_RETRY_DELAY_MS = 500
+const PORT_STATE_FILE_NAME = "switchgate-model-whitelist-port.json"
 
 function numberArg(name, fallback) {
   const index = process.argv.indexOf(`--${name}`)
@@ -28,6 +30,14 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function codexHome() {
+  return process.env.CODEX_HOME || path.join(process.env.USERPROFILE || os.homedir(), ".codex")
+}
+
+function portStatePath() {
+  return path.join(codexHome(), PORT_STATE_FILE_NAME)
+}
+
 async function exists(filePath) {
   try {
     await fs.stat(filePath)
@@ -35,6 +45,59 @@ async function exists(filePath) {
   } catch {
     return false
   }
+}
+
+async function readJsonIfExists(filePath) {
+  try {
+    return JSON.parse(await fs.readFile(filePath, "utf8"))
+  } catch {
+    return null
+  }
+}
+
+async function readLastDebugPort(fallback) {
+  const state = await readJsonIfExists(portStatePath())
+  const value = Number(state?.debugPort)
+  return Number.isFinite(value) && value > 0 ? value : fallback
+}
+
+async function writeLastDebugPort(debugPort) {
+  await fs.mkdir(path.dirname(portStatePath()), { recursive: true })
+  await fs.writeFile(
+    portStatePath(),
+    `${JSON.stringify({ debugPort, updatedAt: new Date().toISOString() }, null, 2)}\n`,
+    "utf8",
+  )
+}
+
+function canBindLoopbackPort(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer()
+    server.once("error", () => resolve(false))
+    server.once("listening", () => {
+      server.close(() => resolve(true))
+    })
+    server.listen(port, "127.0.0.1")
+  })
+}
+
+function findAvailableLoopbackPort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer()
+    server.once("error", reject)
+    server.once("listening", () => {
+      const address = server.address()
+      const port = typeof address === "object" && address ? address.port : 0
+      server.close(() => resolve(port))
+    })
+    server.listen(0, "127.0.0.1")
+  })
+}
+
+async function selectDebugPort(requested) {
+  if (process.platform !== "win32") return requested
+  if (await canBindLoopbackPort(requested)) return requested
+  return (await findAvailableLoopbackPort()) || requested
 }
 
 function windowsAppsRoot() {
@@ -1036,6 +1099,7 @@ async function startAndInject(options, message) {
     child.unref()
     launchedProcessId = child.pid || 0
   }
+  await writeLastDebugPort(options.debugPort)
 
   let lastError = null
   for (let index = 0; index < INJECT_RETRY_COUNT; index += 1) {
@@ -1054,45 +1118,51 @@ async function startAndInject(options, message) {
   throw new Error(`Codex 已启动，但注入超时：${lastError?.message || String(lastError)}`)
 }
 
-async function launch(options) {
+async function launch(options, requestedDebugPort) {
   try {
     return await inject(options)
   } catch {
   }
-  if (await codexMainProcessAlreadyRunning()) {
-    throw new Error("Codex 桌面端已经在运行，但没有开放模型白名单需要的 CDP 端口。请点击“关闭并重启注入”。")
+  if ((await desktopCodexProcessCount()) > 0) {
+    throw new Error("Codex 桌面端已经在运行，但当前 CDP 端口不可用。请点击“正常关闭并重启注入”。")
   }
+  options.debugPort = await selectDebugPort(requestedDebugPort)
   return startAndInject(options, "已启动带模型白名单的 Codex，并完成注入")
 }
 
-async function restart(options) {
+async function restart(options, requestedDebugPort) {
   const closedProcessCount = await terminateCodexDesktopProcesses()
   const exited = await waitForCodexDesktopExit()
   if (!exited) throw new Error("Codex 桌面端旧进程未能结束，请手动完全退出 Codex 后再启动带模型白名单")
+  options.debugPort = await selectDebugPort(requestedDebugPort)
   const result = await startAndInject(options, "已结束现有 Codex，并重启完成模型白名单注入")
   return { ...result, closedProcessCount }
 }
 
 async function main() {
   const action = process.argv[2]
+  const requestedDebugPort = numberArg("debug-port", DEFAULT_DEBUG_PORT)
   const options = {
-    debugPort: numberArg("debug-port", DEFAULT_DEBUG_PORT),
+    debugPort: requestedDebugPort,
     relayBaseUrl: stringArg("relay-base-url", DEFAULT_RELAY_BASE_URL),
   }
   if (action === "status") {
+    options.debugPort = await readLastDebugPort(requestedDebugPort)
     process.stdout.write(`${JSON.stringify(await status(options))}\n`)
     return
   }
   if (action === "inject") {
+    options.debugPort = await readLastDebugPort(requestedDebugPort)
     process.stdout.write(`${JSON.stringify(await inject(options))}\n`)
     return
   }
   if (action === "launch") {
-    process.stdout.write(`${JSON.stringify(await launch(options))}\n`)
+    options.debugPort = await readLastDebugPort(requestedDebugPort)
+    process.stdout.write(`${JSON.stringify(await launch(options, requestedDebugPort))}\n`)
     return
   }
   if (action === "restart") {
-    process.stdout.write(`${JSON.stringify(await restart(options))}\n`)
+    process.stdout.write(`${JSON.stringify(await restart(options, requestedDebugPort))}\n`)
     return
   }
   throw new Error(`未知 Codex 模型白名单动作：${action || ""}`)

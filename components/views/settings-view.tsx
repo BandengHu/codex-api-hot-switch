@@ -38,7 +38,7 @@ import {
   importConsoleConfig,
   updateFloatingBallSettings,
 } from "@/lib/console-api"
-import { REASONING_LABELS, type ReasoningEffort } from "@/lib/types"
+import { REASONING_LABELS, type ReasoningEffort, type WebSearchMode } from "@/lib/types"
 import { toast } from "sonner"
 
 const REASONING_OPTIONS: ReasoningEffort[] = ["off", "low", "medium", "high", "xhigh", "auto"]
@@ -286,6 +286,30 @@ export function SettingsView() {
                   setDraft((d) => ({ ...d, takeoverEnabled: v }))
                 }
               />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="s-web-search">web_search 接入策略</FieldLabel>
+              <Select
+                value={draft.webSearchMode}
+                onValueChange={(value) => {
+                  if (!value) return
+                  setDraft((d) => ({ ...d, webSearchMode: value as WebSearchMode }))
+                }}
+              >
+                <SelectTrigger id="s-web-search" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="builtin">内置 relay</SelectItem>
+                    <SelectItem value="mcp">Codex 本地 MCP</SelectItem>
+                    <SelectItem value="disabled">关闭</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <FieldDescription>
+                内置 relay 由 SwitchGate 代执行搜索；MCP 模式下中转不再接管 hosted web_search，请先在 Codex 接入页启用 MCP。
+              </FieldDescription>
             </Field>
           </FieldGroup>
         </CardContent>

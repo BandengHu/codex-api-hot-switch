@@ -9,7 +9,7 @@ import {
   buildCodexClientModelsResponse,
   buildOpenAIModelsResponse,
 } from "@/lib/server/codex-model-catalog"
-import type { RequestLog, TokenUsage } from "@/lib/types"
+import type { RequestLog, TokenUsage, WebSearchMode } from "@/lib/types"
 import {
   applyAssistantMessagePhase,
   compactJson,
@@ -1085,12 +1085,18 @@ function requestAllowsHostedWebSearchRelay(body: unknown) {
   return requestForcesHostedWebSearch(body) || requestHasExplicitHostedWebSearchIntent(body)
 }
 
-function shouldStripHostedWebSearch(target: ProxyTarget, path: string, body: unknown) {
+function shouldStripHostedWebSearch(
+  target: ProxyTarget,
+  path: string,
+  body: unknown,
+  webSearchMode: WebSearchMode,
+) {
   if (!isResponsesPath(path)) return false
   if (!requestDeclaresHostedWebSearch(body)) return false
   if (isOpenAIResponsesProtocol(target.provider.protocol) && target.provider.rawResponsesPassthrough) {
     return false
   }
+  if (webSearchMode !== "builtin") return true
   return !requestAllowsHostedWebSearchRelay(body)
 }
 
@@ -1109,7 +1115,13 @@ function stripHostedWebSearchTools(body: unknown) {
   return next
 }
 
-function shouldRelayWebSearch(target: ProxyTarget, path: string, body: unknown) {
+function shouldRelayWebSearch(
+  target: ProxyTarget,
+  path: string,
+  body: unknown,
+  webSearchMode: WebSearchMode,
+) {
+  if (webSearchMode !== "builtin") return false
   if (!isResponsesPath(path)) return false
   if (!requestDeclaresHostedWebSearch(body)) return false
   if (!requestAllowsHostedWebSearchRelay(body)) return false
@@ -1887,7 +1899,7 @@ export async function handleProxyPost(parts: string[], request: Request) {
 
     body = sanitizeImagesForTargetModel(body, target.model, target.modelId).body
     const effectivePath = isImagesApiPath(path) ? "v1/responses" : path
-    if (shouldStripHostedWebSearch(target, effectivePath, body)) {
+    if (shouldStripHostedWebSearch(target, effectivePath, body, snapshot.settings.webSearchMode)) {
       body = stripHostedWebSearchTools(body)
     }
     if (shouldHandleCompactLocally(target, effectivePath)) {
@@ -1899,7 +1911,7 @@ export async function handleProxyPost(parts: string[], request: Request) {
         requestSignal: request.signal,
       })
     }
-    if (shouldRelayWebSearch(target, effectivePath, body)) {
+    if (shouldRelayWebSearch(target, effectivePath, body, snapshot.settings.webSearchMode)) {
       return await handleRelayWebSearchResponses({
         path: effectivePath,
         body,

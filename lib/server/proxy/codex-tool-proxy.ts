@@ -260,7 +260,20 @@ function toolSearchProxyTool() {
 }
 
 export const APPLY_PATCH_EXAMPLE = [
-  "Minimal valid patch (note the *** Begin Patch / *** End Patch envelope, the *** Update File: header, and that each body line starts with a space for context, - to remove, or + to add):",
+  "CRITICAL syntax rules:",
+  "- The first line must be exactly: *** Begin Patch",
+  "- Do not write extra characters such as *** Begin Patch ***.",
+  "- The last line must be exactly: *** End Patch",
+  "- For Add File, every file content line must start with +.",
+  "- For Update File, each body line starts with a space for context, - to remove, or + to add.",
+  "",
+  "Minimal valid Add File patch:",
+  "*** Begin Patch",
+  "*** Add File: path/to/file.txt",
+  "+OK",
+  "*** End Patch",
+  "",
+  "Minimal valid Update File patch:",
   "*** Begin Patch",
   "*** Update File: path/to/file.ts",
   "@@",

@@ -29,6 +29,14 @@ export interface CodexConfigStatus {
   currentModelCatalogPath: string
   targetBaseUrl: string
   targetModelCatalogPath: string
+  webSearchMcp: {
+    serverName: string
+    installed: boolean
+    enabled: boolean
+    command: string
+    args: string[]
+    scriptPath: string
+  }
 }
 
 export interface CodexConfigMutationResult {

@@ -1,7 +1,8 @@
 import "server-only"
 
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises"
-import { dirname, join } from "node:path"
+import { delimiter } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import type {
   CodexConfigMutationResult,
   CodexConfigStatus,
@@ -23,6 +24,8 @@ const DEFAULT_PROVIDER_NAME = "Codex API Service"
 const DEFAULT_MODEL = CODEX_AUTO_MODEL_SLUG
 const DEFAULT_REASONING = "high"
 const MODEL_CATALOG_NAME = "codex-switchgate-model-catalog.json"
+const WEB_SEARCH_MCP_SERVER_NAME = "switchgate_web_search"
+const WEB_SEARCH_MCP_SCRIPT_NAME = "switchgate-web-search-mcp.cjs"
 
 function codexHome() {
   return process.env.CODEX_HOME || join(process.env.USERPROFILE || process.cwd(), ".codex")
@@ -42,6 +45,10 @@ function backupPath() {
 
 function modelCatalogPath() {
   return join(codexHome(), MODEL_CATALOG_NAME)
+}
+
+function webSearchMcpScriptPath() {
+  return resolve(process.cwd(), "scripts", WEB_SEARCH_MCP_SCRIPT_NAME)
 }
 
 function tomlString(value: string) {
@@ -178,6 +185,29 @@ function removeSection(text: string, section: string) {
   return [...lines.slice(0, start), ...lines.slice(end)].join("\n").replace(/\n{3,}/g, "\n\n")
 }
 
+function parseTomlStringArray(raw: string) {
+  try {
+    const parsed = JSON.parse(raw.trim()) as unknown
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string")
+      : []
+  } catch {
+    return []
+  }
+}
+
+function sectionStringArray(text: string, section: string, key: string) {
+  const body = sectionBody(text, section)
+  const match = body.match(new RegExp(`^${key}\\s*=\\s*(\\[[^\\n]*\\])\\s*$`, "m"))
+  return match ? parseTomlStringArray(match[1]) : []
+}
+
+function sectionBoolean(text: string, section: string, key: string) {
+  const body = sectionBody(text, section)
+  const match = body.match(new RegExp(`^${key}\\s*=\\s*(true|false)\\s*$`, "m"))
+  return match ? match[1] === "true" : undefined
+}
+
 function firstModelProviderId(text: string) {
   const match = text.match(/^\[model_providers\.([^\]\s]+)\]\s*$/m)
   return match ? match[1] : ""
@@ -196,6 +226,73 @@ function providerBlock(providerId: string, baseUrl: string, providerName: string
     `requires_openai_auth = true`,
     `supports_websockets = false`,
   ].join("\n")
+}
+
+function selectedNodeCommand() {
+  const candidates = [
+    process.env.SWITCHGATE_MCP_NODE_PATH,
+    process.env.NODE_PATH && process.execPath,
+    process.execPath,
+    "node",
+  ].filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+  return candidates[0]
+}
+
+function webSearchMcpEnvBlock(command: string) {
+  const env: Record<string, string> = {
+    CODEX_HOME: codexHome(),
+  }
+  if (process.execPath === command && process.versions.electron) {
+    env.ELECTRON_RUN_AS_NODE = "1"
+  }
+  if (process.env.NODE_PATH) env.NODE_PATH = process.env.NODE_PATH.split(delimiter).join(delimiter)
+  const entries = Object.entries(env)
+  if (!entries.length) return ""
+  return [
+    `[mcp_servers.${WEB_SEARCH_MCP_SERVER_NAME}.env]`,
+    ...entries.map(([key, value]) => `${key} = ${tomlString(value)}`),
+  ].join("\n")
+}
+
+function webSearchMcpBlock() {
+  const command = selectedNodeCommand()
+  const scriptPath = webSearchMcpScriptPath()
+  return [
+    `[mcp_servers.${WEB_SEARCH_MCP_SERVER_NAME}]`,
+    `command = ${tomlString(command)}`,
+    `args = ${JSON.stringify([scriptPath])}`,
+    `startup_timeout_sec = 30`,
+    `enabled = true`,
+    "",
+    webSearchMcpEnvBlock(command),
+  ].filter(Boolean).join("\n")
+}
+
+function removeWebSearchMcpConfigText(current: string) {
+  let next = removeSection(current, `mcp_servers.${WEB_SEARCH_MCP_SERVER_NAME}.env`)
+  next = removeSection(next, `mcp_servers.${WEB_SEARCH_MCP_SERVER_NAME}`)
+  return `${next.trimEnd()}\n`
+}
+
+function installWebSearchMcpConfigText(current: string) {
+  const next = removeWebSearchMcpConfigText(current).trimEnd()
+  return `${next ? `${next}\n\n` : ""}${webSearchMcpBlock()}\n`
+}
+
+function webSearchMcpStatus(text: string) {
+  const section = `mcp_servers.${WEB_SEARCH_MCP_SERVER_NAME}`
+  const command = sectionString(text, section, "command")
+  const args = sectionStringArray(text, section, "args")
+  const enabled = sectionBoolean(text, section, "enabled")
+  const scriptPath = webSearchMcpScriptPath()
+  return {
+    serverName: WEB_SEARCH_MCP_SERVER_NAME,
+    installed: Boolean(command && args.includes(scriptPath)),
+    enabled: enabled !== false,
+    command,
+    args,
+    scriptPath,
+  }
 }
 
 function installConfigText(current: string, baseUrl: string, catalogPath: string) {
@@ -298,6 +395,7 @@ export async function getCodexConfigStatus(settings: Settings): Promise<CodexCon
     currentModelCatalogPath,
     targetBaseUrl: expectedBaseUrl,
     targetModelCatalogPath: expectedCatalogPath,
+    webSearchMcp: webSearchMcpStatus(text),
   }
 }
 
@@ -315,16 +413,19 @@ export async function installCodexConfig(settings: Settings): Promise<CodexConfi
   }
   await ensureAuthPlaceholder()
   await syncCodexModelCatalog()
+  const nextConfig = installWebSearchMcpConfigText(
+    installConfigText(current, targetBaseUrl(settings), modelCatalogPath()),
+  )
   await writeFile(
     config,
-    installConfigText(current, targetBaseUrl(settings), modelCatalogPath()),
+    nextConfig,
     "utf8",
   )
   return {
     status: await getCodexConfigStatus(settings),
     message: current
-      ? "已写入 Codex 配置，并已创建配置前自动备份"
-      : "已创建 Codex 配置",
+      ? "已写入 Codex 配置和 web_search MCP，并已创建配置前自动备份"
+      : "已创建 Codex 配置和 web_search MCP",
   }
 }
 
@@ -385,5 +486,46 @@ export async function updateCodexConfigBackupEntryNote(
   return {
     status: await getCodexConfigStatus(settings),
     message: "已更新备份备注",
+  }
+}
+
+export async function installCodexWebSearchMcp(settings: Settings): Promise<CodexConfigMutationResult> {
+  const config = configPath()
+  await mkdir(dirname(config), { recursive: true })
+  const current = await readTextIfExists(config)
+  if (current) {
+    await createCodexConfigBackup({
+      codexHome: codexHome(),
+      configPath: config,
+      authPath: authPath(),
+      note: "配置 web_search MCP 前自动备份",
+    })
+  }
+  await writeFile(config, installWebSearchMcpConfigText(current), "utf8")
+  return {
+    status: await getCodexConfigStatus(settings),
+    message: "已写入 SwitchGate web_search MCP 配置，重启 Codex 后生效",
+  }
+}
+
+export async function removeCodexWebSearchMcp(settings: Settings): Promise<CodexConfigMutationResult> {
+  const config = configPath()
+  const current = await readTextIfExists(config)
+  if (!current) {
+    return {
+      status: await getCodexConfigStatus(settings),
+      message: "Codex 配置不存在，无需移除 web_search MCP",
+    }
+  }
+  await createCodexConfigBackup({
+    codexHome: codexHome(),
+    configPath: config,
+    authPath: authPath(),
+    note: "移除 web_search MCP 前自动备份",
+  })
+  await writeFile(config, removeWebSearchMcpConfigText(current), "utf8")
+  return {
+    status: await getCodexConfigStatus(settings),
+    message: "已移除 SwitchGate web_search MCP 配置，重启 Codex 后生效",
   }
 }

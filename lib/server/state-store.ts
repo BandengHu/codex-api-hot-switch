@@ -19,6 +19,7 @@ import type {
   RoutingSnapshot,
   RuntimeConfig,
   Settings,
+  WebSearchMode,
 } from "@/lib/types"
 
 function defaultDataDir() {
@@ -142,6 +143,12 @@ function normalizeFloatingBallPosition(value: unknown): FloatingBallPosition | u
     : undefined
 }
 
+function normalizeWebSearchMode(value: unknown, fallback: WebSearchMode): WebSearchMode {
+  return value === "builtin" || value === "mcp" || value === "disabled"
+    ? value
+    : fallback
+}
+
 function normalizeSettings(
   rawSettings: Partial<Settings> & { imageGenerationModel?: unknown },
   seed: Settings,
@@ -192,6 +199,7 @@ function normalizeSettings(
       typeof settings.fullRequestLoggingEnabled === "boolean"
         ? settings.fullRequestLoggingEnabled
         : seed.fullRequestLoggingEnabled,
+    webSearchMode: normalizeWebSearchMode(settings.webSearchMode, seed.webSearchMode),
   }
 }
 

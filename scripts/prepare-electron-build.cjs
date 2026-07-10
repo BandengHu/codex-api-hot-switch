@@ -296,6 +296,7 @@ async function main() {
   for (const runner of [
     "codex-desktop-plugins-runner.cjs",
     "codex-desktop-model-whitelist-runner.cjs",
+    "switchgate-web-search-mcp.cjs",
   ]) {
     await fs.copyFile(
       path.join(root, "scripts", runner),

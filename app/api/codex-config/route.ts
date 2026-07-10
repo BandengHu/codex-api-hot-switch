@@ -5,6 +5,8 @@ import {
   deleteCodexConfigBackupEntries,
   getCodexConfigStatus,
   installCodexConfig,
+  installCodexWebSearchMcp,
+  removeCodexWebSearchMcp,
   restoreCodexConfig,
   syncCodexModelCatalog,
   updateCodexConfigBackupEntryNote,
@@ -51,6 +53,12 @@ export async function POST(request: Request) {
         status: await getCodexConfigStatus(snapshot.settings),
         message: "已同步 Codex 模型目录，重启 Codex 桌面端后生效",
       })
+    }
+    if (body.action === "install-web-search-mcp") {
+      return NextResponse.json(await installCodexWebSearchMcp(snapshot.settings))
+    }
+    if (body.action === "remove-web-search-mcp") {
+      return NextResponse.json(await removeCodexWebSearchMcp(snapshot.settings))
     }
     if (body.action === "backup-current") {
       return NextResponse.json(await backupCurrentCodexConfig(snapshot.settings, stringValue(body.note)))

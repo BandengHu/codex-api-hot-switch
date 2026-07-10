@@ -18,6 +18,8 @@ export type ReasoningEffort =
 
 export type TakeoverStatus = "active" | "paused"
 
+export type WebSearchMode = "builtin" | "mcp" | "disabled"
+
 export type ReasoningDialect =
   | "auto"
   | "none"
@@ -174,6 +176,7 @@ export interface Settings {
   imageGenerationModelId: string
   logRetentionDays: number
   fullRequestLoggingEnabled: boolean
+  webSearchMode: WebSearchMode
   keyStorage: string
   floatingBallEnabled: boolean
   floatingBallPosition?: FloatingBallPosition
