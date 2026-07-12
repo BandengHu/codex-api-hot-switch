@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Plus, Pencil, Trash2, AlertTriangle } from "lucide-react"
+import { Plus, Pencil, Trash2, AlertTriangle, Copy } from "lucide-react"
 import {
   Card,
   CardContent,
@@ -37,6 +37,11 @@ import {
   REASONING_DIALECT_LABELS,
   type Provider,
 } from "@/lib/types"
+import {
+  dismissProviderSheetState,
+  openCloneSheetState,
+  type ProviderCloneDraft,
+} from "@/lib/provider-clone"
 import { toast } from "sonner"
 
 export function ProvidersView() {
@@ -44,17 +49,37 @@ export function ProvidersView() {
     useConsole()
   const [sheetOpen, setSheetOpen] = useState(false)
   const [editing, setEditing] = useState<Provider | null>(null)
+  const [cloneDraft, setCloneDraft] = useState<ProviderCloneDraft | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Provider | null>(null)
 
   const unhealthy = providers.filter((p) => p.health !== "healthy" && p.enabled)
 
   function openAdd() {
     setEditing(null)
+    setCloneDraft(null)
     setSheetOpen(true)
   }
   function openEdit(p: Provider) {
     setEditing(p)
+    setCloneDraft(null)
     setSheetOpen(true)
+  }
+  function openClone(p: Provider) {
+    const next = openCloneSheetState(p, modelsByProvider(p.id))
+    setEditing(next.editing)
+    setCloneDraft(next.cloneDraft)
+    setSheetOpen(next.sheetOpen)
+  }
+
+  function handleSheetOpenChange(open: boolean) {
+    if (open) {
+      setSheetOpen(true)
+      return
+    }
+    const dismissed = dismissProviderSheetState()
+    setSheetOpen(dismissed.sheetOpen)
+    setEditing(dismissed.editing)
+    setCloneDraft(dismissed.cloneDraft)
   }
 
   return (
@@ -149,6 +174,14 @@ export function ProvidersView() {
                       <Button
                         variant="ghost"
                         size="icon"
+                        aria-label="复制供应商"
+                        onClick={() => openClone(p)}
+                      >
+                        <Copy />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
                         aria-label="编辑"
                         onClick={() => openEdit(p)}
                       >
@@ -173,8 +206,9 @@ export function ProvidersView() {
 
       <ProviderFormSheet
         open={sheetOpen}
-        onOpenChange={setSheetOpen}
+        onOpenChange={handleSheetOpenChange}
         editing={editing}
+        cloneDraft={cloneDraft}
         onSubmit={(p, models) =>
           editing
             ? updateProvider(p)
