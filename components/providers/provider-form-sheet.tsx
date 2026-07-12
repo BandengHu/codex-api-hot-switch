@@ -51,6 +51,7 @@ import {
   createProviderPresetDraft,
   findProviderPreset,
 } from "@/lib/provider-presets"
+import { cloneFormCopy, type ProviderCloneDraft } from "@/lib/provider-clone"
 import { toast } from "sonner"
 
 const PROTOCOLS: ProtocolType[] = [
@@ -82,11 +83,13 @@ export function ProviderFormSheet({
   open,
   onOpenChange,
   editing,
+  cloneDraft,
   onSubmit,
 }: {
   open: boolean
   onOpenChange: (v: boolean) => void
   editing: Provider | null
+  cloneDraft?: ProviderCloneDraft | null
   onSubmit: (p: Provider, models?: Model[]) => void
 }) {
   const [form, setForm] = useState<Provider>(emptyProvider())
@@ -97,13 +100,13 @@ export function ProviderFormSheet({
 
   useEffect(() => {
     if (open) {
-      setForm(editing ? { ...editing } : emptyProvider())
+      setForm(editing ? { ...editing } : cloneDraft ? cloneDraft.provider : emptyProvider())
       setPresetId("")
-      setPresetModels([])
+      setPresetModels(cloneDraft ? cloneDraft.models : [])
       setTouched(false)
       setShowKey(false)
     }
-  }, [open, editing])
+  }, [open, editing, cloneDraft])
 
   function applyPreset(id: string) {
     const preset = findProviderPreset(id)
@@ -149,6 +152,7 @@ export function ProviderFormSheet({
       : undefined
 
   const valid = !nameError && !urlError && !keyError && !timeoutError && !bodyOverrideError
+  const cloneCopy = cloneDraft ? cloneFormCopy(cloneDraft.models.length) : null
 
   function updateHeader(id: string, patch: Partial<HeaderEntry>) {
     setForm((f) => ({
@@ -172,7 +176,7 @@ export function ProviderFormSheet({
     }
     onSubmit(form, editing ? undefined : presetModels)
     onOpenChange(false)
-    toast.success(editing ? "供应商已更新" : "供应商已新增")
+    toast.success(editing ? "供应商已更新" : cloneCopy ? cloneCopy.successToast : "供应商已新增")
   }
 
   const selectedPreset = presetId ? findProviderPreset(presetId) : undefined
@@ -181,15 +185,17 @@ export function ProviderFormSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="flex w-full flex-col gap-0 sm:max-w-lg">
         <SheetHeader>
-          <SheetTitle>{editing ? "编辑供应商" : "新增供应商"}</SheetTitle>
+          <SheetTitle>{editing ? "编辑供应商" : cloneCopy ? cloneCopy.title : "新增供应商"}</SheetTitle>
           <SheetDescription>
-            协议变更后以新配置为准，转发请求将按当前协议重写。
+            {cloneCopy
+              ? cloneCopy.description
+              : "协议变更后以新配置为准，转发请求将按当前协议重写。"}
           </SheetDescription>
         </SheetHeader>
 
         <div className="flex-1 overflow-y-auto px-4">
           <FieldGroup>
-            {!editing ? (
+            {!editing && !cloneCopy ? (
               <Field>
                 <FieldLabel htmlFor="p-preset">从预设创建</FieldLabel>
                 <Select value={presetId} onValueChange={applyPreset}>
@@ -467,7 +473,7 @@ export function ProviderFormSheet({
 
         <SheetFooter>
           <Button onClick={handleSubmit} disabled={touched && !valid}>
-            {editing ? "保存更改" : "新增供应商"}
+            {editing ? "保存更改" : cloneCopy ? cloneCopy.submitLabel : "新增供应商"}
           </Button>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             取消
