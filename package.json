@@ -13,6 +13,7 @@
     "desktop:build": "npm exec --yes pnpm@10.21.0 -- build && node scripts/prepare-electron-build.cjs && node scripts/generate-windows-icon.cjs && npm exec --yes pnpm@10.21.0 -- exec electron-builder --win nsis",
     "desktop:dir": "npm exec --yes pnpm@10.21.0 -- build && node scripts/prepare-electron-build.cjs && node scripts/generate-windows-icon.cjs && npm exec --yes pnpm@10.21.0 -- exec electron-builder --dir",
     "start": "node scripts/start-standalone.cjs",
+    "test": "tsx --test lib/provider-clone.test.ts",
     "lint": "eslint ."
   },
   "dependencies": {
