@@ -103,7 +103,10 @@ export function CodexAccessPanel() {
         label: CODEX_AUTO_MODEL_DISPLAY_NAME,
       },
       ...models
-        .filter((model) => model.enabled && isChatModel(model))
+        .filter((model) => {
+          const provider = providerById.get(model.providerId)
+          return model.enabled && provider?.enabled && isChatModel(model)
+        })
         .map((model) => ({
           value: codexRoutedModelSlug(model),
           label: `${model.displayName} · ${providerById.get(model.providerId)?.name || model.providerId}`,

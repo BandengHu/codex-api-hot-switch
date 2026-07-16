@@ -144,6 +144,7 @@ function isReasoningEffort(value: unknown): value is ReasoningEffort {
     value === "high" ||
     value === "xhigh" ||
     value === "max" ||
+    value === "ultra" ||
     value === "auto"
   )
 }

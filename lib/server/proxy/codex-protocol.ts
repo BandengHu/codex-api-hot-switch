@@ -551,6 +551,8 @@ function openAIResponsesReasoningModeModel(model: string) {
 export function applyHotSwitchOverrides(body: AnyRecord, model: string, reasoning: ReasoningEffort) {
   const modelOverride = openAIResponsesReasoningModeModel(model)
   body.model = modelOverride.model
+  if (body.reasoning?.effort === "ultra") body.reasoning = { ...body.reasoning, effort: "max" }
+  if (body.reasoning_effort === "ultra") body.reasoning_effort = "max"
   if (reasoning === "off") {
     delete body.reasoning
     delete body.reasoning_effort
@@ -567,9 +569,10 @@ export function applyHotSwitchOverrides(body: AnyRecord, model: string, reasonin
     }
     return
   }
+  const upstreamReasoning = reasoning === "ultra" ? "max" : reasoning
   body.reasoning = isObject(body.reasoning)
-    ? { ...body.reasoning, effort: reasoning }
-    : { effort: reasoning, summary: "auto" }
+    ? { ...body.reasoning, effort: upstreamReasoning }
+    : { effort: upstreamReasoning, summary: "auto" }
   if (modelOverride.reasoningMode) {
     body.reasoning.mode = modelOverride.reasoningMode
   }

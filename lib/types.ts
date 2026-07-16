@@ -14,6 +14,7 @@ export type ReasoningEffort =
   | "high"
   | "xhigh"
   | "max"
+  | "ultra"
   | "auto"
 
 export type TakeoverStatus = "active" | "paused"
@@ -232,6 +233,7 @@ export const REASONING_LABELS: Record<ReasoningEffort, string> = {
   high: "高",
   xhigh: "超高",
   max: "最大",
+  ultra: "Ultra",
   auto: "自动",
 }
 

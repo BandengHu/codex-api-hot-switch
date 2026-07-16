@@ -61,7 +61,7 @@ function normalizeDashScopeQwenResponsesEffort(effort: unknown) {
   if (typeof effort !== "string") return undefined
   const normalized = effort.trim().toLowerCase()
   if (normalized === "off" || normalized === "disabled") return "none"
-  if (normalized === "xhigh" || normalized === "max") return "high"
+  if (normalized === "xhigh" || normalized === "max" || normalized === "ultra") return "high"
   if (["none", "minimal", "low", "medium", "high"].includes(normalized)) {
     return normalized
   }

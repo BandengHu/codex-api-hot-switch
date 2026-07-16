@@ -432,6 +432,7 @@ function injectionScript(catalog) {
   return `
 (() => {
   const injectedCatalog = ${JSON.stringify(embeddedCatalog)};
+  const injectionVersion = "2026-07-11-models-only-v2";
   const state = window.__codexSwitchGateModelWhitelist || {
     installed: false,
     catalogLoadedAt: 0,
@@ -441,6 +442,7 @@ function injectionScript(catalog) {
     patchFailures: [],
   };
   state.catalog = injectedCatalog;
+  state.injectionVersion = injectionVersion;
   state.catalogLoadedAt = Date.now();
   state.catalogPromise = null;
   state.appServerRequestPatchInstalled = false;
@@ -487,13 +489,6 @@ function injectionScript(catalog) {
     return state.catalog;
   }
 
-  function reasoningEfforts() {
-    return ["low", "medium", "high", "xhigh"].map((reasoningEffort) => ({
-      reasoningEffort,
-      description: reasoningEffort + " effort",
-    }));
-  }
-
   function descriptor(modelName) {
     const info = modelInfo(modelName);
     const label = modelLabel(info.id);
@@ -510,9 +505,15 @@ function injectionScript(catalog) {
       owned_by: "codex_switchgate",
       hidden: false,
       isDefault: (state.catalog.default_model || state.catalog.model) === info.id,
-      defaultReasoningEffort: "medium",
-      supportedReasoningEfforts: reasoningEfforts(),
     };
+  }
+
+  function syntheticReasoningEfforts(value) {
+    return Array.isArray(value) && value.length > 0 && value.every((entry) => {
+      const effort = typeof entry?.reasoningEffort === "string" ? entry.reasoningEffort.trim() : "";
+      const description = typeof entry?.description === "string" ? entry.description.trim() : "";
+      return effort && description === effort + " effort";
+    });
   }
 
   function modelArrayLooksPatchable(value, allowEmpty = false) {
@@ -546,9 +547,19 @@ function injectionScript(catalog) {
     let changed = false;
     const existing = new Map(models.map((item) => [item.model, item]));
     models.forEach((item) => {
-      if (names.includes(item.model) && item.hidden !== false) {
-        item.hidden = false;
-        changed = true;
+      if (names.includes(item.model)) {
+        const next = descriptor(item.model);
+        for (const [key, value] of Object.entries(next)) {
+          if (JSON.stringify(item[key]) !== JSON.stringify(value)) {
+            item[key] = value;
+            changed = true;
+          }
+        }
+        if (syntheticReasoningEfforts(item.supportedReasoningEfforts)) {
+          delete item.supportedReasoningEfforts;
+          delete item.defaultReasoningEffort;
+          changed = true;
+        }
       }
     });
     names.forEach((name) => {
@@ -774,6 +785,19 @@ function injectionScript(catalog) {
     return await state.modulePromises.get(namePart);
   }
 
+  async function invalidateModelQueries() {
+    const vscodeApi = await loadAppModule("vscode-api-");
+    const dispatcher = Object.values(vscodeApi).find((value) =>
+      value &&
+      typeof value === "object" &&
+      typeof value.dispatchMessage === "function"
+    );
+    if (!dispatcher) throw new Error("未找到 Codex query cache 通知接口");
+    dispatcher.dispatchMessage("query-cache-invalidate", {
+      queryKey: ["models", "list"],
+    });
+  }
+
   function appServerMethod(method, params) {
     if (method === "send-cli-request-for-host" && params?.method) return String(params.method);
     return String(method || "");
@@ -794,7 +818,7 @@ function injectionScript(catalog) {
 
   function patchAppServerClient(client) {
     if (!client || typeof client.sendRequest !== "function") return false;
-    if (client.__codexSwitchGateModelRequestPatch) return true;
+    if (client.__codexSwitchGateModelRequestPatchVersion === injectionVersion) return true;
     const original = client.__codexSwitchGateOriginalSendRequest || client.sendRequest.bind(client);
     client.__codexSwitchGateOriginalSendRequest = original;
     client.sendRequest = async function codexSwitchGateSendRequest(method, params, options) {
@@ -803,6 +827,7 @@ function injectionScript(catalog) {
       return patchAppServerResult(appServerMethod(String(method || ""), params), result);
     };
     client.__codexSwitchGateModelRequestPatch = true;
+    client.__codexSwitchGateModelRequestPatchVersion = injectionVersion;
     return true;
   }
 
@@ -818,7 +843,10 @@ function injectionScript(catalog) {
           try { if (patchAppServerClient(candidate.get())) patched += 1; } catch {}
         }
       }
-      if (patched > 0) state.appServerRequestPatchInstalled = true;
+      if (patched > 0) {
+        state.appServerRequestPatchInstalled = true;
+        await invalidateModelQueries();
+      }
     }).catch((error) => {
       state.patchFailures.push(String(error?.message || error));
     });
@@ -853,6 +881,9 @@ function injectionScript(catalog) {
     state.installedAt = new Date().toISOString();
     installAppServerMessagePatch();
     installAppServerRequestPatch();
+    void invalidateModelQueries().catch((error) => {
+      state.patchFailures.push(String(error?.message || error));
+    });
     void loadCatalog().then(() => scheduleRefresh(4000));
     const observer = state.observer || new MutationObserver((mutations) => {
       if (!modelNames().length) return;
@@ -1024,10 +1055,17 @@ async function status(options) {
           ? {
               installed: !!state.installed,
               installedAt: state.installedAt || "",
+              injectionVersion: state.injectionVersion || "",
               modelCount: Array.isArray(state.catalog?.models) ? state.catalog.models.length : 0,
               failures: (state.patchFailures || []).slice(-5),
             }
-          : { installed: false, installedAt: "", modelCount: 0, failures: [] };
+          : {
+              installed: false,
+              installedAt: "",
+              injectionVersion: "",
+              modelCount: 0,
+              failures: [],
+            };
       })()`
       const result = await evaluate(target.webSocketDebuggerUrl, probe, false)
       injectionInfo = result?.value || null

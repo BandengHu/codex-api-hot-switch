@@ -25,6 +25,8 @@ const COLLAB_REASONING_EFFORTS = new Set([
   "medium",
   "high",
   "xhigh",
+  "max",
+  "ultra",
 ])
 
 function isObject(value: unknown): value is AnyRecord {

@@ -52,7 +52,7 @@ function thinkingBudget(reasoning: ReasoningEffort) {
   if (reasoning === "low") return 2048
   if (reasoning === "medium") return 8192
   if (reasoning === "high") return 16000
-  if (reasoning === "xhigh" || reasoning === "max") return 32000
+  if (reasoning === "xhigh" || reasoning === "max" || reasoning === "ultra") return 32000
   if (reasoning === "auto") return 4096
   return 0
 }
@@ -86,7 +86,9 @@ function adaptiveThinkingEffort(modelId: string, reasoning: ReasoningEffort) {
   if (reasoning === "minimal" || reasoning === "low") return "low"
   if (reasoning === "medium") return "medium"
   if (reasoning === "high") return "high"
-  if (reasoning === "xhigh" || reasoning === "max") return supportsAdaptiveXHigh(modelId) ? "xhigh" : "max"
+  if (reasoning === "xhigh" || reasoning === "max" || reasoning === "ultra") {
+    return supportsAdaptiveXHigh(modelId) ? "xhigh" : "max"
+  }
   return undefined
 }
 

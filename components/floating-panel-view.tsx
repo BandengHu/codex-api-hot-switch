@@ -22,7 +22,7 @@ import {
 import { isChatModel } from "@/lib/model-capabilities"
 import { cn } from "@/lib/utils"
 
-const REASONING_OPTIONS: ReasoningEffort[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]
+const REASONING_OPTIONS: ReasoningEffort[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "auto"]
 
 declare global {
   interface Window {

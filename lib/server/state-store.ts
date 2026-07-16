@@ -316,10 +316,18 @@ function normalizeSnapshot(value: Partial<ConsoleSnapshot>): ConsoleSnapshot {
     ? sortBuiltInModels(value.models.map(normalizeModel))
     : sortBuiltInModels(seed.models)
   const settings = normalizeSettings(value.settings ?? {}, seed.settings)
+  const enabledProviderIds = new Set(
+    providers.filter((provider) => provider.enabled).map((provider) => provider.id),
+  )
   const validCodexSubagentModelSlugs = new Set([
     CODEX_AUTO_MODEL_SLUG,
     ...models
-      .filter((model) => model.enabled && isChatModel(model))
+      .filter(
+        (model) =>
+          model.enabled &&
+          enabledProviderIds.has(model.providerId) &&
+          isChatModel(model),
+      )
       .map(codexRoutedModelSlug),
   ])
   settings.codexSubagentModelSlugs = settings.codexSubagentModelSlugs.map((slug) =>

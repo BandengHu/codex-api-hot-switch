@@ -23,6 +23,7 @@ const REASONING_LEVELS = [
   { effort: "high", description: "高推理" },
   { effort: "xhigh", description: "超高推理" },
   { effort: "max", description: "最大推理" },
+  { effort: "ultra", description: "Ultra 推理" },
 ]
 
 function providersById(snapshot: RoutingSnapshot) {

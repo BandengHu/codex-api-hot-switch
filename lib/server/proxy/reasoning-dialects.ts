@@ -120,24 +120,27 @@ function mapReasoningEffort(effort: string, dialect: ReasoningDialect) {
   if (["none", "off", "disabled", "auto"].includes(normalized)) return undefined
 
   if (dialect === "deepseek-official") {
-    return normalized === "max" || normalized === "xhigh" ? "max" : "high"
+    return normalized === "ultra" || normalized === "max" || normalized === "xhigh"
+      ? "max"
+      : "high"
   }
   if (dialect === "stepfun-low-high") {
     if (normalized === "minimal" || normalized === "low") return "low"
     return "high"
   }
   if (dialect === "openrouter-reasoning") {
-    if (normalized === "max" || normalized === "xhigh") return "xhigh"
+    if (normalized === "ultra" || normalized === "max" || normalized === "xhigh") return "xhigh"
     return ["high", "medium", "low", "minimal"].includes(normalized)
       ? normalized
       : undefined
   }
   if (dialect === "openai-reasoning-effort" || dialect === "volcengine-thinking") {
-    if (normalized === "xhigh") return "max"
+    if (normalized === "ultra" || normalized === "xhigh") return "max"
     return ["minimal", "low", "medium", "high", "max"].includes(normalized)
       ? normalized
       : undefined
   }
+  if (normalized === "ultra") return "max"
   return ["minimal", "low", "medium", "high", "xhigh", "max"].includes(normalized)
     ? normalized
     : undefined
@@ -146,7 +149,12 @@ function mapReasoningEffort(effort: string, dialect: ReasoningDialect) {
 function mapThinkingBudget(effort: string) {
   const normalized = effort.trim().toLowerCase()
   if (normalized === "minimal" || normalized === "low") return 1024
-  if (normalized === "high" || normalized === "xhigh" || normalized === "max") return 8192
+  if (
+    normalized === "high" ||
+    normalized === "xhigh" ||
+    normalized === "max" ||
+    normalized === "ultra"
+  ) return 8192
   return 4096
 }
 
@@ -155,7 +163,7 @@ function mapQwenThinkingBudget(effort: string) {
   if (normalized === "minimal" || normalized === "low") return 1024
   if (normalized === "medium") return 4096
   if (normalized === "high") return 8192
-  if (normalized === "xhigh" || normalized === "max") return 16384
+  if (normalized === "xhigh" || normalized === "max" || normalized === "ultra") return 16384
   return 4096
 }
 

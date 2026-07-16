@@ -45,6 +45,7 @@ const OVERRIDE_OPTIONS: (ReasoningEffort | "inherit")[] = [
   "high",
   "xhigh",
   "max",
+  "ultra",
   "auto",
 ]
 

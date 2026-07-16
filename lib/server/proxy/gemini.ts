@@ -42,7 +42,7 @@ function thinkingBudget(reasoning: ReasoningEffort) {
   if (reasoning === "low") return 1024
   if (reasoning === "medium") return 4096
   if (reasoning === "high") return 8192
-  if (reasoning === "xhigh" || reasoning === "max") return 16384
+  if (reasoning === "xhigh" || reasoning === "max" || reasoning === "ultra") return 16384
   if (reasoning === "auto") return -1
   return 0
 }

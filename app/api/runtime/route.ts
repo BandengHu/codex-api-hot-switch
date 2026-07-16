@@ -14,6 +14,7 @@ const REASONING_VALUES = new Set<ReasoningEffort>([
   "high",
   "xhigh",
   "max",
+  "ultra",
   "auto",
 ])
 
