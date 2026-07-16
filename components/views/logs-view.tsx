@@ -41,6 +41,7 @@ import { Empty, EmptyHeader, EmptyTitle, EmptyDescription } from "@/components/u
 import { StatusCodeBadge, ReasoningBadge } from "@/components/status-badges"
 import { useConsole } from "@/lib/console-store"
 import { fetchRequestLogDetail } from "@/lib/console-api"
+import { formatDurationSeconds, formatTokenCount } from "@/lib/display-format"
 import type { RequestLog, RequestLogDetail } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { useResizableSheetWidth } from "@/components/views/use-resizable-sheet-width"
@@ -62,11 +63,6 @@ function CodeBlock({ text }: { text: string }) {
       {text}
     </pre>
   )
-}
-
-function formatTokenCount(value: number | undefined) {
-  if (value == null) return "—"
-  return new Intl.NumberFormat("zh-CN").format(value)
 }
 
 function tokenSummary(log: RequestLog) {
@@ -377,7 +373,7 @@ export function LogsView() {
                         <StatusCodeBadge code={l.statusCode} />
                       </TableCell>
                       <TableCell className="text-right font-mono text-xs tabular-nums">
-                        {l.durationMs}ms
+                        {formatDurationSeconds(l.durationMs)}
                       </TableCell>
                       <TableCell className="max-w-[220px]">
                         {l.error ? (
@@ -486,7 +482,7 @@ export function LogsView() {
                 <StatusCodeBadge code={selected.statusCode} />
                 <ReasoningBadge effort={selected.reasoning} />
                 <span className="font-mono text-xs text-muted-foreground">
-                  {selected.durationMs}ms
+                  {formatDurationSeconds(selected.durationMs)}
                 </span>
               </div>
 

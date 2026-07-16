@@ -34,9 +34,13 @@ import {
 } from "@/components/status-badges"
 import { useConsole } from "@/lib/console-store"
 import { resetTokenStats, testProvider } from "@/lib/console-api"
+import {
+  formatDurationSeconds,
+  formatIntegerCount,
+  formatTokenCount,
+} from "@/lib/display-format"
 import { REASONING_LABELS } from "@/lib/types"
 import {
-  formatTokenCount,
   sumTokenStats,
   tokenStatsSince,
 } from "@/lib/token-stats"
@@ -81,7 +85,7 @@ export function DashboardView() {
   const errors = total - success
   const successRate = total ? Math.round((success / total) * 100) : 0
   const avgLatency = total
-    ? Math.round(recentLogs.reduce((s, l) => s + l.durationMs, 0) / total)
+    ? recentLogs.reduce((s, l) => s + l.durationMs, 0) / total
     : 0
   const cumulativeTokenStats = tokenStatsSince(
     tokenStats,
@@ -231,7 +235,7 @@ export function DashboardView() {
         />
         <StatCard
           label="平均延迟"
-          value={`${avgLatency}ms`}
+          value={formatDurationSeconds(avgLatency)}
           hint="端到端往返"
           icon={Timer}
         />
@@ -269,7 +273,7 @@ export function DashboardView() {
               {formatTokenCount(cumulativeTokens.totalTokens)}
             </div>
             <div className="mt-1 text-xs text-muted-foreground">
-              {formatTokenCount(cumulativeTokens.requests)} 次有 token 记录的请求
+              {formatIntegerCount(cumulativeTokens.requests)} 次有 token 记录的请求
             </div>
           </div>
           <div>

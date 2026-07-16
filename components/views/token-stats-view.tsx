@@ -14,7 +14,10 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { useConsole } from "@/lib/console-store"
 import { resetTokenStats } from "@/lib/console-api"
 import {
+  formatIntegerCount,
   formatTokenCount,
+} from "@/lib/display-format"
+import {
   sumTokenStats,
   tokenStatsSince,
 } from "@/lib/token-stats"
@@ -163,12 +166,6 @@ function areaPath(points: ChartPoint[], width: number, height: number, maxValue:
   return `${path} L ${width} ${height} L 0 ${height} Z`
 }
 
-function compactAxisNumber(value: number) {
-  if (value >= 1000000) return `${Number((value / 1000000).toFixed(1))}M`
-  if (value >= 1000) return `${Number((value / 1000).toFixed(1))}k`
-  return String(Math.round(value))
-}
-
 function niceAxisMax(value: number) {
   if (value <= 0) return 100
   const magnitude = 10 ** Math.floor(Math.log10(value))
@@ -269,7 +266,7 @@ function TokenLineChart({ points }: { points: ChartPoint[] }) {
                   textAnchor="end"
                   className="fill-muted-foreground font-mono text-[11px]"
                 >
-                  {compactAxisNumber(value)}
+                  {formatTokenCount(value)}
                 </text>
               </g>
             )
@@ -336,7 +333,7 @@ function TokenLineChart({ points }: { points: ChartPoint[] }) {
                   vectorEffect="non-scaling-stroke"
                 >
                   <title>
-                    {point.label} · {formatTokenCount(point.totalTokens)} tokens
+                    {point.label} · {formatTokenCount(point.totalTokens)}
                   </title>
                 </circle>
               )
@@ -358,7 +355,7 @@ function TokenLineChart({ points }: { points: ChartPoint[] }) {
           <div className="text-xs text-muted-foreground">峰值时间点</div>
           <div className="mt-1 text-sm font-medium">{peak.shortLabel}</div>
           <div className="font-mono text-xs text-muted-foreground">
-            {formatTokenCount(peak.totalTokens)} tokens
+            {formatTokenCount(peak.totalTokens)}
           </div>
         </div>
         <div className="rounded-md border border-border px-3 py-2">
@@ -443,7 +440,7 @@ export function TokenStatsView() {
               {formatTokenCount(totals.totalTokens)}
             </div>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              {formatTokenCount(totals.requests)} 次请求
+              {formatIntegerCount(totals.requests)} 次请求
             </p>
           </CardContent>
         </Card>

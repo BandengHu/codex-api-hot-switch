@@ -73,8 +73,3 @@ export function tokenStatsSince(
     return Number.isFinite(timestamp) && timestamp >= resetTime
   })
 }
-
-export function formatTokenCount(value: number | undefined) {
-  if (value == null) return "—"
-  return new Intl.NumberFormat("zh-CN").format(value)
-}

@@ -23,6 +23,7 @@ import type {
   CodexSessionItem,
   CodexSessionSyncStatus,
 } from "@/lib/codex-session-types"
+import { formatTokenCount } from "@/lib/display-format"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -224,7 +225,7 @@ function SessionListRow({
         <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           <span title={session.id}>ID: {formatSessionId(session.id)}</span>
           <span>{session.sourceDbSource === "sqlite-dir" ? "sqlite" : "legacy"}</span>
-          {session.tokensUsed > 0 ? <span>{session.tokensUsed.toLocaleString()} token</span> : null}
+          {session.tokensUsed > 0 ? <span>{formatTokenCount(session.tokensUsed)}</span> : null}
         </div>
       </div>
       <div className="min-w-0 text-xs">
