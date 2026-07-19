@@ -44,6 +44,15 @@ function codexAdapterRequestsStream(adapter: CodexAdapter) {
     : adapter.requestIsStream
 }
 
+function isOpenAIOfficialResponsesTarget(target: ProxyTarget) {
+  if (target.provider.protocol !== "openai-responses") return false
+  try {
+    return new URL(target.provider.baseUrl).hostname.toLowerCase() === "api.openai.com"
+  } catch {
+    return false
+  }
+}
+
 function isDashScopeQwenResponsesTarget(target: ProxyTarget) {
   if (target.provider.protocol !== "openai-responses") return false
   if (target.provider.rawResponsesPassthrough === true) return false
@@ -105,6 +114,7 @@ export function buildOpenAICompatibleRequest(
     {
       preserveRequestControls: target.paused,
       rawResponsesPassthrough: Boolean(target.provider.rawResponsesPassthrough),
+      compatibleResponsesToolSearch: !isOpenAIOfficialResponsesTarget(target),
     },
   )
   normalizeDashScopeQwenResponsesReasoning(prepared.body, target, prepared.upstreamPath)

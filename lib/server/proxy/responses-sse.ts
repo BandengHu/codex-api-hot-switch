@@ -5,6 +5,10 @@ import {
   toolCallItem,
   type ToolContext,
 } from "./codex-tool-proxy"
+import {
+  compatibleResponsesFunctionProxyKind,
+  type CompatibleResponsesFunctionProxyKind,
+} from "./responses-tool-search-compat"
 import { applyAssistantMessagePhase } from "./common"
 import { deriveVisibleActionNoteFromReasoning } from "./action-note"
 
@@ -629,18 +633,21 @@ class ResponsesStreamRepairer {
       }
       for (const key of functionItemKeys(item)) this.functionItems.set(key, snapshot)
     }
-    if (itemId && this.isCustomFunctionTool(name)) {
+    const proxyKind = this.functionProxyKind(name)
+    if (itemId && proxyKind) {
       const callId = item.call_id || stableFunctionCallId(item)
+      const addedItem = toolCallAddedItem(callId, name, this.options.toolContext!)
       this.pending.set(itemId, {
         name,
         callId,
         outputIndex: data.output_index,
+        publicItemId: String(addedItem.id || addedItem.call_id || callId),
         chunks: argumentsText ? [argumentsText] : [],
         flushed: false,
         sanitized: null,
-        custom: true,
+        proxyKind,
       })
-      data.item = toolCallAddedItem(callId, name, this.options.toolContext!)
+      data.item = addedItem
       return framePrefix + phasePrefix + sse(event, data)
     }
     if (!itemId || !isCollabToolName(name)) {
@@ -717,7 +724,8 @@ class ResponsesStreamRepairer {
     if (typeof data.arguments === "string" && data.arguments && item.chunks.length === 0) {
       item.chunks.push(data.arguments)
     }
-    if (item.custom) {
+    if (item.proxyKind === "tool_search") return ""
+    if (item.proxyKind === "custom") {
       const { prefix, sanitized } = this.flushCustomArgsWithPrefix(itemId)
       return prefix + sse("response.custom_tool_call_input.done", {
         type: "response.custom_tool_call_input.done",
@@ -728,6 +736,7 @@ class ResponsesStreamRepairer {
       })
     }
     const { prefix, sanitized } = this.flushArgsWithPrefix(itemId)
+    if (item.publicItemId) data.item_id = item.publicItemId
     data.arguments = sanitized
     return prefix + sse(event, data)
   }
@@ -769,7 +778,7 @@ class ResponsesStreamRepairer {
 
     const itemId = String(item.id || item.call_id || "").trim()
     const pending = this.pending.get(itemId)
-    if (pending?.custom) {
+    if (pending?.proxyKind === "custom") {
       if (typeof item.arguments === "string" && item.arguments && pending.chunks.length === 0) {
         pending.chunks.push(item.arguments)
       }
@@ -782,6 +791,20 @@ class ResponsesStreamRepairer {
       )
       this.markOutputItemDone("custom_tool", data.item, data.output_index)
       return this.flushPendingMessageDoneFramesBeforeTool(item) + prefix + sse(event, data)
+    }
+    if (pending?.proxyKind === "tool_search" || pending?.proxyKind === "namespaced_function") {
+      if (typeof item.arguments === "string" && item.arguments && pending.chunks.length === 0) {
+        pending.chunks.push(item.arguments)
+      }
+      const raw = String(repairFunctionCallArguments(pending.chunks.join("")) || "")
+      data.item = toolCallItem(
+        pending.callId || item.call_id || stableFunctionCallId(item),
+        pending.name || item.name,
+        raw,
+        this.options.toolContext!,
+      )
+      this.markOutputItemDone("function_call", data.item, data.output_index)
+      return this.flushPendingMessageDoneFramesBeforeTool(item) + sse(event, data)
     }
     let changed = this.repairFunctionItem(item, data.output_index)
     this.markOutputItemDone("function_call", item, data.output_index)
@@ -826,10 +849,11 @@ class ResponsesStreamRepairer {
     const raw = String(repairFunctionCallArguments(item.chunks.join("")) || "")
     const sanitized = sanitizeCollabToolArguments(item.name, raw) ?? raw
     item.sanitized = sanitized
+    if (item.proxyKind === "tool_search") return { prefix: "", sanitized }
     if (!sanitized) return { prefix: "", sanitized }
     const payload: AnyRecord = {
       type: "response.function_call_arguments.delta",
-      item_id: itemId,
+      item_id: item.publicItemId || itemId,
       delta: sanitized,
     }
     if (item.outputIndex != null) payload.output_index = item.outputIndex
@@ -862,8 +886,8 @@ class ResponsesStreamRepairer {
     return this.flushArgsWithPrefix(itemId).prefix
   }
 
-  private isCustomFunctionTool(name: string) {
-    return Boolean(this.options.toolContext?.customTools.has(name))
+  private functionProxyKind(name: string): CompatibleResponsesFunctionProxyKind | undefined {
+    return compatibleResponsesFunctionProxyKind(name, this.options.toolContext)
   }
 
   private customToolItemId(item: AnyRecord) {
@@ -1118,12 +1142,22 @@ class ResponsesStreamRepairer {
 
   private buildFunctionItem(snapshot: any) {
     if (!snapshot?.name) return null
+    const callId = snapshot.callId || snapshot.id
+    const argumentsText = String(this.functionSnapshotArgs(snapshot) || "")
+    if (this.functionProxyKind(snapshot.name)) {
+      return toolCallItem(
+        callId,
+        snapshot.name,
+        argumentsText,
+        this.options.toolContext!,
+      )
+    }
     const item = {
       id: snapshot.id || snapshot.callId,
       type: "function_call",
-      call_id: snapshot.callId || snapshot.id,
+      call_id: callId,
       name: snapshot.name,
-      arguments: this.functionSnapshotArgs(snapshot),
+      arguments: argumentsText,
       status: "completed",
     }
     ensureFunctionCallId(item)
@@ -1151,14 +1185,20 @@ class ResponsesStreamRepairer {
         if (key) includedCustomToolKeys.add(key)
         this.repairCustomToolItem(item, index)
       } else if (item?.type === "function_call") {
-        if (this.isCustomFunctionTool(item.name)) {
+        const proxyKind = this.functionProxyKind(item.name)
+        if (proxyKind) {
           this.repairFunctionItem(item, index)
+          for (const key of functionItemKeys(item)) includedFunctionKeys.add(key)
           const args = typeof item.arguments === "string" ? item.arguments : ""
           const callId = item.call_id || stableFunctionCallId(item)
-          const customItem = toolCallItem(callId, item.name, args, this.options.toolContext!)
-          output[index] = customItem
-          const key = this.outputKeyFor("custom_tool", customItem, index)
-          if (key) includedCustomToolKeys.add(key)
+          const proxiedItem = toolCallItem(callId, item.name, args, this.options.toolContext!)
+          output[index] = proxiedItem
+          if (proxyKind === "custom") {
+            const key = this.outputKeyFor("custom_tool", proxiedItem, index)
+            if (key) includedCustomToolKeys.add(key)
+          } else {
+            for (const key of functionItemKeys(proxiedItem)) includedFunctionKeys.add(key)
+          }
           continue
         }
         this.repairFunctionItem(item, index)
@@ -1186,8 +1226,10 @@ class ResponsesStreamRepairer {
       }
     }
     for (const snapshot of new Set(this.functionItems.values())) {
-      const key = String(snapshot?.id || snapshot?.callId || "").trim()
-      if (!key || includedFunctionKeys.has(key)) continue
+      const keys = [snapshot?.id, snapshot?.callId]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+      if (keys.length === 0 || keys.some((key) => includedFunctionKeys.has(key))) continue
       const item = this.buildFunctionItem(snapshot)
       if (item) missing.push({ outputIndex: snapshot.outputIndex, item })
     }
@@ -1234,7 +1276,7 @@ class ResponsesStreamRepairer {
     if (item.type === "message") return "message"
     if (item.type === "reasoning") return "reasoning"
     if (item.type === "custom_tool_call") return "custom_tool"
-    if (item.type === "function_call") return "function_call"
+    if (item.type === "function_call" || item.type === "tool_search_call") return "function_call"
     return ""
   }
 

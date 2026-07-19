@@ -8,6 +8,9 @@ import {
   buildToolContext,
   type ToolContext,
 } from "./codex-tool-proxy"
+import {
+  adaptToolSearchForCompatibleResponses,
+} from "./responses-tool-search-compat"
 import { ProxyRequestBodyError } from "./content-encoding"
 import { canonicalToolArguments } from "./json-canonical"
 
@@ -37,6 +40,7 @@ export interface PreparedCodexRequest {
 interface PrepareCodexRequestOptions {
   preserveRequestControls?: boolean
   rawResponsesPassthrough?: boolean
+  compatibleResponsesToolSearch?: boolean
 }
 
 function isObject(value: unknown): value is AnyRecord {
@@ -648,6 +652,9 @@ export function prepareCodexOpenAICompatibleRequest(
       const toolContext = buildToolContext(passthrough.tools)
       applyHotSwitchOverrides(passthrough, model, reasoning)
       expandCodexResponsesRequest(passthrough)
+      if (options.compatibleResponsesToolSearch) {
+        adaptToolSearchForCompatibleResponses(passthrough, toolContext)
+      }
       const normalized = normalizeResponsesBodyForCodex(passthrough)
       if (!isObject(normalized)) throw new Error("归一化后的 responses 请求体不是 JSON 对象")
       return {

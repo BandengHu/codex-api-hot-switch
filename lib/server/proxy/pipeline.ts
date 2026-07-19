@@ -68,6 +68,7 @@ import {
   extractFinalResponseFromSse,
   transformResponsesSseText,
 } from "./responses-sse"
+import { restoreCompatibleResponsesToolCalls } from "./responses-tool-search-compat"
 import {
   createQwenResponsesDiagnosticStream,
   writeQwenResponsesStreamFallthroughDiagnostic,
@@ -367,15 +368,18 @@ function transformResponse(
         built.adapter.reverseToolNameMap,
       )
     }
-    if (shouldRecordHistory && isResponsesPath(path)) {
-      recordCodexChatResponse(payload, built?.rewrittenBody)
-    }
     if (isResponsesCompactPath(path)) return payload
-    const transformed = built?.adapter?.type === "passthrough"
-      ? withResponseModel(payload, built.adapter.responseModelOverride || target.requestedModel)
+    const restored = built?.adapter?.type === "passthrough" && !target.provider.rawResponsesPassthrough
+      ? restoreCompatibleResponsesToolCalls(payload, built.adapter.toolContext)
       : payload
+    const transformed = built?.adapter?.type === "passthrough"
+      ? withResponseModel(restored, built.adapter.responseModelOverride || target.requestedModel)
+      : restored
     if (!target.provider.rawResponsesPassthrough) {
       applyAssistantMessagePhaseToResponsePayload(transformed)
+    }
+    if (shouldRecordHistory && isResponsesPath(path)) {
+      recordCodexChatResponse(transformed, built?.rewrittenBody)
     }
     return transformed
   }
