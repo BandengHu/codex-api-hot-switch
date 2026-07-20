@@ -33,6 +33,10 @@ for (const runner of [
     path.join(standaloneDir, "scripts", runner),
   )
 }
+copyDirSync(
+  path.join(root, "scripts", "web-search-mcp"),
+  path.join(standaloneDir, "scripts", "web-search-mcp"),
+)
 if (fs.existsSync(path.join(root, "integrations", "codexbridge"))) {
   copyDirSync(
     path.join(root, "integrations", "codexbridge"),

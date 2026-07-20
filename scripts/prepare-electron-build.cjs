@@ -303,6 +303,10 @@ async function main() {
       path.join(electronServerDir, "scripts", runner),
     )
   }
+  await copyDir(
+    path.join(root, "scripts", "web-search-mcp"),
+    path.join(electronServerDir, "scripts", "web-search-mcp"),
+  )
   if (await exists(path.join(root, "integrations", "codexbridge"))) {
     const codexBridgeDir = path.join(electronServerDir, "integrations", "codexbridge")
     await copyDir(
