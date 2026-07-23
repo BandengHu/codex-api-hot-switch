@@ -1,5 +1,10 @@
 import "server-only"
 
+import {
+  htmlUpstreamErrorMessage,
+  looksLikeHtmlDocument,
+} from "./html-response-retry"
+
 type AnyRecord = Record<string, any>
 
 const ERROR_BODY_PREVIEW_LIMIT = 4000
@@ -55,7 +60,10 @@ function pickErrorObject(payload: unknown): unknown {
 }
 
 function messageFromError(error: unknown, status: number) {
-  if (typeof error === "string") return error.trim()
+  if (typeof error === "string") {
+    const message = error.trim()
+    return looksLikeHtmlDocument(message) ? htmlUpstreamErrorMessage(status) : message
+  }
   if (!isObject(error)) return ""
   const direct =
     safeTrim(error.message) ||
@@ -64,7 +72,7 @@ function messageFromError(error: unknown, status: number) {
     safeTrim(error.error) ||
     safeTrim(error.status_msg) ||
     safeTrim(error.statusMessage)
-  if (direct) return direct
+  if (direct) return looksLikeHtmlDocument(direct) ? htmlUpstreamErrorMessage(status) : direct
   return truncatePreview(compactJson(error))
 }
 

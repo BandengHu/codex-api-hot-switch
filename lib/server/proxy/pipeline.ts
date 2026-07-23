@@ -96,6 +96,10 @@ import {
   fetchWithModelCapacityRetry,
   MODEL_CAPACITY_MAX_RETRIES,
 } from "./model-capacity-retry"
+import {
+  fetchWithHtmlResponseRetry,
+  HTML_RESPONSE_MAX_RETRIES,
+} from "./html-response-retry"
 import { applyAuxiliaryRouting } from "./auxiliary-routing"
 import {
   maybeRectifyUpstreamError,
@@ -893,6 +897,7 @@ async function maybeHandleSuccessfulUpstream(params: {
   target: ProxyTarget
   path: string
   capacityRetryCount?: number
+  htmlRetryCount?: number
 }) {
   const {
     imageApiRequest,
@@ -903,6 +908,7 @@ async function maybeHandleSuccessfulUpstream(params: {
     target,
     path,
     capacityRetryCount = 0,
+    htmlRetryCount = 0,
   } = params
 
   if (!upstream.ok) return null
@@ -948,8 +954,13 @@ async function maybeHandleSuccessfulUpstream(params: {
         statusCode: upstream.status,
         rewrittenBody: built.rewrittenBody,
         responseSummary:
-          capacityRetryCount > 0
-            ? `OpenAI Responses raw stream passthrough；模型容量重试 ${capacityRetryCount} 次`
+          capacityRetryCount > 0 || htmlRetryCount > 0
+            ? `${[
+                htmlRetryCount > 0 ? `HTML 网关重试 ${htmlRetryCount} 次` : "",
+                capacityRetryCount > 0 ? `模型容量重试 ${capacityRetryCount} 次` : "",
+              ]
+                .filter(Boolean)
+                .join("；")}；OpenAI Responses raw stream passthrough`
             : "OpenAI Responses raw stream passthrough",
       })
       return new Response(loggedStream, {
@@ -959,6 +970,9 @@ async function maybeHandleSuccessfulUpstream(params: {
           "x-codex-hot-switch-provider": target.provider.id,
           "x-codex-hot-switch-model": target.modelId,
           "x-codex-hot-switch-raw-responses-passthrough": "1",
+          ...(htmlRetryCount > 0
+            ? { "x-codex-hot-switch-html-retries": String(htmlRetryCount) }
+            : {}),
           ...(capacityRetryCount > 0
             ? { "x-codex-hot-switch-capacity-retries": String(capacityRetryCount) }
             : {}),
@@ -1942,21 +1956,30 @@ export async function handleProxyPost(parts: string[], request: Request) {
     built = buildProxyRequest(target, effectivePath, body)
     const retryTarget = target
     let capacityRetryCount = 0
+    let htmlRetryCount = 0
     const fetchUpstream = async () => {
-      const result = await fetchWithModelCapacityRetry({
-        enabled:
-          retryTarget.provider.rawResponsesPassthrough === true &&
-          isOpenAIResponsesProtocol(retryTarget.provider.protocol) &&
-          isResponsesPath(effectivePath) &&
-          built?.adapter?.type === "passthrough",
-        requestIsStream:
-          requestWantsStream(body) || requestWantsStream(built?.rewrittenBody),
+      const htmlResult = await fetchWithHtmlResponseRetry({
         requestSignal: request.signal,
-        maxRetries: Math.max(0, MODEL_CAPACITY_MAX_RETRIES - capacityRetryCount),
-        fetchResponse: () => fetchWithProviderTimeout(retryTarget, built!, request.signal),
+        maxRetries: Math.max(0, HTML_RESPONSE_MAX_RETRIES - htmlRetryCount),
+        fetchResponse: async () => {
+          const result = await fetchWithModelCapacityRetry({
+            enabled:
+              retryTarget.provider.rawResponsesPassthrough === true &&
+              isOpenAIResponsesProtocol(retryTarget.provider.protocol) &&
+              isResponsesPath(effectivePath) &&
+              built?.adapter?.type === "passthrough",
+            requestIsStream:
+              requestWantsStream(body) || requestWantsStream(built?.rewrittenBody),
+            requestSignal: request.signal,
+            maxRetries: Math.max(0, MODEL_CAPACITY_MAX_RETRIES - capacityRetryCount),
+            fetchResponse: () => fetchWithProviderTimeout(retryTarget, built!, request.signal),
+          })
+          capacityRetryCount += result.retryCount
+          return result.response
+        },
       })
-      capacityRetryCount += result.retryCount
-      return result.response
+      htmlRetryCount += htmlResult.retryCount
+      return htmlResult.response
     }
     let upstream = await fetchUpstream()
     const successResponse = await maybeHandleSuccessfulUpstream({
@@ -1968,6 +1991,7 @@ export async function handleProxyPost(parts: string[], request: Request) {
       target,
       path,
       capacityRetryCount,
+      htmlRetryCount,
     })
     if (successResponse) return successResponse
 
@@ -2014,6 +2038,7 @@ export async function handleProxyPost(parts: string[], request: Request) {
         target,
         path,
         capacityRetryCount,
+        htmlRetryCount,
       })
       if (rectifiedSuccessResponse) return rectifiedSuccessResponse
       payload = await parseJsonSafe(upstream)
@@ -2050,8 +2075,13 @@ export async function handleProxyPost(parts: string[], request: Request) {
         statusCode: upstream.status,
         rewrittenBody: built.rewrittenBody,
         responseSummary:
-          capacityRetryCount > 0
-            ? `模型容量重试 ${capacityRetryCount} 次；${compactJson(transformed)}`
+          capacityRetryCount > 0 || htmlRetryCount > 0
+            ? `${[
+                htmlRetryCount > 0 ? `HTML 网关重试 ${htmlRetryCount} 次` : "",
+                capacityRetryCount > 0 ? `模型容量重试 ${capacityRetryCount} 次` : "",
+              ]
+                .filter(Boolean)
+                .join("；")}；${compactJson(transformed)}`
             : compactJson(transformed),
         tokenUsage: extractTokenUsage(transformed) || extractTokenUsage(payload),
         error,
