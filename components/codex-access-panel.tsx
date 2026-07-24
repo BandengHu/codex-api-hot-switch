@@ -35,7 +35,9 @@ import {
   fetchConsoleSnapshot,
   installCodexConfig,
   installCodexWebSearchMcp,
+  installCodexCodegraphMcp,
   removeCodexWebSearchMcp,
+  removeCodexCodegraphMcp,
   restoreCodexConfig,
   syncCodexModelCatalog,
   syncCodexSubagentRoles,
@@ -68,6 +70,8 @@ export function CodexAccessPanel() {
     | "sync-subagent-roles"
     | "install-web-search-mcp"
     | "remove-web-search-mcp"
+    | "install-codegraph-mcp"
+    | "remove-codegraph-mcp"
     | null
   >(null)
   const [error, setError] = useState("")
@@ -193,7 +197,33 @@ export function CodexAccessPanel() {
     }
   }
 
-  const busy = Boolean(working)
+  
+  async function handleInstallCodegraphMcp() {
+    setWorking("install-codegraph-mcp")
+    try {
+      const result = await installCodexCodegraphMcp()
+      setStatus(result.status)
+      toast.success(result.message)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setWorking(null)
+    }
+  }
+
+  async function handleRemoveCodegraphMcp() {
+    setWorking("remove-codegraph-mcp")
+    try {
+      const result = await removeCodexCodegraphMcp()
+      setStatus(result.status)
+      toast.success(result.message)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setWorking(null)
+    }
+  }
+const busy = Boolean(working)
   const installed = status?.installed
 
   return (
@@ -435,6 +465,77 @@ export function CodexAccessPanel() {
                 </div>
               </div>
             </div>
+            <Separator />
+            <div className="flex flex-col gap-3 rounded-md border bg-muted/20 p-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">CodeGraph MCP</span>
+                    <Badge variant={status.codegraphMcp.installed ? "default" : "secondary"}>
+                      {status.codegraphMcp.installed ? "已写入" : "未写入"}
+                    </Badge>
+                    <Badge variant={status.codegraphMcp.cliAvailable ? "secondary" : "outline"}>
+                      CLI {status.codegraphMcp.cliAvailable ? "可用" : "未安装"}
+                    </Badge>
+                    <Badge variant={status.codegraphMcp.agentsInstructionsInstalled ? "secondary" : "outline"}>
+                      AGENTS {status.codegraphMcp.agentsInstructionsInstalled ? "已写入" : "未写入"}
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    接入原始 CodeGraph MCP（codegraph serve --mcp），并写入 AGENTS.md 指导优先用图谱，减少盲目搜索。每个项目仍需在根目录执行 codegraph init。
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void handleInstallCodegraphMcp()}
+                    disabled={busy}
+                  >
+                    {working === "install-codegraph-mcp" ? (
+                      <Spinner data-icon="inline-start" />
+                    ) : (
+                      <PlugZap data-icon="inline-start" />
+                    )}
+                    一键启用
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void handleRemoveCodegraphMcp()}
+                    disabled={busy || !status.codegraphMcp.installed}
+                  >
+                    {working === "remove-codegraph-mcp" ? (
+                      <Spinner data-icon="inline-start" />
+                    ) : (
+                      <RotateCcw data-icon="inline-start" />
+                    )}
+                    移除
+                  </Button>
+                </div>
+              </div>
+              <div className="grid gap-2 text-xs md:grid-cols-2">
+                <div className="flex flex-col gap-1">
+                  <span className="text-muted-foreground">MCP 名称</span>
+                  <code className="break-all rounded bg-background px-2 py-1 font-mono">
+                    {status.codegraphMcp.serverName}
+                  </code>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-muted-foreground">CLI 命令</span>
+                  <code className="break-all rounded bg-background px-2 py-1 font-mono">
+                    {status.codegraphMcp.command || status.codegraphMcp.cliCommand}
+                  </code>
+                </div>
+                <div className="flex flex-col gap-1 md:col-span-2">
+                  <span className="text-muted-foreground">AGENTS.md</span>
+                  <code className="break-all rounded bg-background px-2 py-1 font-mono">
+                    {status.codegraphMcp.agentsPath}
+                  </code>
+                </div>
+              </div>
+            </div>
+
             <Separator />
             <CodexConfigBackupManager status={status} disabled={busy} onStatus={setStatus} />
             <Separator />

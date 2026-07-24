@@ -49,9 +49,21 @@ export interface CodexConfigStatus {
     args: string[]
     scriptPath: string
   }
+  codegraphMcp: {
+    serverName: string
+    installed: boolean
+    enabled: boolean
+    command: string
+    args: string[]
+    cliAvailable: boolean
+    cliCommand: string
+    agentsInstructionsInstalled: boolean
+    agentsPath: string
+  }
 }
 
 export interface CodexConfigMutationResult {
   status: CodexConfigStatus
   message: string
 }
+

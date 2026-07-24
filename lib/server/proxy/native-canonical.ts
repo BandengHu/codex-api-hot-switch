@@ -396,8 +396,7 @@ function nativeToolsAndContext(body: AnyRecord) {
   for (const tool of loadedTools) rememberResponseTool(toolContext, tool)
   const nativeCompatibleTools = responsesToolsToChatTools(
     [...responseTools, ...loadedTools],
-    toolContext,
-    { applyPatchExample: true },
+    toolContext
   )
   return {
     toolContext,

@@ -23,6 +23,14 @@ import {
   removeCodexSubagentRoles,
   syncCodexSubagentRoles,
 } from "./codex-subagent-roles"
+import {
+  clearCodegraphAgentsInstructions,
+  ensureCodegraphCliInstalled,
+  getCodegraphMcpStatus,
+  installCodegraphMcpConfigText,
+  removeCodegraphMcpConfigText,
+  writeCodegraphAgentsInstructions,
+} from "./codex-codegraph-mcp"
 import type { ConsoleSnapshot, Settings } from "@/lib/types"
 
 const NEW_CONFIG_PROVIDER_ID = "codex_local_access"
@@ -403,6 +411,7 @@ export async function getCodexConfigStatus(settings: Settings): Promise<CodexCon
     targetModelCatalogPath: expectedCatalogPath,
     subagentRoles: await getCodexSubagentRolesStatus(codexHome(), settings),
     webSearchMcp: webSearchMcpStatus(text),
+    codegraphMcp: await getCodegraphMcpStatus({ codexHome: home, configText: text }),
   }
 }
 
@@ -422,19 +431,24 @@ export async function installCodexConfig(settings: Settings): Promise<CodexConfi
   const snapshot = await getSnapshot()
   await syncCodexModelCatalog(snapshot)
   await syncCodexSubagentRoles(codexHome(), snapshot)
-  const nextConfig = installWebSearchMcpConfigText(
-    installConfigText(current, targetBaseUrl(settings), modelCatalogPath()),
+  const cli = await ensureCodegraphCliInstalled()
+  const nextConfig = installCodegraphMcpConfigText(
+    installWebSearchMcpConfigText(
+      installConfigText(current, targetBaseUrl(settings), modelCatalogPath()),
+    ),
+    cli.command,
   )
   await writeFile(
     config,
     nextConfig,
     "utf8",
   )
+  await writeCodegraphAgentsInstructions(codexHome())
   return {
     status: await getCodexConfigStatus(settings),
     message: current
-      ? "已写入 Codex 配置、子智能体角色和 web_search MCP，并已创建配置前自动备份"
-      : "已创建 Codex 配置、子智能体角色和 web_search MCP",
+      ? "已写入 Codex 配置、子智能体角色、web_search MCP 和 CodeGraph MCP，并已创建配置前自动备份"
+      : "已创建 Codex 配置、子智能体角色、web_search MCP 和 CodeGraph MCP",
   }
 }
 
@@ -539,3 +553,49 @@ export async function removeCodexWebSearchMcp(settings: Settings): Promise<Codex
     message: "已移除 SwitchGate web_search MCP 配置，重启 Codex 后生效",
   }
 }
+
+export async function installCodexCodegraphMcp(settings: Settings): Promise<CodexConfigMutationResult> {
+  const config = configPath()
+  await mkdir(dirname(config), { recursive: true })
+  const current = await readTextIfExists(config)
+  if (current) {
+    await createCodexConfigBackup({
+      codexHome: codexHome(),
+      configPath: config,
+      authPath: authPath(),
+      note: "配置 CodeGraph MCP 前自动备份",
+    })
+  }
+  const cli = await ensureCodegraphCliInstalled()
+  await writeFile(config, installCodegraphMcpConfigText(current, cli.command), "utf8")
+  await writeCodegraphAgentsInstructions(codexHome())
+  return {
+    status: await getCodexConfigStatus(settings),
+    message: "已写入 CodeGraph MCP 与 AGENTS.md 指导，重启 Codex 后生效；项目根目录需执行 codegraph init 建索引",
+  }
+}
+
+export async function removeCodexCodegraphMcp(settings: Settings): Promise<CodexConfigMutationResult> {
+  const config = configPath()
+  const current = await readTextIfExists(config)
+  if (!current) {
+    await clearCodegraphAgentsInstructions(codexHome())
+    return {
+      status: await getCodexConfigStatus(settings),
+      message: "Codex 配置不存在，已清理 AGENTS.md 中的 CodeGraph 段落（如有）",
+    }
+  }
+  await createCodexConfigBackup({
+    codexHome: codexHome(),
+    configPath: config,
+    authPath: authPath(),
+    note: "移除 CodeGraph MCP 前自动备份",
+  })
+  await writeFile(config, removeCodegraphMcpConfigText(current), "utf8")
+  await clearCodegraphAgentsInstructions(codexHome())
+  return {
+    status: await getCodexConfigStatus(settings),
+    message: "已移除 CodeGraph MCP 配置与 AGENTS.md 指导，重启 Codex 后生效",
+  }
+}
+

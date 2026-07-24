@@ -7,7 +7,9 @@ import {
   getCodexConfigStatus,
   installCodexConfig,
   installCodexWebSearchMcp,
+  installCodexCodegraphMcp,
   removeCodexWebSearchMcp,
+  removeCodexCodegraphMcp,
   restoreCodexConfig,
   syncCodexModelCatalog,
   updateCodexConfigBackupEntryNote,
@@ -89,6 +91,12 @@ export async function POST(request: Request) {
     }
     if (body.action === "remove-web-search-mcp") {
       return NextResponse.json(await removeCodexWebSearchMcp(snapshot.settings))
+    }
+    if (body.action === "install-codegraph-mcp") {
+      return NextResponse.json(await installCodexCodegraphMcp(snapshot.settings))
+    }
+    if (body.action === "remove-codegraph-mcp") {
+      return NextResponse.json(await removeCodexCodegraphMcp(snapshot.settings))
     }
     if (body.action === "backup-current") {
       return NextResponse.json(await backupCurrentCodexConfig(snapshot.settings, stringValue(body.note)))

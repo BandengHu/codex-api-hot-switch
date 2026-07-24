@@ -2,14 +2,30 @@ import "server-only"
 
 import { createHash } from "node:crypto"
 import {
+  APPLY_PATCH_FUNCTION_DESCRIPTION,
+  APPLY_PATCH_PARAMETERS,
+  buildApplyPatchFunctionToolDescription,
+  reconstructApplyPatchInput,
+  type PatchAction,
+} from "./apply-patch-format"
+import {
   isHostedWebSearchToolType,
   relayWebSearchChatTool,
   RELAY_WEB_SEARCH_TOOL_NAME,
 } from "./web-search-relay"
 
-type AnyRecord = Record<string, any>
+export type { PatchAction } from "./apply-patch-format"
+export {
+  APPLY_PATCH_BASE_DESCRIPTION,
+  APPLY_PATCH_EXAMPLE,
+  APPLY_PATCH_FUNCTION_DESCRIPTION,
+  APPLY_PATCH_PARAMETERS,
+  buildApplyPatchText,
+  normalizeApplyPatchText,
+  reconstructApplyPatchInput,
+} from "./apply-patch-format"
 
-export type PatchAction = "add_file" | "delete_file" | "update_file" | "replace_file" | "batch"
+type AnyRecord = Record<string, any>
 
 export interface CustomToolSpec {
   originalName: string
@@ -259,54 +275,24 @@ function toolSearchProxyTool() {
   )
 }
 
-export const APPLY_PATCH_EXAMPLE = [
-  "CRITICAL syntax rules:",
-  "- The first line must be exactly: *** Begin Patch",
-  "- Do not write extra characters such as *** Begin Patch ***.",
-  "- The last line must be exactly: *** End Patch",
-  "- For Add File, every file content line must start with +.",
-  "- For Update File, each body line starts with a space for context, - to remove, or + to add.",
-  "",
-  "Minimal valid Add File patch:",
-  "*** Begin Patch",
-  "*** Add File: path/to/file.txt",
-  "+OK",
-  "*** End Patch",
-  "",
-  "Minimal valid Update File patch:",
-  "*** Begin Patch",
-  "*** Update File: path/to/file.ts",
-  "@@",
-  " unchanged context line",
-  "-old line to remove",
-  "+new line to add",
-  "*** End Patch",
-].join("\n")
 
-export const APPLY_PATCH_BASE_DESCRIPTION = [
-  "Apply file edits with the Codex apply_patch FREEFORM patch format.",
-  "Always put the complete patch text in the input field. Do not split it into structured operations and do not use shell commands as a substitute when apply_patch is available.",
-].join("\n\n")
-
-export const APPLY_PATCH_FUNCTION_DESCRIPTION = [
-  APPLY_PATCH_BASE_DESCRIPTION,
-  APPLY_PATCH_EXAMPLE,
-].join("\n\n")
 
 function applyPatchProxyTool(
   name: string,
   description: string,
   metadata = "",
-  includeExample = false,
 ) {
   const parts = [
     description.trim(),
-    includeExample ? APPLY_PATCH_FUNCTION_DESCRIPTION : APPLY_PATCH_BASE_DESCRIPTION,
+    APPLY_PATCH_FUNCTION_DESCRIPTION,
     metadata ? `Original Codex custom tool metadata: ${metadata}` : "",
   ].filter(Boolean)
-  return genericCustomProxyTool(name, parts.join("\n\n"))
+  return functionTool(name, parts.join("\n\n"), {
+    type: "object",
+    additionalProperties: false,
+    properties: { ...(APPLY_PATCH_PARAMETERS.properties as AnyRecord) },
+  })
 }
-
 function customProxyDescription(description: string, metadata = "") {
   return [
     description.trim(),
@@ -382,7 +368,6 @@ function namespaceToolToChatTools(tool: AnyRecord) {
 export function responsesToolsToChatTools(
   tools: unknown[],
   context: ToolContext,
-  options: { applyPatchExample?: boolean } = {},
 ) {
   const out: AnyRecord[] = []
   const seenNames = new Set<string>()
@@ -412,7 +397,7 @@ export function responsesToolsToChatTools(
       const description = safeTrim(tool.description)
       const metadata = customToolMetadata(tool)
       if (detectCustomToolKind(tool, name) === "apply_patch") {
-        pushTool(applyPatchProxyTool(name, description, metadata, options.applyPatchExample === true))
+        pushTool(applyPatchProxyTool(name, description, metadata))
       } else {
         pushTool(genericCustomProxyTool(name, customProxyDescription(description, metadata)))
       }
@@ -648,48 +633,3 @@ function reconstructCustomToolInput(args: string) {
   }
 }
 
-function reconstructApplyPatchInput(action: PatchAction | undefined, args: string) {
-  let value: AnyRecord
-  try {
-    value = JSON.parse(args)
-  } catch {
-    return args
-  }
-  const raw = safeTrim(value.raw_patch || value.patch || value.input)
-  if (raw) return raw
-  const operations =
-    action === "batch" || !action
-      ? Array.isArray(value.operations)
-        ? value.operations
-        : []
-      : [{ ...value, type: action }]
-  return buildApplyPatchText(operations)
-}
-
-function buildApplyPatchText(operations: AnyRecord[]) {
-  let text = "*** Begin Patch"
-  for (const operation of operations) {
-    const path = safeTrim(operation.path)
-    if (operation.type === "add_file") {
-      text += `\n*** Add File: ${path}`
-      for (const line of String(operation.content || "").split(/\r?\n/)) text += `\n+${line}`
-    } else if (operation.type === "delete_file") {
-      text += `\n*** Delete File: ${path}`
-    } else if (operation.type === "update_file") {
-      text += `\n*** Update File: ${path}`
-      if (operation.move_to) text += `\n*** Move to: ${operation.move_to}`
-      for (const hunk of Array.isArray(operation.hunks) ? operation.hunks : []) {
-        text += safeTrim(hunk.context) ? `\n@@ ${safeTrim(hunk.context)}` : "\n@@"
-        for (const line of Array.isArray(hunk.lines) ? hunk.lines : []) {
-          const op = line.op === "add" ? "+" : line.op === "remove" ? "-" : " "
-          text += `\n${op}${line.text || ""}`
-        }
-      }
-    } else if (operation.type === "replace_file") {
-      text += `\n*** Delete File: ${path}`
-      text += `\n*** Add File: ${path}`
-      for (const line of String(operation.content || "").split(/\r?\n/)) text += `\n+${line}`
-    }
-  }
-  return `${text}\n*** End Patch`
-}

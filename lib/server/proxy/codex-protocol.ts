@@ -5,6 +5,7 @@ import { isChatCompletionsPath, isResponsesCompactPath, isResponsesPath } from "
 import { expandCodexResponsesRequest } from "./codex-chat-history"
 import {
   APPLY_PATCH_FUNCTION_DESCRIPTION,
+  APPLY_PATCH_PARAMETERS,
   buildToolContext,
   type ToolContext,
 } from "./codex-tool-proxy"
@@ -256,16 +257,9 @@ function buildApplyPatchFunctionTool(source: AnyRecord = {}) {
       : APPLY_PATCH_FUNCTION_DESCRIPTION,
     parameters: {
       type: "object",
-      properties: {
-        input: {
-          type: "string",
-          description: "The complete apply_patch patch text.",
-        },
-      },
-      required: ["input"],
       additionalProperties: false,
+      properties: { ...(APPLY_PATCH_PARAMETERS.properties as AnyRecord) },
     },
-    strict: true,
   }
 }
 

@@ -413,3 +413,22 @@ export async function stopWecomBridgeServe(): Promise<WecomBridgeMutationResult>
     }),
   )
 }
+export async function installCodexCodegraphMcp(): Promise<CodexConfigMutationResult> {
+  return parseResponse<CodexConfigMutationResult>(
+    await fetch("/api/codex-config", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "install-codegraph-mcp" }),
+    }),
+  )
+}
+
+export async function removeCodexCodegraphMcp(): Promise<CodexConfigMutationResult> {
+  return parseResponse<CodexConfigMutationResult>(
+    await fetch("/api/codex-config", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "remove-codegraph-mcp" }),
+    }),
+  )
+}

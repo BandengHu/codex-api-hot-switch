@@ -647,9 +647,7 @@ export function responsesToChatCompletions(body: AnyRecord, target: ProxyTarget)
   const responseTools = Array.isArray(body.tools) ? body.tools : []
   const loadedTools = collectToolSearchOutputTools(body.input)
   for (const tool of loadedTools) rememberResponseTool(toolContext, tool)
-  const tools = responsesToolsToChatTools([...responseTools, ...loadedTools], toolContext, {
-    applyPatchExample: true,
-  })
+  const tools = responsesToolsToChatTools([...responseTools, ...loadedTools], toolContext)
   if (tools.length > 0) {
     result.tools = tools
     const toolChoice = responsesToolChoiceToChat(body.tool_choice, toolContext)
