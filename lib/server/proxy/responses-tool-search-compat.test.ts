@@ -164,6 +164,37 @@ test("raw Responses passthrough preserves Codex tool_search wire shape", () => {
   assert.equal(prepared.adapter.type === "passthrough" && prepared.adapter.toolContext, undefined)
 })
 
+test("captures incremental history without cloning the full Responses input", () => {
+  const inputItems = [
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "continue" }],
+    },
+  ]
+  const prepared = prepare({
+    model: "client-model",
+    previous_response_id: "resp_previous",
+    input: inputItems,
+  })
+
+  assert.equal(prepared.adapter.type, "passthrough")
+  if (prepared.adapter.type !== "passthrough") return
+  assert.equal(prepared.adapter.historyRequestBody?.input, inputItems)
+  assert.equal(
+    prepared.adapter.historyRequestBody?.previous_response_id,
+    "resp_previous",
+  )
+  assert.notEqual(prepared.body.input, inputItems)
+  assert.deepEqual(inputItems, [
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "continue" }],
+    },
+  ])
+})
+
 test("native-compatible Responses preserves Codex tool_search wire shape", () => {
   const input = {
     model: "client-model",

@@ -747,7 +747,10 @@ export function buildNativeCanonicalRequest(
     ),
     toolContext: serializeToolContext(toolContext),
     geminiToolSchemaHints: buildGeminiToolSchemaHints(tools),
-    historyRequestBody: prepared.body,
+    historyRequestBody:
+      prepared.adapter.type === "passthrough"
+        ? prepared.adapter.historyRequestBody ?? prepared.body
+        : prepared.body,
   }
 }
 

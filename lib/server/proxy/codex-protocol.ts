@@ -23,6 +23,7 @@ export type CodexAdapter =
       requestedModel: string
       responseModelOverride?: string
       toolContext?: ToolContext
+      historyRequestBody?: AnyRecord
     }
   | {
       type: "chat_completions"
@@ -49,6 +50,14 @@ function isObject(value: unknown): value is AnyRecord {
 
 function safeTrim(value: unknown) {
   return typeof value === "string" ? value.trim() : ""
+}
+
+function historyRequestBody(body: AnyRecord) {
+  const history: AnyRecord = {}
+  const previousResponseId = safeTrim(body.previous_response_id)
+  if (previousResponseId) history.previous_response_id = previousResponseId
+  if ("input" in body) history.input = body.input
+  return history
 }
 
 function responseTextTypeForRole(role: string) {
@@ -632,6 +641,7 @@ export function prepareCodexOpenAICompatibleRequest(
   if (isResponsesPath(normalizedPath)) {
     if (!isObject(body)) throw new Error("responses 请求体必须是合法 JSON 对象")
     const passthrough = { ...body }
+    const requestHistory = historyRequestBody(body)
     const requestedModel = safeTrim(passthrough.model)
     if (options.preserveRequestControls || options.rawResponsesPassthrough) {
       if (!options.preserveRequestControls) {
@@ -645,6 +655,7 @@ export function prepareCodexOpenAICompatibleRequest(
           requestIsStream: Boolean(passthrough.stream),
           requestedModel,
           responseModelOverride: requestedModel || safeTrim(body.model) || undefined,
+          historyRequestBody: requestHistory,
         },
       }
     }
@@ -666,6 +677,7 @@ export function prepareCodexOpenAICompatibleRequest(
           requestedModel,
           responseModelOverride: requestedModel || safeTrim(body.model) || undefined,
           toolContext,
+          historyRequestBody: requestHistory,
         },
       }
     }

@@ -989,7 +989,9 @@ export function transformChatCompatibleResponse(
     adapter.originalRequest,
     adapter.toolContext,
   )
-  if (options.recordHistory !== false) recordCodexChatResponse(response)
+  if (options.recordHistory !== false) {
+    recordCodexChatResponse(response, adapter.originalRequest)
+  }
   return response
 }
 
@@ -1840,7 +1842,7 @@ function finalizeChatSse(
     response.incomplete_details = { reason: "max_output_tokens" }
   }
   echoOriginalResponseFields(response, originalRequest)
-  recordCodexChatResponse(response)
+  recordCodexChatResponse(response, originalRequest)
   out += sse("response.completed", { type: "response.completed", response })
   out += "data: [DONE]\n\n"
   return out

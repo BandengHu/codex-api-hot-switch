@@ -350,6 +350,16 @@ function withResponseModel(payload: unknown, model: string) {
   return next
 }
 
+function historyRequestBodyForBuilt(built?: BuiltRequest) {
+  const adapter = built?.adapter
+  if (adapter?.type === "passthrough" && adapter.historyRequestBody) {
+    return adapter.historyRequestBody
+  }
+  if (adapter?.type === "native") return adapter.historyRequestBody
+  if (adapter?.type === "chat_compatible") return adapter.originalRequest
+  return built?.rewrittenBody
+}
+
 function applyAssistantMessagePhaseToResponsePayload(payload: unknown) {
   if (!isObject(payload)) return
   const root = isObject(payload.response) ? payload.response : payload
@@ -383,7 +393,7 @@ function transformResponse(
       applyAssistantMessagePhaseToResponsePayload(transformed)
     }
     if (shouldRecordHistory && isResponsesPath(path)) {
-      recordCodexChatResponse(transformed, built?.rewrittenBody)
+      recordCodexChatResponse(transformed, historyRequestBodyForBuilt(built))
     }
     return transformed
   }
@@ -422,7 +432,7 @@ function transformResponse(
         transformed,
         built?.adapter?.type === "native"
           ? built.adapter.historyRequestBody
-          : built?.rewrittenBody,
+          : historyRequestBodyForBuilt(built),
       )
     }
     return transformed
@@ -453,7 +463,7 @@ function transformResponse(
         transformed,
         built?.adapter?.type === "native"
           ? built.adapter.historyRequestBody
-          : built?.rewrittenBody,
+          : historyRequestBodyForBuilt(built),
       )
     }
     return transformed
@@ -769,7 +779,9 @@ async function maybeAdaptOpenAICompatibleStream(
   const recordedStream =
     adapter.type === "chat_completions"
       ? stream
-      : stream.pipeThrough(createResponsesHistoryRecorderStream(built.rewrittenBody))
+      : stream.pipeThrough(
+          createResponsesHistoryRecorderStream(historyRequestBodyForBuilt(built)),
+        )
 
   const loggedStream = appendLogAfterStreamSettles(recordedStream, {
     startedAt,
@@ -946,7 +958,9 @@ async function maybeHandleSuccessfulUpstream(params: {
             synthesizeFinalOnStreamEnd: true,
           }),
         )
-        .pipeThrough(createResponsesHistoryRecorderStream(built.rewrittenBody))
+        .pipeThrough(
+          createResponsesHistoryRecorderStream(historyRequestBodyForBuilt(built)),
+        )
       const loggedStream = appendLogAfterStreamSettles(rawStream, {
         startedAt,
         body: rawBody,
@@ -1630,7 +1644,10 @@ function relayResponse(params: {
   target: ProxyTarget
   stream: boolean
 }) {
-  recordCodexChatResponse(params.response, params.built.rewrittenBody)
+  recordCodexChatResponse(
+    params.response,
+    historyRequestBodyForBuilt(params.built),
+  )
   appendLogDetached(
     makeLog({
       startedAt: params.startedAt,
@@ -2060,7 +2077,7 @@ export async function handleProxyPost(parts: string[], request: Request) {
         : transformResponse(target, path, payload, built)
       : normalizeUpstreamErrorPayload(payload, upstream.status)
     if (upstream.ok && rawResponsesPassthrough) {
-      recordCodexChatResponse(transformed, built.rewrittenBody)
+      recordCodexChatResponse(transformed, historyRequestBodyForBuilt(built))
     }
 
     const error =
