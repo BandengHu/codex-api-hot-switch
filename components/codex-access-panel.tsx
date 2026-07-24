@@ -30,12 +30,14 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Field, FieldLabel } from "@/components/ui/field"
+import { Input } from "@/components/ui/input"
 import {
   fetchCodexConfigStatus,
   fetchConsoleSnapshot,
   installCodexConfig,
   installCodexWebSearchMcp,
   installCodexCodegraphMcp,
+  initCodexCodegraphProject,
   removeCodexWebSearchMcp,
   removeCodexCodegraphMcp,
   restoreCodexConfig,
@@ -61,6 +63,7 @@ export function CodexAccessPanel() {
   const [subagentModelSlugs, setSubagentModelSlugs] = useState(
     settings.codexSubagentModelSlugs ?? defaultCodexSubagentModelSlugs(),
   )
+  const [codegraphProjectPath, setCodegraphProjectPath] = useState("")
   const [loading, setLoading] = useState(true)
   const [working, setWorking] = useState<
     | "install"
@@ -72,6 +75,7 @@ export function CodexAccessPanel() {
     | "remove-web-search-mcp"
     | "install-codegraph-mcp"
     | "remove-codegraph-mcp"
+    | "init-codegraph-project"
     | null
   >(null)
   const [error, setError] = useState("")
@@ -223,7 +227,21 @@ export function CodexAccessPanel() {
       setWorking(null)
     }
   }
-const busy = Boolean(working)
+
+  async function handleInitCodegraphProject() {
+    setWorking("init-codegraph-project")
+    try {
+      const result = await initCodexCodegraphProject(codegraphProjectPath)
+      setStatus(result.status)
+      toast.success(result.message)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setWorking(null)
+    }
+  }
+
+  const busy = Boolean(working)
   const installed = status?.installed
 
   return (
@@ -271,7 +289,7 @@ const busy = Boolean(working)
             <span className="flex flex-col items-start gap-0.5">
               <span className="font-medium">一键设置本地中转模型</span>
               <span className="text-xs font-normal opacity-80">
-                写入模型目录、子智能体角色和 web_search MCP，重启 Codex 后生效
+                写入模型目录、子智能体角色、web_search MCP 和 CodeGraph MCP，重启 Codex 后生效
               </span>
             </span>
           </Button>
@@ -480,9 +498,12 @@ const busy = Boolean(working)
                     <Badge variant={status.codegraphMcp.agentsInstructionsInstalled ? "secondary" : "outline"}>
                       AGENTS {status.codegraphMcp.agentsInstructionsInstalled ? "已写入" : "未写入"}
                     </Badge>
+                    <Badge variant={status.codegraphMcp.ready ? "default" : "outline"}>
+                      {status.codegraphMcp.ready ? "可用" : "未就绪"}
+                    </Badge>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    接入原始 CodeGraph MCP（codegraph serve --mcp），并写入 AGENTS.md 指导优先用图谱，减少盲目搜索。每个项目仍需在根目录执行 codegraph init。
+                    接入原始 CodeGraph MCP（codegraph serve --mcp），写入 AGENTS.md 指导优先用图谱。启用后可对具体项目执行 codegraph init 建索引。
                   </p>
                 </div>
                 <div className="flex gap-2">
@@ -532,6 +553,38 @@ const busy = Boolean(working)
                   <code className="break-all rounded bg-background px-2 py-1 font-mono">
                     {status.codegraphMcp.agentsPath}
                   </code>
+                </div>
+              </div>
+              <div className="flex flex-col gap-2 rounded-md border bg-background/60 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs text-muted-foreground">
+                    项目索引（codegraph init）
+                    {status.codegraphMcp.cliVersion
+                      ? ` · CLI ${status.codegraphMcp.cliVersion}`
+                      : ""}
+                  </span>
+                </div>
+                <div className="flex flex-col gap-2 md:flex-row">
+                  <Input
+                    value={codegraphProjectPath}
+                    onChange={(event) => setCodegraphProjectPath(event.target.value)}
+                    placeholder="项目绝对路径，例如 C:\\repo\\my-app"
+                    disabled={busy}
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="md:w-auto"
+                    onClick={() => void handleInitCodegraphProject()}
+                    disabled={busy || !codegraphProjectPath.trim()}
+                  >
+                    {working === "init-codegraph-project" ? (
+                      <Spinner data-icon="inline-start" />
+                    ) : (
+                      <ListRestart data-icon="inline-start" />
+                    )}
+                    建立索引
+                  </Button>
                 </div>
               </div>
             </div>

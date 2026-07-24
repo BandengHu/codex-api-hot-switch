@@ -57,8 +57,10 @@ export interface CodexConfigStatus {
     args: string[]
     cliAvailable: boolean
     cliCommand: string
+    cliVersion: string
     agentsInstructionsInstalled: boolean
     agentsPath: string
+    ready: boolean
   }
 }
 

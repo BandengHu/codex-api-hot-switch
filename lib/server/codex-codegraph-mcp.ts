@@ -1,7 +1,7 @@
 import "server-only"
 
 import { spawn } from "node:child_process"
-import { access, mkdir, readFile, writeFile } from "node:fs/promises"
+import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises"
 import { constants as fsConstants } from "node:fs"
 import { dirname, join } from "node:path"
 import { env as processEnv } from "node:process"
@@ -42,8 +42,10 @@ export type CodegraphMcpStatus = {
   args: string[]
   cliAvailable: boolean
   cliCommand: string
+  cliVersion: string
   agentsInstructionsInstalled: boolean
   agentsPath: string
+  ready: boolean
 }
 
 async function pathExists(path: string) {
@@ -55,12 +57,17 @@ async function pathExists(path: string) {
   }
 }
 
-function runCommand(command: string, args: string[], options?: { timeoutMs?: number }) {
+function runCommand(
+  command: string,
+  args: string[],
+  options?: { timeoutMs?: number; cwd?: string },
+) {
   return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
     const child = spawn(command, args, {
       shell: true,
       windowsHide: true,
       env: processEnv,
+      cwd: options?.cwd || undefined,
     })
     let stdout = ""
     let stderr = ""
@@ -179,6 +186,34 @@ export async function ensureCodegraphCliInstalled() {
   return resolved
 }
 
+export async function initCodegraphProject(projectPath: string) {
+  const root = projectPath.trim()
+  if (!root) throw new Error("项目路径不能为空")
+  if (!(await pathExists(root))) {
+    throw new Error(`项目路径不存在：${root}`)
+  }
+  const info = await stat(root)
+  if (!info.isDirectory()) {
+    throw new Error(`项目路径不是目录：${root}`)
+  }
+
+  const cli = await ensureCodegraphCliInstalled()
+  const result = await runCommand(cli.command, ["init"], {
+    cwd: root,
+    timeoutMs: 600_000,
+  })
+  if (result.code !== 0) {
+    throw new Error(
+      `codegraph init 失败（${root}）：${(result.stderr || result.stdout || "unknown error").trim()}`,
+    )
+  }
+  return {
+    projectPath: root,
+    command: cli.command,
+    output: (result.stdout || result.stderr || "").trim(),
+  }
+}
+
 export function agentsInstructionsPath(codexHome: string) {
   return join(codexHome, "AGENTS.md")
 }
@@ -216,16 +251,30 @@ export async function getCodegraphMcpStatus(params: {
   const configuredCommand = command || cli.command
   const configuredExists =
     Boolean(command) && command !== "codegraph" ? await pathExists(command) : cli.available
+  const installed = codegraphMcpConfigInstalled(params.configText)
+  const agentsOk = agentsInstructionsInstalled(agentsText)
+  const cliAvailable = configuredExists || cli.available
+  let cliVersion = ""
+  if (cliAvailable) {
+    try {
+      const versioned = await resolveCodegraphCli()
+      if (versioned.available) cliVersion = versioned.version
+    } catch {
+      cliVersion = ""
+    }
+  }
   return {
     serverName: CODEGRAPH_MCP_SERVER_NAME,
-    installed: codegraphMcpConfigInstalled(params.configText),
+    installed,
     enabled: enabled !== false,
     command,
     args,
-    cliAvailable: configuredExists || cli.available,
+    cliAvailable,
     cliCommand: configuredCommand,
-    agentsInstructionsInstalled: agentsInstructionsInstalled(agentsText),
+    cliVersion,
+    agentsInstructionsInstalled: agentsOk,
     agentsPath,
+    ready: installed && cliAvailable && agentsOk && enabled !== false,
   }
 }
 

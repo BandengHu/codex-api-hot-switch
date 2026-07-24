@@ -27,6 +27,7 @@ import {
   clearCodegraphAgentsInstructions,
   ensureCodegraphCliInstalled,
   getCodegraphMcpStatus,
+  initCodegraphProject,
   installCodegraphMcpConfigText,
   removeCodegraphMcpConfigText,
   writeCodegraphAgentsInstructions,
@@ -596,6 +597,19 @@ export async function removeCodexCodegraphMcp(settings: Settings): Promise<Codex
   return {
     status: await getCodexConfigStatus(settings),
     message: "已移除 CodeGraph MCP 配置与 AGENTS.md 指导，重启 Codex 后生效",
+  }
+}
+
+export async function initCodexCodegraphProject(
+  settings: Settings,
+  projectPath: string,
+): Promise<CodexConfigMutationResult> {
+  const result = await initCodegraphProject(projectPath)
+  return {
+    status: await getCodexConfigStatus(settings),
+    message: result.output
+      ? `已在项目建立 CodeGraph 索引：${result.projectPath}\n${result.output}`
+      : `已在项目建立 CodeGraph 索引：${result.projectPath}`,
   }
 }
 

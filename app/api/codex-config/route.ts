@@ -8,6 +8,7 @@ import {
   installCodexConfig,
   installCodexWebSearchMcp,
   installCodexCodegraphMcp,
+  initCodexCodegraphProject,
   removeCodexWebSearchMcp,
   removeCodexCodegraphMcp,
   restoreCodexConfig,
@@ -60,6 +61,7 @@ export async function POST(request: Request) {
       backupId?: unknown
       backupIds?: unknown
       subagentModelSlugs?: unknown
+      projectPath?: unknown
     }>(request)
     const snapshot = await getSnapshot()
     if (body.action === "install") {
@@ -97,6 +99,14 @@ export async function POST(request: Request) {
     }
     if (body.action === "remove-codegraph-mcp") {
       return NextResponse.json(await removeCodexCodegraphMcp(snapshot.settings))
+    }
+    if (body.action === "init-codegraph-project") {
+      return NextResponse.json(
+        await initCodexCodegraphProject(
+          snapshot.settings,
+          requiredString(body.projectPath, "项目路径"),
+        ),
+      )
     }
     if (body.action === "backup-current") {
       return NextResponse.json(await backupCurrentCodexConfig(snapshot.settings, stringValue(body.note)))

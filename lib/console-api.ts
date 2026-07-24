@@ -432,3 +432,15 @@ export async function removeCodexCodegraphMcp(): Promise<CodexConfigMutationResu
     }),
   )
 }
+
+export async function initCodexCodegraphProject(
+  projectPath: string,
+): Promise<CodexConfigMutationResult> {
+  return parseResponse<CodexConfigMutationResult>(
+    await fetch("/api/codex-config", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "init-codegraph-project", projectPath }),
+    }),
+  )
+}
