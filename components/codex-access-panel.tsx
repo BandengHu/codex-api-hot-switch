@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   Bot,
   CheckCircle2,
+  FolderOpen,
   ListRestart,
   PlugZap,
   RefreshCw,
@@ -56,6 +57,7 @@ import { toast } from "sonner"
 import { CodexConfigBackupManager } from "@/components/codex-config-backup-manager"
 import { useConsole } from "@/lib/console-store"
 import { isChatModel } from "@/lib/model-capabilities"
+import { selectDesktopDirectory } from "@/lib/desktop-directory-picker"
 
 export function CodexAccessPanel() {
   const { settings, providers, models, replaceSnapshot } = useConsole()
@@ -75,6 +77,7 @@ export function CodexAccessPanel() {
     | "remove-web-search-mcp"
     | "install-codegraph-mcp"
     | "remove-codegraph-mcp"
+    | "select-codegraph-project"
     | "init-codegraph-project"
     | null
   >(null)
@@ -234,6 +237,18 @@ export function CodexAccessPanel() {
       const result = await initCodexCodegraphProject(codegraphProjectPath)
       setStatus(result.status)
       toast.success(result.message)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setWorking(null)
+    }
+  }
+
+  async function handleSelectCodegraphProject() {
+    setWorking("select-codegraph-project")
+    try {
+      const selectedPath = await selectDesktopDirectory(codegraphProjectPath)
+      if (selectedPath) setCodegraphProjectPath(selectedPath)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
     } finally {
@@ -571,6 +586,20 @@ export function CodexAccessPanel() {
                     placeholder="项目绝对路径，例如 C:\\repo\\my-app"
                     disabled={busy}
                   />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="md:w-auto"
+                    onClick={() => void handleSelectCodegraphProject()}
+                    disabled={busy}
+                  >
+                    {working === "select-codegraph-project" ? (
+                      <Spinner data-icon="inline-start" />
+                    ) : (
+                      <FolderOpen data-icon="inline-start" />
+                    )}
+                    选择文件夹
+                  </Button>
                   <Button
                     variant="outline"
                     size="sm"

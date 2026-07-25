@@ -11,6 +11,11 @@ contextBridge.exposeInMainWorld("codexHotSwitchFloating", {
     if (!CHANNELS.has(channel)) return
     ipcRenderer.send(channel, message)
   },
+  selectDirectory(initialPath = "") {
+    return ipcRenderer.invoke("codex-hot-switch-select-directory", {
+      initialPath: typeof initialPath === "string" ? initialPath : "",
+    })
+  },
   onDesktopMessage(callback) {
     if (typeof callback !== "function") return () => undefined
     const listener = (_event, message) => callback(message)

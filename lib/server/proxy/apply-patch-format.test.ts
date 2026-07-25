@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import {
+  APPLY_PATCH_PARAMETERS,
   buildApplyPatchText,
   normalizeApplyPatchText,
   reconstructApplyPatchInput,
@@ -35,7 +36,7 @@ test("OpenCode edit style becomes update freeform", () => {
   assert.match(out, /\*\*\* End Patch\n$/)
 })
 
-test("OpenCode write style becomes replace freeform", () => {
+test("OpenCode write style becomes create-or-overwrite freeform", () => {
   const out = reconstructApplyPatchInput(
     "batch",
     JSON.stringify({
@@ -43,9 +44,26 @@ test("OpenCode write style becomes replace freeform", () => {
       content: "export const ok = true\n",
     }),
   )
-  assert.match(out, /\*\*\* Delete File: src\/new\.ts\n/)
   assert.match(out, /\*\*\* Add File: src\/new\.ts\n/)
   assert.match(out, /\+export const ok = true\n/)
+  assert.equal(out.includes("*** Delete File:"), false)
+})
+
+test("OpenCode write style can create or clear an empty file", () => {
+  const out = reconstructApplyPatchInput(
+    "batch",
+    JSON.stringify({
+      path: "src/empty.txt",
+      content: "",
+    }),
+  )
+  assert.match(out, /\*\*\* Add File: src\/empty\.txt\n/)
+  assert.match(out, /\n\+\n\*\*\* End Patch\n$/)
+})
+
+test("unsupported replace_all fields are not advertised", () => {
+  assert.equal("replace_all" in APPLY_PATCH_PARAMETERS.properties, false)
+  assert.equal("replaceAll" in APPLY_PATCH_PARAMETERS.properties, false)
 })
 
 test("OpenCode edits batch and patchText fallback work", () => {

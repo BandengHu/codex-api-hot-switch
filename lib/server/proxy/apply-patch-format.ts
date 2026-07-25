@@ -101,14 +101,6 @@ export const APPLY_PATCH_PARAMETERS = {
       type: "string",
       description: "Full file content for write/create (OpenCode write style).",
     },
-    replace_all: {
-      type: "boolean",
-      description: "Replace all exact occurrences when using old_string/new_string. Best effort for apply_patch conversion.",
-    },
-    replaceAll: {
-      type: "boolean",
-      description: "Alias of replace_all.",
-    },
     edits: {
       type: "array",
       description: "Batch of OpenCode-style edit/write operations.",
@@ -122,8 +114,6 @@ export const APPLY_PATCH_PARAMETERS = {
           oldString: { type: "string" },
           newString: { type: "string" },
           content: { type: "string" },
-          replace_all: { type: "boolean" },
-          replaceAll: { type: "boolean" },
         },
         required: ["path"],
       },
@@ -206,7 +196,7 @@ export function buildApplyPatchText(operations: AnyRecord[]) {
   for (const operation of operations) {
     const path = safeTrim(operation.path)
     if (!path) continue
-    if (operation.type === "add_file") {
+    if (operation.type === "add_file" || operation.type === "replace_file") {
       text += `\n*** Add File: ${path}`
       for (const line of splitLinesPreserveEnd(String(operation.content ?? ""))) text += `\n+${line}`
     } else if (operation.type === "delete_file") {
@@ -228,10 +218,6 @@ export function buildApplyPatchText(operations: AnyRecord[]) {
           text += `\n${op}${rawText}`
         }
       }
-    } else if (operation.type === "replace_file") {
-      text += `\n*** Delete File: ${path}`
-      text += `\n*** Add File: ${path}`
-      for (const line of splitLinesPreserveEnd(String(operation.content ?? ""))) text += `\n+${line}`
     }
   }
   return `${text}\n*** End Patch\n`
@@ -244,11 +230,11 @@ function openCodeEditToOperation(edit: AnyRecord): AnyRecord | null {
   const oldString = asString(edit.old_string ?? edit.oldString)
   const newString = asString(edit.new_string ?? edit.newString)
   const content = asString(edit.content)
-  const replaceAll = Boolean(edit.replace_all ?? edit.replaceAll)
+  const hasContent = Object.prototype.hasOwnProperty.call(edit, "content")
 
-  if (content && !oldString && !newString) {
-    // Full write/create. replace_file covers both create and overwrite for Codex freeform.
-    return { type: "replace_file", path, content }
+  if (hasContent && !oldString && !newString) {
+    // Codex Add File supports both create and intentional full-file overwrite.
+    return { type: "add_file", path, content }
   }
 
   if (oldString || newString) {
@@ -262,9 +248,6 @@ function openCodeEditToOperation(edit: AnyRecord): AnyRecord | null {
         ...addLines.map((text) => ({ op: "add", text })),
       ],
     }
-    // apply_patch freeform cannot natively express replace_all; emit one hunk.
-    // Callers should pass unique old_string when possible.
-    void replaceAll
     return {
       type: "update_file",
       path,

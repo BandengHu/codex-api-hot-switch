@@ -625,6 +625,30 @@ function createFloatingBallWindow(position) {
 }
 
 function setupFloatingIpc() {
+  ipcMain.handle("codex-hot-switch-select-directory", async (event, message) => {
+    if (
+      !mainWindow ||
+      mainWindow.isDestroyed() ||
+      event.sender !== mainWindow.webContents
+    ) {
+      return { canceled: true, path: "" }
+    }
+
+    const initialPath =
+      typeof message?.initialPath === "string" ? message.initialPath.trim() : ""
+    const options = {
+      title: "选择要建立 CodeGraph 索引的项目文件夹",
+      properties: ["openDirectory"],
+    }
+    if (initialPath && existsSync(initialPath)) options.defaultPath = initialPath
+
+    const result = await dialog.showOpenDialog(mainWindow, options)
+    return {
+      canceled: result.canceled,
+      path: result.filePaths[0] || "",
+    }
+  })
+
   ipcMain.on("codex-hot-switch-console", (_event, message) => {
     if (message?.type === "console-changed") {
       broadcastConsoleChanged(message.payload?.source || "renderer")
