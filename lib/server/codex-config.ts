@@ -27,7 +27,7 @@ import {
   clearCodegraphAgentsInstructions,
   ensureCodegraphCliInstalled,
   getCodegraphMcpStatus,
-  initCodegraphProject,
+  initCodegraphProjects,
   installCodegraphMcpConfigText,
   removeCodegraphMcpConfigText,
   writeCodegraphAgentsInstructions,
@@ -572,7 +572,7 @@ export async function installCodexCodegraphMcp(settings: Settings): Promise<Code
   await writeCodegraphAgentsInstructions(codexHome())
   return {
     status: await getCodexConfigStatus(settings),
-    message: "已写入 CodeGraph MCP 与 AGENTS.md 指导，重启 Codex 后生效；项目根目录需执行 codegraph init 建索引",
+    message: "已写入 CodeGraph MCP 与 AGENTS.md 指导，重启 Codex 后生效；选择工作区后可自动发现 Git 项目并建立索引",
   }
 }
 
@@ -600,16 +600,23 @@ export async function removeCodexCodegraphMcp(settings: Settings): Promise<Codex
   }
 }
 
-export async function initCodexCodegraphProject(
+export async function initCodexCodegraphProjects(
   settings: Settings,
-  projectPath: string,
+  selectedPath: string,
 ): Promise<CodexConfigMutationResult> {
-  const result = await initCodegraphProject(projectPath)
+  const result = await initCodegraphProjects(selectedPath)
+  const initializedPaths = result.initializedProjects.map((item) => item.projectPath)
+  const totalProjects = initializedPaths.length + result.indexedProjectRoots.length
+  const details = [
+    ...initializedPaths.map((path) => `新建索引：${path}`),
+    ...result.indexedProjectRoots.map((path) => `已有索引：${path}`),
+  ]
   return {
     status: await getCodexConfigStatus(settings),
-    message: result.output
-      ? `已在项目建立 CodeGraph 索引：${result.projectPath}\n${result.output}`
-      : `已在项目建立 CodeGraph 索引：${result.projectPath}`,
+    message: [
+      `CodeGraph 索引处理完成：扫描 ${result.scannedDirectories} 个目录，发现 ${totalProjects} 个 Git 项目，新建 ${initializedPaths.length} 个，已有 ${result.indexedProjectRoots.length} 个。`,
+      ...details,
+    ].join("\n"),
   }
 }
 

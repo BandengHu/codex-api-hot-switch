@@ -38,7 +38,7 @@ import {
   installCodexConfig,
   installCodexWebSearchMcp,
   installCodexCodegraphMcp,
-  initCodexCodegraphProject,
+  initCodexCodegraphProjects,
   removeCodexWebSearchMcp,
   removeCodexCodegraphMcp,
   restoreCodexConfig,
@@ -78,7 +78,7 @@ export function CodexAccessPanel() {
     | "install-codegraph-mcp"
     | "remove-codegraph-mcp"
     | "select-codegraph-project"
-    | "init-codegraph-project"
+    | "init-codegraph-projects"
     | null
   >(null)
   const [error, setError] = useState("")
@@ -231,10 +231,10 @@ export function CodexAccessPanel() {
     }
   }
 
-  async function handleInitCodegraphProject() {
-    setWorking("init-codegraph-project")
+  async function handleInitCodegraphProjects() {
+    setWorking("init-codegraph-projects")
     try {
-      const result = await initCodexCodegraphProject(codegraphProjectPath)
+      const result = await initCodexCodegraphProjects(codegraphProjectPath)
       setStatus(result.status)
       toast.success(result.message)
     } catch (err) {
@@ -518,7 +518,7 @@ export function CodexAccessPanel() {
                     </Badge>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    接入原始 CodeGraph MCP（codegraph serve --mcp），写入 AGENTS.md 指导优先用图谱。启用后可对具体项目执行 codegraph init 建索引。
+                    接入原始 CodeGraph MCP（codegraph serve --mcp），写入 AGENTS.md 指导优先用图谱。选择工作区后会自动发现其中的 Git 项目并建立索引。
                   </p>
                 </div>
                 <div className="flex gap-2">
@@ -573,7 +573,7 @@ export function CodexAccessPanel() {
               <div className="flex flex-col gap-2 rounded-md border bg-background/60 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="text-xs text-muted-foreground">
-                    项目索引（codegraph init）
+                    工作区索引（自动发现 Git 项目）
                     {status.codegraphMcp.cliVersion
                       ? ` · CLI ${status.codegraphMcp.cliVersion}`
                       : ""}
@@ -583,7 +583,7 @@ export function CodexAccessPanel() {
                   <Input
                     value={codegraphProjectPath}
                     onChange={(event) => setCodegraphProjectPath(event.target.value)}
-                    placeholder="项目绝对路径，例如 C:\\repo\\my-app"
+                    placeholder="工作区绝对路径，例如 C:\\repo"
                     disabled={busy}
                   />
                   <Button
@@ -604,15 +604,15 @@ export function CodexAccessPanel() {
                     variant="outline"
                     size="sm"
                     className="md:w-auto"
-                    onClick={() => void handleInitCodegraphProject()}
+                    onClick={() => void handleInitCodegraphProjects()}
                     disabled={busy || !codegraphProjectPath.trim()}
                   >
-                    {working === "init-codegraph-project" ? (
+                    {working === "init-codegraph-projects" ? (
                       <Spinner data-icon="inline-start" />
                     ) : (
                       <ListRestart data-icon="inline-start" />
                     )}
-                    建立索引
+                    扫描并建索引
                   </Button>
                 </div>
               </div>

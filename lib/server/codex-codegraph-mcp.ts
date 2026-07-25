@@ -1,10 +1,11 @@
 import "server-only"
 
 import { spawn } from "node:child_process"
-import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises"
+import { access, mkdir, readFile, writeFile } from "node:fs/promises"
 import { constants as fsConstants } from "node:fs"
 import { dirname, join } from "node:path"
 import { env as processEnv } from "node:process"
+import { discoverCodegraphProjects } from "./codegraph-project-discovery"
 import {
   CODEGRAPH_MCP_SERVER_NAME,
   CODEGRAPH_PACKAGE_NAME,
@@ -186,19 +187,8 @@ export async function ensureCodegraphCliInstalled() {
   return resolved
 }
 
-export async function initCodegraphProject(projectPath: string) {
-  const root = projectPath.trim()
-  if (!root) throw new Error("项目路径不能为空")
-  if (!(await pathExists(root))) {
-    throw new Error(`项目路径不存在：${root}`)
-  }
-  const info = await stat(root)
-  if (!info.isDirectory()) {
-    throw new Error(`项目路径不是目录：${root}`)
-  }
-
-  const cli = await ensureCodegraphCliInstalled()
-  const result = await runCommand(cli.command, ["init"], {
+async function runCodegraphInit(command: string, root: string) {
+  const result = await runCommand(command, ["init"], {
     cwd: root,
     timeoutMs: 600_000,
   })
@@ -209,8 +199,49 @@ export async function initCodegraphProject(projectPath: string) {
   }
   return {
     projectPath: root,
-    command: cli.command,
     output: (result.stdout || result.stderr || "").trim(),
+  }
+}
+
+export async function initCodegraphProjects(selectedPath: string) {
+  const discovery = await discoverCodegraphProjects(selectedPath)
+  const totalProjects =
+    discovery.projectRoots.length + discovery.indexedProjectRoots.length
+  if (totalProjects === 0) {
+    throw new Error(
+      `在 ${discovery.selectedPath} 及其子目录中未发现带 .git 标记的项目`,
+    )
+  }
+  if (discovery.projectRoots.length === 0) {
+    return {
+      ...discovery,
+      initializedProjects: [] as Array<{ projectPath: string; output: string }>,
+    }
+  }
+
+  const cli = await ensureCodegraphCliInstalled()
+  const initializedProjects: Array<{ projectPath: string; output: string }> = []
+  const failures: string[] = []
+  for (const projectPath of discovery.projectRoots) {
+    try {
+      initializedProjects.push(await runCodegraphInit(cli.command, projectPath))
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  if (failures.length > 0) {
+    throw new Error(
+      [
+        `CodeGraph 批量建索引未全部完成：成功 ${initializedProjects.length} 个，失败 ${failures.length} 个`,
+        ...failures,
+      ].join("\n"),
+    )
+  }
+
+  return {
+    ...discovery,
+    initializedProjects,
   }
 }
 

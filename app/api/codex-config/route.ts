@@ -8,7 +8,7 @@ import {
   installCodexConfig,
   installCodexWebSearchMcp,
   installCodexCodegraphMcp,
-  initCodexCodegraphProject,
+  initCodexCodegraphProjects,
   removeCodexWebSearchMcp,
   removeCodexCodegraphMcp,
   restoreCodexConfig,
@@ -100,9 +100,9 @@ export async function POST(request: Request) {
     if (body.action === "remove-codegraph-mcp") {
       return NextResponse.json(await removeCodexCodegraphMcp(snapshot.settings))
     }
-    if (body.action === "init-codegraph-project") {
+    if (body.action === "init-codegraph-projects") {
       return NextResponse.json(
-        await initCodexCodegraphProject(
+        await initCodexCodegraphProjects(
           snapshot.settings,
           requiredString(body.projectPath, "项目路径"),
         ),
