@@ -45,7 +45,15 @@ import {
 import { toast } from "sonner"
 
 export function ProvidersView() {
-  const { providers, modelsByProvider, addProvider, addProviderWithModels, updateProvider, deleteProvider } =
+  const {
+    providers,
+    modelsByProvider,
+    addProvider,
+    addProviderWithModels,
+    updateProvider,
+    updateProviderWithModels,
+    deleteProvider,
+  } = useConsole()
     useConsole()
   const [sheetOpen, setSheetOpen] = useState(false)
   const [editing, setEditing] = useState<Provider | null>(null)
@@ -119,7 +127,7 @@ export function ProvidersView() {
                 <TableHead>名称</TableHead>
                 <TableHead>协议</TableHead>
                 <TableHead>推理方言</TableHead>
-                <TableHead>Base URL</TableHead>
+                <TableHead>端点</TableHead>
                 <TableHead className="text-center">模型数</TableHead>
                 <TableHead>健康状态</TableHead>
                 <TableHead className="text-right">操作</TableHead>
@@ -152,9 +160,14 @@ export function ProvidersView() {
                     </Badge>
                   </TableCell>
                   <TableCell className="max-w-[220px]">
-                    <code className="block truncate font-mono text-xs text-muted-foreground">
-                      {p.baseUrl}
-                    </code>
+                    <div className="flex flex-col gap-1">
+                      <code className="block truncate font-mono text-xs text-muted-foreground">
+                        {p.endpoints[0]?.baseUrl || "未配置"}
+                      </code>
+                      <span className="text-xs text-muted-foreground">
+                        {p.endpoints.filter((endpoint) => endpoint.enabled).length}/{p.endpoints.length} 组启用
+                      </span>
+                    </div>
                   </TableCell>
                   <TableCell className="text-center font-mono text-sm tabular-nums">
                     {modelsByProvider(p.id).length}
@@ -209,13 +222,19 @@ export function ProvidersView() {
         onOpenChange={handleSheetOpenChange}
         editing={editing}
         cloneDraft={cloneDraft}
-        onSubmit={(p, models) =>
-          editing
-            ? updateProvider(p)
-            : models?.length
-              ? addProviderWithModels(p, models)
-              : addProvider(p)
-        }
+        existingModels={editing ? modelsByProvider(editing.id) : cloneDraft?.models ?? []}
+        onSubmit={(p, models) => {
+          if (editing) {
+            if (models?.length) updateProviderWithModels(p, models)
+            else updateProvider(p)
+            return
+          }
+          if (models?.length) {
+            addProviderWithModels(p, models)
+            return
+          }
+          addProvider(p)
+        }}
       />
 
       <AlertDialog

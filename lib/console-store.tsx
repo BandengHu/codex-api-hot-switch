@@ -15,6 +15,7 @@ import {
   fetchConsoleSnapshot,
   fetchRequestLogs,
   fetchTokenStats,
+  resetProviderEndpointRuntime,
   saveConsoleSnapshot,
 } from "@/lib/console-api"
 import {
@@ -56,7 +57,9 @@ interface ConsoleState extends ConsoleSnapshot {
   addProvider: (p: Provider) => void
   addProviderWithModels: (p: Provider, models: Model[]) => void
   updateProvider: (p: Provider) => void
+  updateProviderWithModels: (p: Provider, models: Model[]) => void
   deleteProvider: (id: string) => void
+  resetProviderEndpoint: (providerId: string, endpointId: string) => Promise<void>
   // models
   addModel: (m: Model) => void
   updateModel: (m: Model) => void
@@ -88,6 +91,7 @@ function normalizeDefault(snapshot: ConsoleSnapshot): ConsoleSnapshot {
     providers: snapshot.providers ?? [],
     models: snapshot.models ?? [],
     mappings: snapshot.mappings ?? [],
+    endpointStates: snapshot.endpointStates ?? [],
   }
 }
 
@@ -96,6 +100,34 @@ function mergeConfigSnapshot(prev: ConsoleSnapshot, next: ConsoleSnapshot): Cons
     ...next,
     logs: prev.logs,
     tokenStats: prev.tokenStats,
+  })
+}
+
+function updateProviderList(providers: Provider[], provider: Provider) {
+  return providers.map((current) =>
+    current.id === provider.id
+      ? provider
+      : provider.isDefault
+        ? { ...current, isDefault: false }
+        : current,
+  )
+}
+
+function normalizeAddedModels(
+  existingModels: Model[],
+  modelsToAdd: Model[],
+  providerId?: string,
+) {
+  const usedIds = new Set(existingModels.map((model) => model.id))
+  return modelsToAdd.map((model) => {
+    let id = model.id
+    while (usedIds.has(id)) id = `m-${crypto.randomUUID().slice(0, 8)}`
+    usedIds.add(id)
+    return {
+      ...model,
+      id,
+      providerId: providerId ?? model.providerId,
+    }
   })
 }
 
@@ -252,15 +284,11 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
           const nextProviders = p.isDefault
             ? prev.providers.map((x) => ({ ...x, isDefault: false }))
             : prev.providers
-          const modelIds = new Set(prev.models.map((model) => model.id))
-          const normalizedModels = providerModels.map((model) => {
-            let id = model.id
-            while (modelIds.has(id)) {
-              id = `m-${crypto.randomUUID().slice(0, 8)}`
-            }
-            modelIds.add(id)
-            return { ...model, id, providerId: p.id }
-          })
+          const normalizedModels = normalizeAddedModels(
+            prev.models,
+            providerModels,
+            p.id,
+          )
           return {
             ...prev,
             providers: [...nextProviders, p],
@@ -270,13 +298,16 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
       updateProvider: (p) =>
         persist((prev) => ({
           ...prev,
-          providers: prev.providers.map((x) =>
-            x.id === p.id
-              ? p
-              : p.isDefault
-                ? { ...x, isDefault: false }
-                : x,
-          ),
+          providers: updateProviderList(prev.providers, p),
+        })),
+      updateProviderWithModels: (p, providerModels) =>
+        persist((prev) => ({
+          ...prev,
+          providers: updateProviderList(prev.providers, p),
+          models: [
+            ...prev.models,
+            ...normalizeAddedModels(prev.models, providerModels, p.id),
+          ],
         })),
       deleteProvider: (id) =>
         persist((prev) => {
@@ -342,6 +373,10 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
             settings: settingsNext,
           }
         }),
+      resetProviderEndpoint: async (providerId, endpointId) => {
+        const next = await resetProviderEndpointRuntime(providerId, endpointId)
+        setSnapshot((prev) => mergeConfigSnapshot(prev, next))
+      },
       updateModel: (m) =>
         persist((prev) => ({
           ...prev,

@@ -34,6 +34,7 @@ import type {
   WecomBridgeSettings,
   WecomBridgeStatus,
 } from "@/lib/wecom-bridge-types"
+import type { ProviderModelDiscoveryResult } from "@/lib/provider-model-discovery"
 
 function parseJsonText(text: string): unknown {
   if (!text.trim()) return null
@@ -107,12 +108,30 @@ export async function fetchConsoleTelemetry(): Promise<{
 export async function saveConsoleSnapshot(
   snapshot: ConsoleSnapshot,
 ): Promise<ConsoleSnapshot> {
-  const { logs: _logs, tokenStats: _tokenStats, ...configSnapshot } = snapshot
+  const {
+    logs: _logs,
+    tokenStats: _tokenStats,
+    endpointStates: _endpointStates,
+    ...configSnapshot
+  } = snapshot
   return parseResponse<ConsoleSnapshot>(
     await fetch("/api/console", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(configSnapshot),
+    }),
+  )
+}
+
+export async function resetProviderEndpointRuntime(
+  providerId: string,
+  endpointId: string,
+): Promise<ConsoleSnapshot> {
+  return parseResponse<ConsoleSnapshot>(
+    await fetch("/api/provider-endpoints/runtime", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providerId, endpointId }),
     }),
   )
 }
@@ -144,6 +163,18 @@ export async function resetTokenStats(): Promise<ConsoleSnapshot> {
 export async function testProvider(provider: Provider): Promise<ProviderTestResult> {
   return parseResponse<ProviderTestResult>(
     await fetch("/api/providers/test", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider }),
+    }),
+  )
+}
+
+export async function fetchProviderModels(
+  provider: Provider,
+): Promise<ProviderModelDiscoveryResult> {
+  return parseResponse<ProviderModelDiscoveryResult>(
+    await fetch("/api/providers/models", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ provider }),
