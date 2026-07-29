@@ -5,6 +5,7 @@ import type {
   ProtocolType,
   ReasoningDialect,
 } from "@/lib/types"
+import { createProviderEndpoint } from "@/lib/provider-endpoints"
 
 export interface ProviderPresetModel {
   displayName: string
@@ -990,8 +991,21 @@ export function createProviderPresetDraft(
     id: providerId,
     name: preset.name,
     protocol: preset.protocol,
-    baseUrl: preset.baseUrl,
-    apiKey: existingProvider?.apiKey || "",
+    endpoints: existingProvider?.endpoints?.length
+      ? existingProvider.endpoints.map((endpoint, index) =>
+          index === 0
+            ? { ...endpoint, baseUrl: preset.baseUrl }
+            : { ...endpoint },
+        )
+      : [
+          createProviderEndpoint(providerId, {
+            id: `${providerId}-primary`,
+            name: "主用",
+            baseUrl: preset.baseUrl,
+            apiKey: "",
+            enabled: true,
+          }),
+        ],
     headers: (preset.headers || []).map((header) => ({
       id: stamp("h"),
       key: header.key,

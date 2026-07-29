@@ -1,6 +1,7 @@
 import "server-only"
 
 import { isChatModel } from "@/lib/model-capabilities"
+import { resolvePrimaryProvider } from "@/lib/provider-endpoints"
 import type { RoutingSnapshot } from "@/lib/types"
 import type { ProxyTarget } from "./common"
 
@@ -62,7 +63,7 @@ export function applyAuxiliaryRouting(
 
   return {
     ...target,
-    provider,
+    provider: resolvePrimaryProvider(provider),
     model,
     modelId: model.modelId,
     reasoning: model.supportsReasoning ? snapshot.settings.auxiliaryReasoning : "off",

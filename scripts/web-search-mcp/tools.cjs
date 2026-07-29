@@ -1,10 +1,12 @@
 "use strict"
 
+const { randomUUID } = require("node:crypto")
 const { executeBrowsePage, normalizeBrowsePageInput } = require("./page-reader.cjs")
 const { executeWebSearch, normalizeWebSearchInput } = require("./search.cjs")
 
 const WEB_SEARCH_TOOL_NAME = "web_search"
 const BROWSE_PAGE_TOOL_NAME = "browse_page"
+const MCP_SESSION_ID = randomUUID()
 
 const TOOL_DEFINITIONS = [
   {
@@ -17,11 +19,6 @@ const TOOL_DEFINITIONS = [
       additionalProperties: false,
       properties: {
         query: { type: "string", description: "The search query." },
-        provider: {
-          type: "string",
-          enum: ["auto", "exa", "parallel"],
-          description: "Optional search backend override.",
-        },
         numResults: {
           type: "integer",
           minimum: 1,
@@ -44,8 +41,6 @@ const TOOL_DEFINITIONS = [
           maximum: 200000,
           description: "Optional Exa context character budget.",
         },
-        sessionId: { type: "string", description: "Optional Parallel session id." },
-        modelName: { type: "string", description: "Optional Parallel model name hint." },
       },
       required: ["query"],
     },
@@ -73,6 +68,17 @@ const TOOL_DEFINITIONS = [
           maximum: 100000,
           description: "Maximum extracted text characters per page. Defaults to 20000.",
         },
+        format: {
+          type: "string",
+          enum: ["markdown", "text", "html"],
+          description: "Output format. Defaults to markdown.",
+        },
+        timeout: {
+          type: "number",
+          minimum: 1,
+          maximum: 120,
+          description: "Request timeout in seconds, up to 120.",
+        },
       },
       anyOf: [{ required: ["url"] }, { required: ["urls"] }],
     },
@@ -81,7 +87,13 @@ const TOOL_DEFINITIONS = [
 
 async function executeTool(name, argumentsValue, signal) {
   if (name === WEB_SEARCH_TOOL_NAME) {
-    return await executeWebSearch(normalizeWebSearchInput(argumentsValue), signal)
+    return await executeWebSearch(
+      normalizeWebSearchInput({
+        ...(argumentsValue && typeof argumentsValue === "object" ? argumentsValue : {}),
+        sessionId: MCP_SESSION_ID,
+      }),
+      signal,
+    )
   }
   if (name === BROWSE_PAGE_TOOL_NAME) {
     return await executeBrowsePage(normalizeBrowsePageInput(argumentsValue), signal)

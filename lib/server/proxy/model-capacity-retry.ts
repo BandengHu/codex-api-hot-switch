@@ -22,7 +22,10 @@ export function isModelCapacityMessage(value: unknown) {
   const text = String(value || "").trim().toLowerCase()
   return (
     text.includes("selected model is at capacity") ||
-    text.includes("model is at capacity")
+    text.includes("model is at capacity") ||
+    text.includes("too many pending requests") ||
+    text.includes("no available accounts") ||
+    text.includes("concurrency limit exceeded")
   )
 }
 

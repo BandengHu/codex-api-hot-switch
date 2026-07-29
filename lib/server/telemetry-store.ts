@@ -3,11 +3,16 @@ import "server-only"
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+import { compactTokenStats } from "@/lib/server/token-stat-retention"
 import { tokenStatFromLog } from "@/lib/token-stats"
-import type { RequestLog, Settings, TokenStatEntry } from "@/lib/types"
+import type {
+  RequestLog,
+  Settings,
+  TokenStatAggregation,
+  TokenStatEntry,
+} from "@/lib/types"
 
 const MAX_LOGS = 500
-const MAX_TOKEN_STATS = 2000
 const RECENT_LOG_CACHE = 100
 const RECENT_TOKEN_STATS_CACHE = 200
 const MAX_STORED_LOG_FIELD_CHARS = 4000
@@ -122,6 +127,17 @@ function normalizeTokenStat(value: unknown): TokenStatEntry | null {
     cachedInputTokens: Number(entry.cachedInputTokens) || 0,
     cacheCreationInputTokens: Number(entry.cacheCreationInputTokens) || 0,
     reasoningTokens: Number(entry.reasoningTokens) || 0,
+    requestCount:
+      Number.isFinite(entry.requestCount) && Number(entry.requestCount) >= 1
+        ? Math.round(Number(entry.requestCount))
+        : 1,
+    aggregation:
+      entry.aggregation === "day" || entry.aggregation === "history"
+        ? (entry.aggregation as TokenStatAggregation)
+        : "request",
+    ...(typeof entry.resetAt === "string" && entry.resetAt.trim()
+      ? { resetAt: entry.resetAt }
+      : {}),
   }
 }
 
@@ -166,9 +182,23 @@ function normalizeLogValue(value: unknown): RequestLog | null {
     codexModel: log.codexModel,
     finalProviderId: log.finalProviderId,
     finalModelId: log.finalModelId,
+    finalEndpointId: log.finalEndpointId,
+    finalEndpointName: log.finalEndpointName,
+    attemptedEndpointIds: Array.isArray(log.attemptedEndpointIds)
+      ? log.attemptedEndpointIds.filter((id): id is string => typeof id === "string")
+      : undefined,
+    failoverReason: log.failoverReason,
     reasoning: log.reasoning as RequestLog["reasoning"],
     statusCode: Number(log.statusCode),
     durationMs: Number(log.durationMs),
+    ...(typeof log.stream === "boolean" ? { stream: log.stream } : {}),
+    ...(Number.isFinite(log.firstTokenMs) && Number(log.firstTokenMs) >= 0
+      ? { firstTokenMs: Number(log.firstTokenMs) }
+      : {}),
+    ...(Number.isFinite(log.outputTokensPerSecond) &&
+    Number(log.outputTokensPerSecond) >= 0
+      ? { outputTokensPerSecond: Number(log.outputTokensPerSecond) }
+      : {}),
     tokenUsage: log.tokenUsage,
     error: log.error,
     rawRequest: log.rawRequest ?? "",
@@ -193,10 +223,6 @@ function pruneLogs(logs: RequestLog[], settings: Settings) {
     .slice(0, MAX_LOGS)
 }
 
-function pruneTokenStats(tokenStats: TokenStatEntry[]) {
-  return descendingByTimestamp(tokenStats).slice(0, MAX_TOKEN_STATS)
-}
-
 async function writeJsonlAtomic(path: string, items: unknown[]) {
   await mkdir(dirname(path), { recursive: true })
   const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`
@@ -217,7 +243,7 @@ async function readStoredTokenStats() {
 
 async function compactTelemetryFiles(settings: Settings) {
   const logs = pruneLogs(await readStoredLogs(), settings)
-  const tokenStats = pruneTokenStats(await readStoredTokenStats())
+  const tokenStats = compactTokenStats(await readStoredTokenStats())
   await Promise.all([
     writeJsonlAtomic(requestLogsPath(), [...logs].reverse()),
     writeJsonlAtomic(tokenStatsPath(), [...tokenStats].reverse()),
@@ -231,7 +257,7 @@ export async function appendTelemetryLog(log: RequestLog, settings: Settings) {
     await ensureTelemetryDir()
     const storedLog = normalizeStoredLog(log)
     await appendFile(requestLogsPath(), `${JSON.stringify(storedLog)}\n`, "utf8")
-    const tokenStat = tokenStatFromLog(storedLog)
+    const tokenStat = tokenStatFromLog(storedLog, settings.tokenStatsResetAt)
     if (tokenStat) {
       await appendFile(tokenStatsPath(), `${JSON.stringify(tokenStat)}\n`, "utf8")
     }
@@ -271,14 +297,14 @@ export async function findRequestLog(id: string) {
 
 export async function getTokenStats() {
   await telemetryQueue.catch(() => undefined)
-  const tokenStats = pruneTokenStats(await readStoredTokenStats())
+  const tokenStats = compactTokenStats(await readStoredTokenStats())
   recentTokenStatsCache = tokenStats.slice(0, RECENT_TOKEN_STATS_CACHE)
   return tokenStats
 }
 
 export async function getAllTokenStats() {
   await telemetryQueue.catch(() => undefined)
-  return pruneTokenStats(await readStoredTokenStats())
+  return compactTokenStats(await readStoredTokenStats())
 }
 
 export async function importLegacyTelemetry(
@@ -296,7 +322,7 @@ export async function importLegacyTelemetry(
         .map(normalizeTokenStat)
         .filter((entry): entry is TokenStatEntry => Boolean(entry))
     : legacyLogs
-        .map(tokenStatFromLog)
+        .map((log) => tokenStatFromLog(log))
         .filter((entry): entry is TokenStatEntry => Boolean(entry))
 
   if (legacyLogs.length === 0 && legacyTokenStats.length === 0) return
@@ -312,7 +338,7 @@ export async function importLegacyTelemetry(
     for (const entry of legacyTokenStats) tokenStatById.set(entry.id, entry)
 
     const logs = pruneLogs([...logById.values()], settings)
-    const tokenStats = pruneTokenStats([...tokenStatById.values()])
+    const tokenStats = compactTokenStats([...tokenStatById.values()])
     await Promise.all([
       writeJsonlAtomic(requestLogsPath(), [...logs].reverse()),
       writeJsonlAtomic(tokenStatsPath(), [...tokenStats].reverse()),

@@ -1,5 +1,6 @@
 "use strict"
 
+const { createHash } = require("node:crypto")
 const {
   cleanPositiveInteger,
   cleanString,
@@ -28,13 +29,16 @@ function envProvider() {
   return value === "exa" || value === "parallel" ? value : undefined
 }
 
-function selectedProvider(override) {
+function selectedProvider(override, sessionIdValue) {
   const normalized = cleanString(override).toLowerCase()
   if (normalized === "exa" || normalized === "parallel") return normalized
   const configured = envProvider()
   if (configured) return configured
-  if (process.env.PARALLEL_API_KEY?.trim()) return "parallel"
-  return "exa"
+  if (!process.env.PARALLEL_API_KEY?.trim()) return "exa"
+  const sessionId = cleanString(sessionIdValue)
+  if (!sessionId) return "parallel"
+  const firstByte = createHash("sha256").update(sessionId).digest()[0]
+  return firstByte % 2 === 0 ? "exa" : "parallel"
 }
 
 function exaUrl() {
@@ -293,7 +297,7 @@ async function executeWebSearch(input, signal) {
   if (typeof fetch !== "function") {
     throw new Error("web_search requires Node.js 18+ with global fetch support")
   }
-  const provider = selectedProvider(input.provider)
+  const provider = selectedProvider(input.provider, input.sessionId)
   const timeout = withTimeout(
     signal,
     timeoutMs("SWITCHGATE_WEB_SEARCH_TIMEOUT_MS", 25_000),
@@ -335,4 +339,5 @@ module.exports = {
   normalizeSearchResults,
   normalizeWebSearchInput,
   parseWebSearchMcpResponse,
+  selectedProvider,
 }

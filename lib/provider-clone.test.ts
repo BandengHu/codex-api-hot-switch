@@ -11,8 +11,13 @@ const source = {
   id: "prov-source",
   name: "Code-Plan-Codex",
   protocol: "openai-responses" as const,
-  baseUrl: "https://example.test/v1",
-  apiKey: "secret",
+  endpoints: [{
+    id: "endpoint-primary",
+    name: "主用",
+    baseUrl: "https://example.test/v1",
+    apiKey: "secret",
+    enabled: true,
+  }],
   headers: [
     { id: "header-source", key: "X-Test", value: "1" },
     { id: "header-authorization", key: "Authorization", value: "Bearer secret" },
@@ -50,16 +55,20 @@ test("clones provider and models without credentials or shared identifiers", () 
     ...source,
     id: "new-1",
     name: "Code-Plan-Codex（副本）",
-    apiKey: "",
+    endpoints: [{
+      ...source.endpoints[0],
+      id: "new-2",
+      apiKey: "",
+    }],
     headers: [
-      { id: "new-2", key: "X-Test", value: "" },
-      { id: "new-3", key: "Authorization", value: "" },
+      { id: "new-3", key: "X-Test", value: "" },
+      { id: "new-4", key: "Authorization", value: "" },
     ],
     isDefault: false,
     health: "healthy",
     healthMessage: undefined,
   })
-  assert.equal(draft.models[0]?.id, "new-4")
+  assert.equal(draft.models[0]?.id, "new-5")
   assert.equal(draft.models[0]?.providerId, "new-1")
   assert.deepEqual(draft.models[0]?.capabilities, ["chat", "tools"])
   assert.notEqual(draft.models[0]?.capabilities, models[0]?.capabilities)
@@ -72,7 +81,7 @@ test("openCloneSheetState pre-fills clone form session for the copy action", () 
   assert.equal(session.sheetOpen, true)
   assert.equal(session.editing, null)
   assert.equal(session.cloneDraft.provider.name, "Code-Plan-Codex（副本）")
-  assert.equal(session.cloneDraft.provider.apiKey, "")
+  assert.equal(session.cloneDraft.provider.endpoints[0].apiKey, "")
   assert.equal(session.cloneDraft.models.length, 1)
   assert.equal(session.cloneDraft.models[0]?.modelId, "gpt-test")
   assert.equal(session.cloneDraft.models[0]?.providerId, session.cloneDraft.provider.id)

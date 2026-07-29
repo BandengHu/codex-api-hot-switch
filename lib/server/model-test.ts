@@ -1,15 +1,15 @@
 import "server-only"
 
 import { isChatModel } from "@/lib/model-capabilities"
+import { resolvePrimaryProvider } from "@/lib/provider-endpoints"
 import type { Model, ModelTestResult, Provider, ReasoningEffort } from "@/lib/types"
 import {
-  buildProxyRequest,
   extractTextSummary,
   extractUsageSummary,
-  fetchWithProviderTimeout,
   parseJsonSafe,
 } from "./proxy/request-builder"
 import type { ProxyTarget as RelayProxyTarget } from "./proxy/common"
+import { fetchWithEndpointFailover } from "./proxy/endpoint-failover"
 
 function testBody(modelId: string, reasoning: ReasoningEffort) {
   return {
@@ -80,7 +80,7 @@ export async function runModelTest(params: {
   const reasoning = model.supportsReasoning ? params.reasoning || "off" : "off"
   const body = testBody(model.modelId, reasoning)
   const target: RelayProxyTarget = {
-    provider,
+    provider: resolvePrimaryProvider(provider),
     model,
     modelId: model.modelId,
     requestedModel: model.modelId,
@@ -89,8 +89,14 @@ export async function runModelTest(params: {
   }
 
   try {
-    const built = buildProxyRequest(target, "v1/responses", body)
-    const response = await fetchWithProviderTimeout(target, built)
+    const result = await fetchWithEndpointFailover({
+      target,
+      path: "v1/responses",
+      body,
+      requestIsStream: false,
+      capacityRetryEnabled: false,
+    })
+    const response = result.response
     const payload = await parseJsonSafe(response)
     const outputText = extractTextSummary(payload)
     const tokenUsage = extractUsageSummary(payload)

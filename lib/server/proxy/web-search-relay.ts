@@ -1,31 +1,182 @@
 import "server-only"
 
-/**
- * Hosted web search relay.
- *
- * Codex (Responses API) exposes web search as a built-in/hosted tool type
- * (`web_search`, `web_search_preview`, ...). Chat-completions upstreams do not
- * understand those hosted tool types, so we "relay" them as a regular function
- * tool. When the upstream model calls that function, `codex-tool-proxy`
- * converts the call back into a Responses `web_search_call` event.
- *
- * The function tool name MUST stay in sync with the value stored in
- * `ToolContext.webSearchTools`, which is why both sides reference
- * `RELAY_WEB_SEARCH_TOOL_NAME`.
- */
-export const RELAY_WEB_SEARCH_TOOL_NAME = "web_search"
-export const EXA_WEB_SEARCH_URL = "https://mcp.exa.ai/mcp"
-export const PARALLEL_WEB_SEARCH_URL = "https://search.parallel.ai/mcp"
+import {
+  executeBrowsePage,
+  normalizeBrowsePageInput,
+} from "../../../scripts/web-search-mcp/page-reader.cjs"
+import {
+  executeWebSearch,
+  normalizeWebSearchInput,
+} from "../../../scripts/web-search-mcp/search.cjs"
 
-const MAX_RESPONSE_BYTES = 256 * 1024
-const DEFAULT_TIMEOUT_MS = 25_000
-const NO_RESULTS = "No search results found. Please try a different query."
+export const RELAY_WEB_SEARCH_TOOL_NAME = "web_search"
+export const RELAY_BROWSE_PAGE_TOOL_NAME = "browse_page"
 
 const HOSTED_WEB_SEARCH_TOOL_TYPES = new Set([
   "web_search",
   "web_search_preview",
   "web_search_preview_2025_03_11",
 ])
+
+type AnyRecord = Record<string, any>
+
+interface StructuredSearchResult {
+  title?: string
+  url?: string
+  domain?: string | null
+  publishedAt?: string | null
+  summary?: string
+}
+
+interface StructuredSearchResponse {
+  query: string
+  provider: "exa" | "parallel"
+  resultCount: number
+  results: StructuredSearchResult[]
+  unparsedSummary?: string
+}
+
+interface BrowsePageResult {
+  url?: string
+  domain?: string | null
+  title?: string
+  publishedAt?: string | null
+  contentType?: string
+  content?: string
+  truncated?: boolean
+  error?: string
+}
+
+interface BrowsePageResponse {
+  pageCount: number
+  pages: BrowsePageResult[]
+}
+
+export type RelayWebToolName =
+  | typeof RELAY_WEB_SEARCH_TOOL_NAME
+  | typeof RELAY_BROWSE_PAGE_TOOL_NAME
+
+export interface RelayWebToolInput {
+  toolName: RelayWebToolName
+  argumentsValue: unknown
+  sessionId?: string
+  modelName?: string
+}
+
+export interface RelayWebToolResult {
+  toolName: RelayWebToolName
+  text: string
+  search?: StructuredSearchResponse
+  browse?: BrowsePageResponse
+}
+
+const WEB_SEARCH_DESCRIPTION =
+  "Search the public web for current information. Returns structured results with title, URL, publication date, source domain, and summary. Use browse_page on primary or independent sources before making important factual claims."
+
+const BROWSE_PAGE_DESCRIPTION =
+  "Open one or several public web pages and extract readable content with title, publication date, final URL, and source domain. Use this after web_search to inspect and cross-check sources."
+
+const WEB_SEARCH_PARAMETERS = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    query: {
+      type: "string",
+      description: "Web search query.",
+    },
+    numResults: {
+      type: "integer",
+      minimum: 1,
+      maximum: 20,
+      description: "Number of search results to return. Defaults to 8.",
+    },
+    livecrawl: {
+      type: "string",
+      enum: ["fallback", "preferred"],
+      description: "Whether live crawling is a fallback or preferred.",
+    },
+    type: {
+      type: "string",
+      enum: ["auto", "fast", "deep"],
+      description: "Search depth: auto, fast, or deep.",
+    },
+    contextMaxCharacters: {
+      type: "integer",
+      minimum: 1,
+      maximum: 200_000,
+      description: "Maximum Exa context characters.",
+    },
+  },
+  required: ["query"],
+}
+
+const BROWSE_PAGE_PARAMETERS = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    url: {
+      type: "string",
+      description: "One public HTTP or HTTPS URL to open.",
+    },
+    format: {
+      type: "string",
+      enum: ["markdown", "text", "html"],
+      description: "Output format. Defaults to markdown.",
+    },
+    timeout: {
+      type: "number",
+      minimum: 1,
+      maximum: 120,
+      description: "Timeout in seconds. Defaults to 30.",
+    },
+    maxCharacters: {
+      type: "integer",
+      minimum: 1000,
+      maximum: 100_000,
+      description: "Maximum content characters per page. Defaults to 20000.",
+    },
+  },
+  required: ["url"],
+}
+
+function responseFunctionTool(
+  name: RelayWebToolName,
+  description: string,
+  parameters: AnyRecord,
+) {
+  return {
+    type: "function",
+    name,
+    description,
+    parameters,
+  }
+}
+
+export function relayWebSearchResponsesTools() {
+  return [
+    responseFunctionTool(
+      RELAY_WEB_SEARCH_TOOL_NAME,
+      WEB_SEARCH_DESCRIPTION,
+      WEB_SEARCH_PARAMETERS,
+    ),
+    responseFunctionTool(
+      RELAY_BROWSE_PAGE_TOOL_NAME,
+      BROWSE_PAGE_DESCRIPTION,
+      BROWSE_PAGE_PARAMETERS,
+    ),
+  ]
+}
+
+export function relayWebSearchChatTools() {
+  return relayWebSearchResponsesTools().map((tool) => ({
+    type: "function",
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    },
+  }))
+}
 
 export function isHostedWebSearchToolType(type: unknown): boolean {
   return typeof type === "string" && HOSTED_WEB_SEARCH_TOOL_TYPES.has(type.trim())
@@ -38,227 +189,90 @@ export function supportsRelayWebSearchProvider(
   return !(provider.protocol === "openai-responses" && provider.rawResponsesPassthrough === true)
 }
 
-export function relayWebSearchChatTool() {
-  return {
-    type: "function",
-    function: {
-      name: RELAY_WEB_SEARCH_TOOL_NAME,
-      description:
-        "Search the public web for up-to-date information. Use this when the answer may depend on recent events, current facts, or information not contained in the conversation.",
-      parameters: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          query: {
-            type: "string",
-            description: "The search query to look up on the web.",
-          },
-        },
-        required: ["query"],
-      },
-    },
+function text(value: unknown) {
+  return typeof value === "string" ? value.trim() : ""
+}
+
+function displayDate(value: unknown) {
+  return text(value) || "unknown"
+}
+
+export function formatSearchToolOutput(result: StructuredSearchResponse) {
+  const lines = [
+    `Search query: ${result.query}`,
+    `Provider: ${result.provider}`,
+    `Results: ${result.resultCount}`,
+  ]
+  result.results.forEach((item, index) => {
+    lines.push(
+      "",
+      `### ${index + 1}. ${text(item.title) || text(item.domain) || "Untitled source"}`,
+      `URL: ${text(item.url)}`,
+      `Source: ${text(item.domain) || "unknown"}`,
+      `Published: ${displayDate(item.publishedAt)}`,
+    )
+    if (text(item.summary)) lines.push(`Summary: ${text(item.summary)}`)
+  })
+  if (!result.results.length) {
+    lines.push("", result.unparsedSummary || "No search results found. Try a different query.")
   }
+  return lines.join("\n")
 }
 
-type AnyRecord = Record<string, any>
-
-export type RelayWebSearchProvider = "exa" | "parallel"
-
-export interface RelayWebSearchInput {
-  query: string
-  numResults?: number
-  livecrawl?: "fallback" | "preferred"
-  type?: "auto" | "fast" | "deep"
-  contextMaxCharacters?: number
-  sessionId?: string
-  modelName?: string
-}
-
-export interface RelayWebSearchResult {
-  provider: RelayWebSearchProvider
-  query: string
-  text: string
-}
-
-function isObject(value: unknown): value is AnyRecord {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value))
-}
-
-function envProvider(): RelayWebSearchProvider | undefined {
-  const value = (
-    process.env.CODEX_WEB_SEARCH_PROVIDER ||
-    process.env.SWITCHGATE_WEB_SEARCH_PROVIDER ||
-    process.env.OPENCODE_WEBSEARCH_PROVIDER ||
-    ""
-  ).trim().toLowerCase()
-  if (value === "exa" || value === "parallel") return value
-  return undefined
-}
-
-function selectedProvider(): RelayWebSearchProvider {
-  const override = envProvider()
-  if (override) return override
-  if (process.env.PARALLEL_API_KEY?.trim()) return "parallel"
-  return "exa"
-}
-
-function exaUrl() {
-  const apiKey = process.env.EXA_API_KEY?.trim()
-  if (!apiKey) return EXA_WEB_SEARCH_URL
-  const url = new URL(EXA_WEB_SEARCH_URL)
-  url.searchParams.set("exaApiKey", apiKey)
-  return url.toString()
-}
-
-function requestHeaders(provider: RelayWebSearchProvider) {
-  const headers: Record<string, string> = {
-    accept: "application/json, text/event-stream",
-    "content-type": "application/json",
-  }
-  if (provider === "parallel") {
-    headers["user-agent"] = "codex-switchgate/0.1"
-    const apiKey = process.env.PARALLEL_API_KEY?.trim()
-    if (apiKey) headers.authorization = `Bearer ${apiKey}`
-  }
-  return headers
-}
-
-function mcpRequestBody(provider: RelayWebSearchProvider, input: RelayWebSearchInput) {
-  return {
-    jsonrpc: "2.0",
-    id: 1,
-    method: "tools/call",
-    params:
-      provider === "parallel"
-        ? {
-            name: "web_search",
-            arguments: {
-              objective: input.query,
-              search_queries: [input.query],
-              ...(input.sessionId ? { session_id: input.sessionId } : {}),
-              ...(input.modelName ? { model_name: input.modelName.slice(0, 100) } : {}),
-            },
-          }
-        : {
-            name: "web_search_exa",
-            arguments: {
-              query: input.query,
-              type: input.type || "auto",
-              numResults: input.numResults || 8,
-              livecrawl: input.livecrawl || "fallback",
-              ...(input.contextMaxCharacters
-                ? { contextMaxCharacters: input.contextMaxCharacters }
-                : {}),
-            },
-          },
-  }
-}
-
-function parsePayload(payload: string) {
-  const trimmed = payload.trim()
-  if (!trimmed || !trimmed.startsWith("{")) return undefined
-  const parsed = JSON.parse(trimmed)
-  if (!isObject(parsed)) return undefined
-  const content = parsed.result?.content
-  if (!Array.isArray(content)) return undefined
-  const item = content.find((entry) => isObject(entry) && typeof entry.text === "string")
-  return typeof item?.text === "string" && item.text.trim() ? item.text : undefined
-}
-
-export function parseWebSearchMcpResponse(body: string) {
-  const trimmed = body.trim()
-  if (trimmed) {
-    const direct = parsePayload(trimmed)
-    if (direct) return direct
-  }
-
-  for (const line of body.split(/\r?\n/)) {
-    if (!line.startsWith("data: ")) continue
-    const data = line.slice("data: ".length)
-    if (data.trim() === "[DONE]") continue
-    const parsed = parsePayload(data)
-    if (parsed) return parsed
-  }
-  return undefined
-}
-
-async function boundedText(response: Response) {
-  if (!response.body) return await response.text()
-  const reader = response.body.getReader()
-  const chunks: Uint8Array[] = []
-  let total = 0
-  try {
-    while (true) {
-      const { value, done } = await reader.read()
-      if (done) break
-      if (!value) continue
-      total += value.byteLength
-      if (total > MAX_RESPONSE_BYTES) {
-        await reader.cancel()
-        throw new Error(`web_search response exceeded ${MAX_RESPONSE_BYTES} bytes`)
-      }
-      chunks.push(value)
+export function formatBrowseToolOutput(result: BrowsePageResponse) {
+  const lines = [`Pages read: ${result.pageCount}/${result.pages.length}`]
+  result.pages.forEach((page, index) => {
+    lines.push(
+      "",
+      `## Page ${index + 1}: ${text(page.title) || text(page.domain) || "Unreadable page"}`,
+      `URL: ${text(page.url)}`,
+    )
+    if (page.error) {
+      lines.push(`Error: ${page.error}`)
+      return
     }
-  } finally {
-    reader.releaseLock()
-  }
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const chunk of chunks) {
-    out.set(chunk, offset)
-    offset += chunk.byteLength
-  }
-  return new TextDecoder().decode(out)
+    lines.push(
+      `Source: ${text(page.domain) || "unknown"}`,
+      `Published: ${displayDate(page.publishedAt)}`,
+      `Content-Type: ${text(page.contentType) || "unknown"}`,
+      `Truncated: ${page.truncated === true ? "yes" : "no"}`,
+      "",
+      text(page.content),
+    )
+  })
+  return lines.join("\n")
 }
 
-function withTimeout(signal?: AbortSignal) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
-  const abort = () => controller.abort()
-  if (signal) {
-    if (signal.aborted) controller.abort()
-    else signal.addEventListener("abort", abort, { once: true })
-  }
-  return {
-    signal: controller.signal,
-    done() {
-      clearTimeout(timer)
-      signal?.removeEventListener("abort", abort)
-    },
-  }
-}
-
-export async function executeRelayWebSearch(
-  input: RelayWebSearchInput,
+export async function executeRelayWebTool(
+  input: RelayWebToolInput,
   signal?: AbortSignal,
-): Promise<RelayWebSearchResult> {
-  const query = input.query.trim()
-  if (!query) throw new Error("web_search 缺少 query")
-
-  const provider = selectedProvider()
-  const timeout = withTimeout(signal)
-  try {
-    const response = await fetch(provider === "parallel" ? PARALLEL_WEB_SEARCH_URL : exaUrl(), {
-      method: "POST",
-      headers: requestHeaders(provider),
-      body: JSON.stringify(mcpRequestBody(provider, { ...input, query })),
-      signal: timeout.signal,
-    })
-    const body = await boundedText(response)
-    if (!response.ok) {
-      throw new Error(`web_search ${provider} 返回 HTTP ${response.status}: ${body.slice(0, 500)}`)
+): Promise<RelayWebToolResult> {
+  if (input.toolName === RELAY_WEB_SEARCH_TOOL_NAME) {
+    const argumentsValue = {
+      ...(input.argumentsValue && typeof input.argumentsValue === "object"
+        ? input.argumentsValue as AnyRecord
+        : {}),
+      sessionId: input.sessionId,
+      modelName: input.modelName,
     }
+    const search = await executeWebSearch(
+      normalizeWebSearchInput(argumentsValue),
+      signal,
+    ) as StructuredSearchResponse
     return {
-      provider,
-      query,
-      text: parseWebSearchMcpResponse(body) || NO_RESULTS,
+      toolName: input.toolName,
+      search,
+      text: formatSearchToolOutput(search),
     }
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new Error(`web_search ${provider} 请求超时`)
-    }
-    throw error
-  } finally {
-    timeout.done()
+  }
+
+  const browse = await executeBrowsePage(
+    normalizeBrowsePageInput(input.argumentsValue),
+    signal,
+  )
+  return {
+    toolName: input.toolName,
+    browse,
+    text: formatBrowseToolOutput(browse),
   }
 }

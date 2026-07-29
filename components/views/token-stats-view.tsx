@@ -21,6 +21,11 @@ import {
   sumTokenStats,
   tokenStatsSince,
 } from "@/lib/token-stats"
+import {
+  smoothTokenAreaPath,
+  smoothTokenLinePath,
+  tokenChartX,
+} from "@/lib/token-chart"
 import type { TokenStatEntry } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
@@ -130,6 +135,7 @@ function buildChartPoints(entries: TokenStatEntry[], mode: RangeMode) {
     (unit === "hour" ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000)
 
   for (const entry of entries) {
+    if (entry.aggregation === "history") continue
     const timestamp = Date.parse(entry.timestamp)
     if (!Number.isFinite(timestamp) || timestamp < startMs || timestamp >= endMs) {
       continue
@@ -139,31 +145,10 @@ function buildChartPoints(entries: TokenStatEntry[], mode: RangeMode) {
     bucket.inputTokens += entry.inputTokens
     bucket.outputTokens += entry.outputTokens
     bucket.totalTokens += entry.totalTokens
-    bucket.requests += 1
+    bucket.requests += entry.requestCount ?? 1
   }
 
   return points
-}
-
-function chartX(index: number, pointCount: number, width: number) {
-  return pointCount === 1 ? width / 2 : (index / (pointCount - 1)) * width
-}
-
-function linePath(points: ChartPoint[], width: number, height: number, maxValue: number) {
-  if (points.length === 0) return ""
-  return points
-    .map((point, index) => {
-      const x = chartX(index, points.length, width)
-      const y = height - (point.totalTokens / maxValue) * height
-      return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`
-    })
-    .join(" ")
-}
-
-function areaPath(points: ChartPoint[], width: number, height: number, maxValue: number) {
-  const path = linePath(points, width, height, maxValue)
-  if (!path) return ""
-  return `${path} L ${width} ${height} L 0 ${height} Z`
 }
 
 function niceAxisMax(value: number) {
@@ -274,7 +259,7 @@ function TokenLineChart({ points }: { points: ChartPoint[] }) {
           {xTicks.map((index) => {
             const point = points[index]
             if (!point) return null
-            const x = leftAxisWidth + chartX(index, points.length, plotWidth)
+            const x = leftAxisWidth + tokenChartX(index, points.length, plotWidth)
             return (
               <g key={point.key}>
                 <line
@@ -307,11 +292,11 @@ function TokenLineChart({ points }: { points: ChartPoint[] }) {
           </text>
           <g transform={`translate(${leftAxisWidth} ${topPadding})`}>
             <path
-              d={areaPath(points, plotWidth, plotHeight, maxValue)}
+              d={smoothTokenAreaPath(points, plotWidth, plotHeight, maxValue)}
               className="fill-primary/10"
             />
             <path
-              d={linePath(points, plotWidth, plotHeight, maxValue)}
+              d={smoothTokenLinePath(points, plotWidth, plotHeight, maxValue)}
               className="fill-none stroke-primary"
               strokeWidth="3"
               strokeLinecap="round"
@@ -319,7 +304,7 @@ function TokenLineChart({ points }: { points: ChartPoint[] }) {
               vectorEffect="non-scaling-stroke"
             />
             {points.map((point, index) => {
-              const x = chartX(index, points.length, plotWidth)
+              const x = tokenChartX(index, points.length, plotWidth)
               const y = plotHeight - (point.totalTokens / maxValue) * plotHeight
               return (
                 <circle
@@ -420,7 +405,7 @@ export function TokenStatsView() {
         <div>
           <h1 className="text-lg font-semibold">Token 统计</h1>
           <p className="text-sm text-muted-foreground">
-            按时间查看中转层记录到的 token 消耗
+            按上游响应中的原始 usage 口径统计，不包含供应商计费倍率
           </p>
         </div>
         <Button variant="outline" onClick={() => void handleReset()}>

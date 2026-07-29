@@ -22,6 +22,7 @@ import {
   openAIUsageFromAnthropic,
   type NativeOutputItem,
 } from "./native-openai"
+import { applyAnthropicClientIdentity } from "./anthropic-client-identity"
 
 type AnyRecord = Record<string, any>
 
@@ -642,6 +643,11 @@ export function buildAnthropicRequest(
 ): AnthropicBuiltRequest {
   const canonical = buildNativeCanonicalRequest(target, path, body)
   const rewrittenBody = buildAnthropicBody(canonical, target)
+  const headers = providerHeaders(target.provider, {
+    accept: canonical.requestIsStream ? "text/event-stream" : "application/json",
+    "content-type": "application/json",
+  })
+  applyAnthropicClientIdentity(headers, canonical.modelId)
 
   return {
     url: joinUrl(target.provider.baseUrl, "messages"),
@@ -649,10 +655,7 @@ export function buildAnthropicRequest(
     adapter: nativeAdapter("anthropic", canonical),
     init: {
       method: "POST",
-      headers: providerHeaders(target.provider, {
-        accept: canonical.requestIsStream ? "text/event-stream" : "application/json",
-        "content-type": "application/json",
-      }),
+      headers,
       body: JSON.stringify(rewrittenBody),
     },
   }

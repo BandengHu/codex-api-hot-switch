@@ -1,6 +1,7 @@
 import "server-only"
 
 import { isChatModel, isImageGenerationModel } from "@/lib/model-capabilities"
+import { resolvePrimaryProvider } from "@/lib/provider-endpoints"
 import type { RoutingSnapshot } from "@/lib/types"
 import type { ProxyTarget } from "./common"
 
@@ -93,7 +94,7 @@ export function resolveImageGenerationTarget(
   return {
     target: {
       ...currentTarget,
-      provider,
+      provider: resolvePrimaryProvider(provider),
       model: chatModel,
       modelId: chatModel.modelId,
       reasoning: chatModel.supportsReasoning ? currentTarget.reasoning : "off",

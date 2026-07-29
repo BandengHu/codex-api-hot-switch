@@ -60,12 +60,19 @@ export interface HeaderEntry {
   value: string
 }
 
+export interface ProviderEndpoint {
+  id: string
+  name: string
+  baseUrl: string
+  apiKey: string
+  enabled: boolean
+}
+
 export interface Provider {
   id: string
   name: string
   protocol: ProtocolType
-  baseUrl: string
-  apiKey: string
+  endpoints: ProviderEndpoint[]
   headers: HeaderEntry[]
   bodyOverride: string
   timeoutMs: number
@@ -75,6 +82,25 @@ export interface Provider {
   isDefault: boolean
   health: HealthStatus
   healthMessage?: string
+}
+
+export interface ResolvedProvider extends Provider {
+  baseUrl: string
+  apiKey: string
+  activeEndpointId: string
+  activeEndpointName: string
+}
+
+export interface ProviderEndpointRuntimeState {
+  providerId: string
+  endpointId: string
+  credentialFingerprint: string
+  consecutiveFailures: number
+  cooldownUntil?: string
+  quotaDisabled: boolean
+  authDisabled: boolean
+  lastError?: string
+  updatedAt: string
 }
 
 export interface Model {
@@ -107,6 +133,15 @@ export interface TokenUsage {
   cachedInputTokens?: number
   cacheCreationInputTokens?: number
   reasoningTokens?: number
+  upstreamCost?: TokenCost
+}
+
+export type TokenStatAggregation = "request" | "day" | "history"
+
+export interface TokenCost {
+  amount: number
+  currency?: string
+  source: "upstream"
 }
 
 export interface TokenStatEntry {
@@ -122,6 +157,9 @@ export interface TokenStatEntry {
   cachedInputTokens: number
   cacheCreationInputTokens: number
   reasoningTokens: number
+  requestCount?: number
+  aggregation?: TokenStatAggregation
+  resetAt?: string
 }
 
 export interface RequestLog {
@@ -130,9 +168,16 @@ export interface RequestLog {
   codexModel: string
   finalProviderId: string
   finalModelId: string
+  finalEndpointId?: string
+  finalEndpointName?: string
+  attemptedEndpointIds?: string[]
+  failoverReason?: string
   reasoning: ReasoningEffort
   statusCode: number
   durationMs: number
+  stream?: boolean
+  firstTokenMs?: number
+  outputTokensPerSecond?: number
   tokenUsage?: TokenUsage
   error?: string
   rawRequest: string
@@ -192,6 +237,7 @@ export interface ConsoleSnapshot {
   mappings: ModelMapping[]
   logs: RequestLog[]
   tokenStats: TokenStatEntry[]
+  endpointStates: ProviderEndpointRuntimeState[]
   runtime: RuntimeConfig
   settings: Settings
 }

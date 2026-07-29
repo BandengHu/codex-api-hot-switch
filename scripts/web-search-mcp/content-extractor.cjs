@@ -155,6 +155,16 @@ function normalizeExtractedText(value) {
     .trim()
 }
 
+function normalizeMarkdown(value) {
+  return value
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trimEnd())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+}
+
 function collectJsonLd(value, metadata) {
   if (Array.isArray(value)) {
     for (const entry of value) collectJsonLd(entry, metadata)
@@ -173,7 +183,7 @@ function collectJsonLd(value, metadata) {
 function parseHtmlDocument(html) {
   const lowerHtml = html.toLowerCase()
   const stack = []
-  const buffers = { article: [], body: [], h1: [], main: [], title: [] }
+  const buffers = { article: [], body: [], h1: [], main: [], markdown: [], title: [] }
   const metadata = { title: "", publishedAt: null }
   const metaValues = {}
   let index = 0
@@ -181,6 +191,7 @@ function parseHtmlDocument(html) {
   function appendBreak() {
     if (stack.some((entry) => entry.skip)) return
     buffers.body.push("\n")
+    buffers.markdown.push("\n")
     if (stack.some((entry) => entry.name === "article")) buffers.article.push("\n")
     if (stack.some((entry) => entry.name === "main")) buffers.main.push("\n")
   }
@@ -189,6 +200,7 @@ function parseHtmlDocument(html) {
     const text = decodeHtmlEntities(raw)
     if (!text || stack.some((entry) => entry.skip)) return
     buffers.body.push(text)
+    buffers.markdown.push(text)
     if (stack.some((entry) => entry.name === "article")) buffers.article.push(text)
     if (stack.some((entry) => entry.name === "main")) buffers.main.push(text)
     if (stack.some((entry) => entry.name === "title")) buffers.title.push(text)
@@ -236,7 +248,24 @@ function parseHtmlDocument(html) {
     if (closing) {
       if (BLOCK_TAGS.has(name)) appendBreak()
       const stackIndex = stack.map((entry) => entry.name).lastIndexOf(name)
-      if (stackIndex >= 0) stack.splice(stackIndex)
+      if (stackIndex >= 0) {
+        const entry = stack[stackIndex]
+        if (!entry.skip) {
+          if (entry.markdownOpen === "link") {
+            buffers.markdown.push(`](${entry.href})`)
+          } else if (entry.markdownOpen === "strong") {
+            buffers.markdown.push("**")
+          } else if (entry.markdownOpen === "em") {
+            buffers.markdown.push("*")
+          } else if (entry.markdownOpen === "code") {
+            buffers.markdown.push("`")
+          } else if (entry.markdownOpen === "pre") {
+            buffers.markdown.push("\n```\n")
+          }
+          if (/^h[1-6]$/.test(name)) buffers.markdown.push("\n\n")
+        }
+        stack.splice(stackIndex)
+      }
       continue
     }
 
@@ -249,8 +278,22 @@ function parseHtmlDocument(html) {
       if (key && content && !metaValues[key]) metaValues[key] = content
     }
     if (BLOCK_TAGS.has(name)) appendBreak()
-    if (VOID_TAGS.has(name) || rawTag.endsWith("/")) continue
     const inheritedSkip = stack.some((entry) => entry.skip)
+    if (!inheritedSkip) {
+      if (/^h[1-6]$/.test(name)) buffers.markdown.push(`\n\n${"#".repeat(Number(name[1]))} `)
+      else if (name === "li") buffers.markdown.push("\n- ")
+      else if (name === "blockquote") buffers.markdown.push("\n\n> ")
+      else if (name === "hr") buffers.markdown.push("\n\n---\n\n")
+      else if (name === "br") buffers.markdown.push("\n")
+      else if (name === "pre") buffers.markdown.push("\n\n```\n")
+      else if (name === "a" && attributes.href) buffers.markdown.push("[")
+      else if (name === "strong" || name === "b") buffers.markdown.push("**")
+      else if (name === "em" || name === "i") buffers.markdown.push("*")
+      else if (name === "code" && !stack.some((entry) => entry.name === "pre")) {
+        buffers.markdown.push("`")
+      }
+    }
+    if (VOID_TAGS.has(name) || rawTag.endsWith("/")) continue
     stack.push({
       name,
       skip:
@@ -258,6 +301,19 @@ function parseHtmlDocument(html) {
         SKIP_TAGS.has(name) ||
         (name === "script" && attributes.type !== "application/ld+json"),
       jsonLd: name === "script" && attributes.type === "application/ld+json",
+      href: name === "a" ? cleanString(attributes.href) : "",
+      markdownOpen:
+        name === "pre"
+          ? "pre"
+          : name === "a" && cleanString(attributes.href)
+            ? "link"
+            : name === "strong" || name === "b"
+              ? "strong"
+              : name === "em" || name === "i"
+                ? "em"
+                : name === "code" && !stack.some((entry) => entry.name === "pre")
+                  ? "code"
+                  : "",
     })
   }
 
@@ -278,10 +334,12 @@ function parseHtmlDocument(html) {
   const article = normalizeExtractedText(buffers.article.join(""))
   const main = normalizeExtractedText(buffers.main.join(""))
   const body = normalizeExtractedText(buffers.body.join(""))
+  const markdown = normalizeMarkdown(buffers.markdown.join(""))
   return {
     title: title || metadata.title,
     publishedAt,
     text: article.length >= 500 ? article : main.length >= 500 ? main : body,
+    markdown,
   }
 }
 
@@ -315,7 +373,7 @@ function detectMediaType(contentType, body, decoded) {
   return "text/plain"
 }
 
-function extractPage(body, contentType, finalUrl, maxCharacters) {
+function extractPage(body, contentType, finalUrl, maxCharacters, format = "markdown") {
   const decoded = decodeBody(body, contentType)
   const mediaType = detectMediaType(contentType, body, decoded)
   let extracted
@@ -343,14 +401,24 @@ function extractPage(body, contentType, finalUrl, maxCharacters) {
     }
     extracted = { title, publishedAt, text: normalizeExtractedText(text) }
   }
-  const truncated = extracted.text.length > maxCharacters
+  const content =
+    format === "html" && (
+      mediaType === "text/html" ||
+      mediaType === "application/xhtml+xml" ||
+      mediaType === "application/xml"
+    )
+      ? decoded
+      : format === "markdown" && extracted.markdown
+        ? extracted.markdown
+        : extracted.text
+  const truncated = content.length > maxCharacters
   return {
     url: finalUrl,
     domain: domainFromUrl(finalUrl),
     title: compactWhitespace(extracted.title) || domainFromUrl(finalUrl),
     publishedAt: extracted.publishedAt || null,
     contentType: mediaType,
-    text: extracted.text.slice(0, maxCharacters),
+    content: content.slice(0, maxCharacters),
     truncated,
   }
 }

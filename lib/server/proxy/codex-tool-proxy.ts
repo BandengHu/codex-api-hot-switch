@@ -10,7 +10,8 @@ import {
 } from "./apply-patch-format"
 import {
   isHostedWebSearchToolType,
-  relayWebSearchChatTool,
+  relayWebSearchChatTools,
+  RELAY_BROWSE_PAGE_TOOL_NAME,
   RELAY_WEB_SEARCH_TOOL_NAME,
 } from "./web-search-relay"
 
@@ -172,6 +173,10 @@ export function rememberResponseTool(context: ToolContext, tool: unknown) {
   }
   if (isHostedWebSearchToolType(type)) {
     context.webSearchTools.add(RELAY_WEB_SEARCH_TOOL_NAME)
+    context.functionTools.set(RELAY_BROWSE_PAGE_TOOL_NAME, {
+      namespace: "",
+      name: RELAY_BROWSE_PAGE_TOOL_NAME,
+    })
     return
   }
   if (type === "function") {
@@ -389,7 +394,11 @@ export function responsesToolsToChatTools(
       pushTool(toolSearchProxyTool())
     } else if (isHostedWebSearchToolType(type)) {
       context.webSearchTools.add(RELAY_WEB_SEARCH_TOOL_NAME)
-      pushTool(relayWebSearchChatTool())
+      context.functionTools.set(RELAY_BROWSE_PAGE_TOOL_NAME, {
+        namespace: "",
+        name: RELAY_BROWSE_PAGE_TOOL_NAME,
+      })
+      for (const relayTool of relayWebSearchChatTools()) pushTool(relayTool)
     } else if (type === "function") {
       pushTool(responsesFunctionToolToChat(tool))
     } else if (type === "custom" || type === "local_shell" || type === "computer_use") {

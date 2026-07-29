@@ -27,7 +27,10 @@ export function tokenUsageTotal(usage: TokenUsage | undefined) {
   return usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
 }
 
-export function tokenStatFromLog(log: RequestLog): TokenStatEntry | undefined {
+export function tokenStatFromLog(
+  log: RequestLog,
+  resetAt?: string,
+): TokenStatEntry | undefined {
   if (!log.tokenUsage) return undefined
   return {
     id: `token-${log.id}`,
@@ -42,7 +45,15 @@ export function tokenStatFromLog(log: RequestLog): TokenStatEntry | undefined {
     cachedInputTokens: log.tokenUsage.cachedInputTokens ?? 0,
     cacheCreationInputTokens: log.tokenUsage.cacheCreationInputTokens ?? 0,
     reasoningTokens: log.tokenUsage.reasoningTokens ?? 0,
+    requestCount: 1,
+    aggregation: "request",
+    ...(resetAt?.trim() ? { resetAt } : {}),
   }
+}
+
+export function tokenStatRequestCount(entry: TokenStatEntry) {
+  const count = Number(entry.requestCount)
+  return Number.isFinite(count) && count >= 1 ? Math.round(count) : 1
 }
 
 export function addTokenEntry(total: TokenTotals, entry: TokenStatEntry): TokenTotals {
@@ -54,7 +65,7 @@ export function addTokenEntry(total: TokenTotals, entry: TokenStatEntry): TokenT
     cacheCreationInputTokens:
       total.cacheCreationInputTokens + entry.cacheCreationInputTokens,
     reasoningTokens: total.reasoningTokens + entry.reasoningTokens,
-    requests: total.requests + 1,
+    requests: total.requests + tokenStatRequestCount(entry),
   }
 }
 
@@ -69,6 +80,7 @@ export function tokenStatsSince(
   const resetTime = Date.parse(resetAt || "")
   if (!Number.isFinite(resetTime)) return entries
   return entries.filter((entry) => {
+    if (entry.resetAt) return entry.resetAt === resetAt
     const timestamp = Date.parse(entry.timestamp)
     return Number.isFinite(timestamp) && timestamp >= resetTime
   })

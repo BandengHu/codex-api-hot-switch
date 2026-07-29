@@ -278,6 +278,18 @@ class AnthropicToResponsesSse {
       out += this.completeOpenItems()
       // 回合末尾：挂起的 message 就是最终答案，按 final_answer 刷出 done 帧。
       out += this.flushPendingMessage("final_answer")
+      if (!this.hasSubstantiveOutput()) {
+        return (
+          responseFailedFrame({
+            responseId: this.responseId,
+            model: this.model,
+            output: this.output,
+            message: "上游 Anthropic 返回 message_stop，但没有正文、推理或工具调用",
+            type: "empty_upstream_output",
+          }) +
+          "data: [DONE]\n\n"
+        )
+      }
       applyAssistantMessagePhase(this.output)
       out += responseCompletedFrame({
         responseId: this.responseId,

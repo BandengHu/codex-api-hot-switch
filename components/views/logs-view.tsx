@@ -65,14 +65,83 @@ function CodeBlock({ text }: { text: string }) {
   )
 }
 
-function tokenSummary(log: RequestLog) {
+function formatOutputRate(value: number | undefined) {
+  if (value == null || !Number.isFinite(value) || value <= 0) return "—"
+  return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} t/s`
+}
+
+function formatUpstreamCost(log: RequestLog) {
+  const cost = log.tokenUsage?.upstreamCost
+  if (!cost || !Number.isFinite(cost.amount)) return "—"
+  const amount =
+    cost.amount < 0.01
+      ? cost.amount.toFixed(6)
+      : cost.amount.toFixed(4).replace(/\.?0+$/, "")
+  const currency = (cost.currency || "").trim().toUpperCase()
+  if (currency === "CNY" || currency === "RMB" || currency === "¥") {
+    return `¥${amount}`
+  }
+  if (currency === "USD" || currency === "$") {
+    return `$${amount}`
+  }
+  return currency ? `${currency} ${amount}` : amount
+}
+
+function TokenSummary({ log }: { log: RequestLog }) {
   const usage = log.tokenUsage
-  if (!usage) return "—"
-  if (usage.totalTokens != null) return formatTokenCount(usage.totalTokens)
-  const input = usage.inputTokens ?? 0
-  const output = usage.outputTokens ?? 0
-  if (input || output) return formatTokenCount(input + output)
-  return "—"
+  if (!usage) return <span>—</span>
+  return (
+    <div className="flex flex-col items-end gap-0.5">
+      <span>
+        {formatTokenCount(usage.inputTokens)} / {formatTokenCount(usage.outputTokens)}
+      </span>
+      {usage.cachedInputTokens != null && usage.cachedInputTokens > 0 ? (
+        <span className="text-[11px] text-muted-foreground">
+          缓存 ↓ {formatTokenCount(usage.cachedInputTokens)}
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
+function StreamSummary({ log }: { log: RequestLog }) {
+  if (!log.stream) {
+    return <span className="text-xs text-muted-foreground">非流</span>
+  }
+  return (
+    <div className="flex flex-col items-center gap-0.5">
+      <span className="font-medium text-sky-600 dark:text-sky-400">流</span>
+      <span className="text-[11px] text-muted-foreground">
+        {formatOutputRate(log.outputTokensPerSecond)}
+      </span>
+    </div>
+  )
+}
+
+function TimingSummary({ log }: { log: RequestLog }) {
+  return (
+    <div
+      className={cn(
+        "flex flex-col gap-0.5 border-l-2 pl-2 text-left",
+        log.stream && log.firstTokenMs != null
+          ? "border-emerald-500"
+          : "border-border",
+      )}
+    >
+      {log.stream && log.firstTokenMs != null ? (
+        <span className="whitespace-nowrap text-xs">
+          <span className="text-muted-foreground">首字 </span>
+          <span className="text-emerald-600 dark:text-emerald-400">
+            {formatDurationSeconds(log.firstTokenMs)}
+          </span>
+        </span>
+      ) : null}
+      <span className="whitespace-nowrap text-xs">
+        <span className="text-muted-foreground">耗时 </span>
+        {formatDurationSeconds(log.durationMs)}
+      </span>
+    </div>
+  )
 }
 
 function paginationItems(currentPage: number, pageCount: number) {
@@ -334,9 +403,11 @@ export function LogsView() {
                   <TableHead>Codex 原始模型</TableHead>
                   <TableHead>最终供应商 / 模型</TableHead>
                   <TableHead>reasoning</TableHead>
+                  <TableHead className="text-center">流</TableHead>
                   <TableHead className="text-right">tokens</TableHead>
+                  <TableHead className="text-right">费用</TableHead>
                   <TableHead className="text-center">状态码</TableHead>
-                  <TableHead className="text-right">耗时</TableHead>
+                  <TableHead className="text-right">时延</TableHead>
                   <TableHead>错误信息</TableHead>
                 </TableRow>
               </TableHeader>
@@ -356,24 +427,38 @@ export function LogsView() {
                         <code className="font-mono text-xs">{l.codexModel}</code>
                       </TableCell>
                       <TableCell>
-                        <div className="flex flex-col">
+                        <div className="flex flex-col gap-0.5">
                           <span className="text-xs text-muted-foreground">
                             {provider?.name ?? l.finalProviderId}
                           </span>
                           <code className="font-mono text-xs">{l.finalModelId}</code>
+                          {l.finalEndpointName ? (
+                            <span className="text-xs text-muted-foreground">
+                              {l.finalEndpointName}
+                              {(l.attemptedEndpointIds?.length || 0) > 1
+                                ? ` · 尝试 ${l.attemptedEndpointIds?.length} 组`
+                                : ""}
+                            </span>
+                          ) : null}
                         </div>
                       </TableCell>
                       <TableCell>
                         <ReasoningBadge effort={l.reasoning} />
                       </TableCell>
+                      <TableCell className="text-center">
+                        <StreamSummary log={l} />
+                      </TableCell>
                       <TableCell className="text-right font-mono text-xs tabular-nums">
-                        {tokenSummary(l)}
+                        <TokenSummary log={l} />
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-xs tabular-nums">
+                        {formatUpstreamCost(l)}
                       </TableCell>
                       <TableCell className="text-center">
                         <StatusCodeBadge code={l.statusCode} />
                       </TableCell>
                       <TableCell className="text-right font-mono text-xs tabular-nums">
-                        {formatDurationSeconds(l.durationMs)}
+                        <TimingSummary log={l} />
                       </TableCell>
                       <TableCell className="max-w-[220px]">
                         {l.error ? (
@@ -481,9 +566,51 @@ export function LogsView() {
               <div className="flex flex-wrap items-center gap-2">
                 <StatusCodeBadge code={selected.statusCode} />
                 <ReasoningBadge effort={selected.reasoning} />
+                <span className="text-xs text-muted-foreground">
+                  {selected.stream ? "流式" : "非流式"}
+                </span>
                 <span className="font-mono text-xs text-muted-foreground">
                   {formatDurationSeconds(selected.durationMs)}
                 </span>
+                {selected.firstTokenMs != null ? (
+                  <span className="font-mono text-xs text-emerald-600 dark:text-emerald-400">
+                    首字 {formatDurationSeconds(selected.firstTokenMs)}
+                  </span>
+                ) : null}
+                {selected.outputTokensPerSecond != null ? (
+                  <span className="font-mono text-xs text-muted-foreground">
+                    {formatOutputRate(selected.outputTokensPerSecond)}
+                  </span>
+                ) : null}
+                {selected.tokenUsage?.upstreamCost ? (
+                  <span className="font-mono text-xs text-muted-foreground">
+                    费用 {formatUpstreamCost(selected)}
+                  </span>
+                ) : null}
+              </div>
+
+              <div className="grid gap-2 text-xs md:grid-cols-2">
+                <div className="flex flex-col gap-1">
+                  <span className="text-muted-foreground">最终端点</span>
+                  <code className="break-all rounded bg-muted px-2 py-1 font-mono">
+                    {selected.finalEndpointName || "未记录"}
+                    {selected.finalEndpointId ? ` · ${selected.finalEndpointId}` : ""}
+                  </code>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-muted-foreground">尝试端点</span>
+                  <code className="break-all rounded bg-muted px-2 py-1 font-mono">
+                    {selected.attemptedEndpointIds?.join(" -> ") || "未记录"}
+                  </code>
+                </div>
+                {selected.failoverReason ? (
+                  <div className="flex flex-col gap-1 md:col-span-2">
+                    <span className="text-muted-foreground">切换原因</span>
+                    <div className="rounded bg-muted px-2 py-1">
+                      {selected.failoverReason}
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               <div className="grid grid-cols-2 gap-2 md:grid-cols-3">

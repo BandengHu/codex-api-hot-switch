@@ -14,10 +14,12 @@ const {
   withTimeout,
 } = require("./shared.cjs")
 
-const MAX_PAGE_BYTES = 2 * 1024 * 1024
+const MAX_PAGE_BYTES = 5 * 1024 * 1024
 const MAX_REDIRECTS = 5
 const DEFAULT_MAX_CHARACTERS = 20_000
 const MAX_CHARACTERS = 100_000
+const DEFAULT_TIMEOUT_SECONDS = 30
+const MAX_TIMEOUT_SECONDS = 120
 
 function parseIpv4(value) {
   const parts = value.split(".")
@@ -112,8 +114,14 @@ async function resolvePublicAddress(url) {
   return addresses[0]
 }
 
-function requestResolvedUrl(url, address, signal) {
+function requestResolvedUrl(url, address, signal, userAgent, format) {
   const transport = url.protocol === "https:" ? https : http
+  const accept =
+    format === "html"
+      ? "text/html;q=1.0, application/xhtml+xml;q=0.9, text/plain;q=0.8, */*;q=0.1"
+      : format === "text"
+        ? "text/plain;q=1.0, text/markdown;q=0.9, text/html;q=0.8, */*;q=0.1"
+        : "text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1"
   return new Promise((resolve, reject) => {
     const request = transport.request(
       {
@@ -126,10 +134,11 @@ function requestResolvedUrl(url, address, signal) {
         servername: url.protocol === "https:" ? normalizedHostname(url) : undefined,
         signal,
         headers: {
-          accept: "text/html,application/xhtml+xml,application/json,text/plain,application/xml;q=0.8,*/*;q=0.2",
+          accept,
           "accept-encoding": "gzip, deflate, br",
+          "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
           host: url.host,
-          "user-agent": "Codex-SwitchGate-PageReader/0.2",
+          "user-agent": userAgent,
         },
       },
       (response) => {
@@ -173,11 +182,23 @@ function decodeContentEncoding(body, encodingValue) {
   throw new Error(`browse_page does not support content encoding: ${encoding}`)
 }
 
-async function fetchPublicPage(value, signal) {
+async function fetchPublicPage(value, signal, format) {
   let current = validatePublicUrl(value)
   for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount += 1) {
     const address = await resolvePublicAddress(current)
-    const response = await requestResolvedUrl(current, address, signal)
+    let response = await requestResolvedUrl(
+      current,
+      address,
+      signal,
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+      format,
+    )
+    if (
+      response.statusCode === 403 &&
+      cleanString(response.headers["cf-mitigated"]).toLowerCase() === "challenge"
+    ) {
+      response = await requestResolvedUrl(current, address, signal, "opencode", format)
+    }
     if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
       const location = headerValue(response.headers.location)
       if (!location) throw new Error(`Redirect from ${current} did not include a Location header`)
@@ -211,27 +232,38 @@ function normalizeBrowsePageInput(argumentsValue) {
   for (const url of urls) validatePublicUrl(url)
   return {
     urls,
+    format: ["text", "markdown", "html"].includes(cleanString(argumentsValue.format).toLowerCase())
+      ? cleanString(argumentsValue.format).toLowerCase()
+      : "markdown",
     maxCharacters: cleanPositiveInteger(
       argumentsValue.maxCharacters,
       DEFAULT_MAX_CHARACTERS,
       1000,
       MAX_CHARACTERS,
     ),
+    timeoutSeconds: cleanPositiveInteger(
+      argumentsValue.timeout,
+      DEFAULT_TIMEOUT_SECONDS,
+      1,
+      MAX_TIMEOUT_SECONDS,
+    ),
   }
 }
 
-async function browsePage(url, maxCharacters, signal) {
+async function browsePage(url, input, signal) {
   const timeout = withTimeout(
     signal,
-    timeoutMs("SWITCHGATE_BROWSE_PAGE_TIMEOUT_MS", 25_000),
+    input.timeoutSeconds * 1000 ||
+      timeoutMs("SWITCHGATE_BROWSE_PAGE_TIMEOUT_MS", DEFAULT_TIMEOUT_SECONDS * 1000),
   )
   try {
-    const response = await fetchPublicPage(url, timeout.signal)
+    const response = await fetchPublicPage(url, timeout.signal, input.format)
     return extractPage(
       response.body,
       headerValue(response.headers["content-type"]),
       response.finalUrl,
-      maxCharacters,
+      input.maxCharacters,
+      input.format,
     )
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
@@ -245,7 +277,7 @@ async function browsePage(url, maxCharacters, signal) {
 
 async function executeBrowsePage(input, signal) {
   const settled = await Promise.allSettled(
-    input.urls.map((url) => browsePage(url, input.maxCharacters, signal)),
+    input.urls.map((url) => browsePage(url, input, signal)),
   )
   const pages = settled.map((result, index) =>
     result.status === "fulfilled"

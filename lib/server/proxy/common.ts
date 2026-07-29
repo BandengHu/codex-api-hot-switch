@@ -1,20 +1,21 @@
 import "server-only"
 
 import { isChatModel } from "@/lib/model-capabilities"
+import { resolvePrimaryProvider } from "@/lib/provider-endpoints"
 import {
   CODEX_AUTO_MODEL_SLUG,
   resolveCodexRoutedModel,
 } from "@/lib/server/codex-model-catalog"
 import type {
   Model,
-  Provider,
   ProtocolType,
   ReasoningEffort,
+  ResolvedProvider,
   RoutingSnapshot,
 } from "@/lib/types"
 
 export interface ProxyTarget {
-  provider: Provider
+  provider: ResolvedProvider
   model?: Model
   modelId: string
   requestedModel: string
@@ -22,6 +23,8 @@ export interface ProxyTarget {
   mappingId?: string
   paused: boolean
   fullRequestLoggingEnabled?: boolean
+  attemptedEndpointIds?: string[]
+  failoverReason?: string
 }
 
 export function joinUrl(baseUrl: string, path: string) {
@@ -173,7 +176,7 @@ export function resolveTarget(
   if (routed) {
     const reasoning = extractReasoning(body)
     return {
-      provider: routed.provider,
+      provider: resolvePrimaryProvider(routed.provider),
       model: routed.model,
       modelId: routed.model.modelId,
       requestedModel,
@@ -191,7 +194,7 @@ export function resolveTarget(
     )
     if (!provider) throw new Error("接管已暂停，但默认供应商不存在")
     return {
-      provider,
+      provider: resolvePrimaryProvider(provider),
       modelId: requestedModel,
       requestedModel,
       reasoning: extractReasoning(body),
@@ -217,7 +220,7 @@ export function resolveTarget(
         ? extractReasoning(body)
         : mapping.reasoningOverride
     return {
-      provider,
+      provider: resolvePrimaryProvider(provider),
       model,
       modelId: model.modelId,
       requestedModel,
@@ -236,7 +239,7 @@ export function resolveTarget(
   if (model.providerId !== provider.id) throw new Error("当前热切换供应商与模型不匹配")
   if (!isChatModel(model)) throw new Error("当前热切换模型不是聊天模型")
   return {
-    provider,
+    provider: resolvePrimaryProvider(provider),
     model,
     modelId: model.modelId,
     requestedModel,
@@ -245,7 +248,7 @@ export function resolveTarget(
   }
 }
 
-export function providerHeaders(provider: Provider, extra?: HeadersInit): Headers {
+export function providerHeaders(provider: ResolvedProvider, extra?: HeadersInit): Headers {
   const headers = new Headers(extra)
   for (const entry of provider.headers) {
     const key = entry.key.trim()

@@ -11,6 +11,7 @@ import {
 } from "./responses-tool-search-compat"
 import { applyAssistantMessagePhase } from "./common"
 import { deriveVisibleActionNoteFromReasoning } from "./action-note"
+import { repairResponsesMessageIdsInSsePayload } from "./responses-message-id-repair"
 
 type AnyRecord = Record<string, any>
 
@@ -351,12 +352,20 @@ class ResponsesStreamRepairer {
     const outputIndexChanged = this.applyOutputIndexShift(data)
 
     const type = data.type || event
+    const messageIdChanged = repairResponsesMessageIdsInSsePayload(data, event)
     if (type === "response.output_item.added") {
-      return this.handleOutputItemAdded(event, data, frameText, outputIndexChanged)
+      return this.handleOutputItemAdded(
+        event,
+        data,
+        frameText,
+        outputIndexChanged || messageIdChanged,
+      )
     }
     if (type === "response.output_text.delta") {
       this.rememberTextDelta("message", data, data.delta)
-      return modelChanged || outputIndexChanged ? sse(event, data) : rawSseFrame(frameText)
+      return modelChanged || outputIndexChanged || messageIdChanged
+        ? sse(event, data)
+        : rawSseFrame(frameText)
     }
     if (type === "response.output_text.done" || type === "response.content_part.done") {
       const text =
@@ -366,11 +375,15 @@ class ResponsesStreamRepairer {
             ? data.part.text
             : ""
       this.rememberTextDone("message", data, text)
-      return modelChanged || outputIndexChanged ? sse(event, data) : rawSseFrame(frameText)
+      return modelChanged || outputIndexChanged || messageIdChanged
+        ? sse(event, data)
+        : rawSseFrame(frameText)
     }
     if (type === "response.reasoning_summary_text.delta") {
       this.rememberTextDelta("reasoning", data, data.delta)
-      return modelChanged || outputIndexChanged ? sse(event, data) : rawSseFrame(frameText)
+      return modelChanged || outputIndexChanged || messageIdChanged
+        ? sse(event, data)
+        : rawSseFrame(frameText)
     }
     if (type === "response.reasoning_summary_text.done" || type === "response.reasoning_summary_part.done") {
       const text =
@@ -380,11 +393,15 @@ class ResponsesStreamRepairer {
             ? data.part.text
             : ""
       this.rememberTextDone("reasoning", data, text)
-      return modelChanged || outputIndexChanged ? sse(event, data) : rawSseFrame(frameText)
+      return modelChanged || outputIndexChanged || messageIdChanged
+        ? sse(event, data)
+        : rawSseFrame(frameText)
     }
     if (type === "response.custom_tool_call_input.delta") {
       this.rememberTextDelta("custom_tool", data, data.delta)
-      return modelChanged || outputIndexChanged ? sse(event, data) : rawSseFrame(frameText)
+      return modelChanged || outputIndexChanged || messageIdChanged
+        ? sse(event, data)
+        : rawSseFrame(frameText)
     }
     if (type === "response.custom_tool_call_input.done") {
       const input =
@@ -394,7 +411,9 @@ class ResponsesStreamRepairer {
             ? data.text
             : ""
       this.rememberTextDone("custom_tool", data, input)
-      return modelChanged || outputIndexChanged ? sse(event, data) : rawSseFrame(frameText)
+      return modelChanged || outputIndexChanged || messageIdChanged
+        ? sse(event, data)
+        : rawSseFrame(frameText)
     }
     if (type === "response.function_call_arguments.delta") {
       return this.handleFunctionArgumentsDelta(event, data, frameText, outputIndexChanged)
@@ -403,7 +422,12 @@ class ResponsesStreamRepairer {
       return this.handleFunctionArgumentsDone(event, data, frameText, outputIndexChanged)
     }
     if (type === "response.output_item.done") {
-      return this.handleOutputItemDone(event, data, frameText, outputIndexChanged)
+      return this.handleOutputItemDone(
+        event,
+        data,
+        frameText,
+        outputIndexChanged || messageIdChanged,
+      )
     }
     if (type === "error" || event === "error") {
       return this.handleUpstreamError(data)
@@ -427,9 +451,13 @@ class ResponsesStreamRepairer {
     if (type === "response.failed") {
       this.failedSeen = true
       this.pendingDone = false
-      return modelChanged || outputIndexChanged ? sse(event, data) : rawSseFrame(frameText)
+      return modelChanged || outputIndexChanged || messageIdChanged
+        ? sse(event, data)
+        : rawSseFrame(frameText)
     }
-    return modelChanged || outputIndexChanged ? sse(event, data) : rawSseFrame(frameText)
+    return modelChanged || outputIndexChanged || messageIdChanged
+      ? sse(event, data)
+      : rawSseFrame(frameText)
   }
 
   private handleUpstreamError(data: AnyRecord) {

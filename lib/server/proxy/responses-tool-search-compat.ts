@@ -7,6 +7,11 @@ import {
   toolCallItem,
   type ToolContext,
 } from "./codex-tool-proxy"
+import {
+  isHostedWebSearchToolType,
+  relayWebSearchResponsesTools,
+  RELAY_WEB_SEARCH_TOOL_NAME,
+} from "./web-search-relay"
 
 type AnyRecord = Record<string, any>
 
@@ -119,6 +124,11 @@ function compatibleResponsesTools(tools: unknown[], context: ToolContext) {
       continue
     }
 
+    if (isHostedWebSearchToolType(type)) {
+      for (const relayTool of relayWebSearchResponsesTools()) pushTool(relayTool)
+      continue
+    }
+
     if (type === "namespace") {
       const namespace = safeTrim(tool.name)
       const namespaceDescription = safeTrim(tool.description)
@@ -149,11 +159,24 @@ function compatibleResponsesTools(tools: unknown[], context: ToolContext) {
 }
 
 function compatibleToolChoice(choice: unknown, context: ToolContext): unknown {
+  if (
+    typeof choice === "string" &&
+    isHostedWebSearchToolType(choice) &&
+    context.webSearchTools.has(RELAY_WEB_SEARCH_TOOL_NAME)
+  ) {
+    return { type: "function", name: RELAY_WEB_SEARCH_TOOL_NAME }
+  }
   if (!isObject(choice)) return choice
   if (choice.type === "tool_search") {
     return context.toolSearchTools.has("tool_search")
       ? { type: "function", name: "tool_search" }
       : undefined
+  }
+  if (
+    isHostedWebSearchToolType(choice.type) &&
+    context.webSearchTools.has(RELAY_WEB_SEARCH_TOOL_NAME)
+  ) {
+    return { type: "function", name: RELAY_WEB_SEARCH_TOOL_NAME }
   }
   if (choice.type === "function") {
     const namespace = safeTrim(choice.namespace || choice.function?.namespace)

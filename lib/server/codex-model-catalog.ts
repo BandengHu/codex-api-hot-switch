@@ -1,5 +1,6 @@
 import "server-only"
 
+import { primaryProviderEndpoint } from "@/lib/provider-endpoints"
 import {
   CODEX_AUTO_MODEL_DISPLAY_NAME,
   CODEX_AUTO_MODEL_SLUG,
@@ -39,7 +40,7 @@ function isOpenAIOfficialProvider(provider: Provider | undefined) {
   if (provider.id === "openai-official") return true
   if (provider.name.toLowerCase().includes("openai 官方")) return true
   try {
-    return new URL(provider.baseUrl).hostname.toLowerCase() === "api.openai.com"
+    return new URL(primaryProviderEndpoint(provider).baseUrl).hostname.toLowerCase() === "api.openai.com"
   } catch {
     return false
   }

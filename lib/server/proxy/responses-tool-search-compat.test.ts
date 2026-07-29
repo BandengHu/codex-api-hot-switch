@@ -25,6 +25,10 @@ const toolSearch = {
   },
 }
 
+const hostedWebSearch = {
+  type: "web_search",
+}
+
 const loadedNamespace = {
   type: "namespace",
   name: "mcp__switchgate_web_search",
@@ -150,6 +154,35 @@ test("non-passthrough Responses converts tool_search into a standard function", 
   )
 })
 
+test("non-passthrough Responses exposes search and page reading as functions", () => {
+  const prepared = prepare({
+    model: "client-model",
+    stream: true,
+    input: "Research the current release.",
+    tools: [hostedWebSearch],
+  })
+
+  assert.equal(prepared.adapter.type, "passthrough")
+  assert.deepEqual(
+    prepared.body.tools.map((tool: any) => tool.name),
+    ["web_search", "browse_page"],
+  )
+  assert.equal(
+    prepared.body.tools.every((tool: any) => tool.type === "function"),
+    true,
+  )
+  assert.equal(
+    prepared.adapter.type === "passthrough" &&
+      prepared.adapter.toolContext?.webSearchTools.has("web_search"),
+    true,
+  )
+  assert.equal(
+    prepared.adapter.type === "passthrough" &&
+      prepared.adapter.toolContext?.functionTools.has("browse_page"),
+    true,
+  )
+})
+
 test("raw Responses passthrough preserves Codex tool_search wire shape", () => {
   const input = {
     model: "client-model",
@@ -161,6 +194,20 @@ test("raw Responses passthrough preserves Codex tool_search wire shape", () => {
 
   assert.deepEqual(prepared.body.tools, input.tools)
   assert.equal(prepared.body.input, input.input)
+  assert.equal(prepared.adapter.type === "passthrough" && prepared.adapter.toolContext, undefined)
+})
+
+test("raw Responses passthrough preserves hosted web search without adding browse_page", () => {
+  const input = {
+    model: "client-model",
+    stream: true,
+    input: "Research the current release.",
+    tools: [hostedWebSearch],
+  }
+  const prepared = prepare(input, true)
+
+  assert.deepEqual(prepared.body.tools, input.tools)
+  assert.equal(prepared.body.tools.some((tool: any) => tool.name === "browse_page"), false)
   assert.equal(prepared.adapter.type === "passthrough" && prepared.adapter.toolContext, undefined)
 })
 

@@ -16,6 +16,7 @@ const {
 const {
   normalizeSearchResults,
   parseWebSearchMcpResponse,
+  selectedProvider,
 } = require("./web-search-mcp/search.cjs")
 const { handleRequest } = require("./web-search-mcp/server.cjs")
 
@@ -116,7 +117,7 @@ test("extractPage returns final URL metadata and truncation state", () => {
   const page = extractPage(html, "text/html; charset=utf-8", "https://www.example.com/a", 5)
   assert.equal(page.domain, "example.com")
   assert.equal(page.title, "Test")
-  assert.equal(page.text, "Test\n")
+  assert.equal(page.content, "Test\n")
   assert.equal(page.truncated, true)
 })
 
@@ -133,9 +134,62 @@ test("browse_page accepts up to five unique URLs", () => {
   const input = normalizeBrowsePageInput({
     urls: ["https://example.com", "https://example.com", "https://example.org"],
     maxCharacters: 5000,
+    format: "text",
+    timeout: 45,
   })
   assert.deepEqual(input.urls, ["https://example.com", "https://example.org"])
   assert.equal(input.maxCharacters, 5000)
+  assert.equal(input.format, "text")
+  assert.equal(input.timeoutSeconds, 45)
+})
+
+test("browse_page extracts markdown links and supports html output", () => {
+  const html = Buffer.from(`
+    <html>
+      <head><title>Official page</title></head>
+      <body>
+        <main>
+          <h1>Official page</h1>
+          <p>Read <a href="https://example.com/docs">the documentation</a>.</p>
+          <ul><li>First item</li><li>Second item</li></ul>
+        </main>
+      </body>
+    </html>
+  `)
+  const markdown = extractPage(
+    html,
+    "text/html; charset=utf-8",
+    "https://example.com",
+    5000,
+    "markdown",
+  )
+  assert.match(markdown.content, /\[the documentation\]\(https:\/\/example\.com\/docs\)/)
+  assert.match(markdown.content, /- First item/)
+
+  const rawHtml = extractPage(
+    html,
+    "text/html; charset=utf-8",
+    "https://example.com",
+    5000,
+    "html",
+  )
+  assert.match(rawHtml.content, /<h1>Official page<\/h1>/)
+})
+
+test("search provider choice is stable for a session", () => {
+  const keys = ["PARALLEL_API_KEY", "OPENCODE_WEBSEARCH_PROVIDER", "SWITCHGATE_WEB_SEARCH_PROVIDER"]
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
+  try {
+    delete process.env.OPENCODE_WEBSEARCH_PROVIDER
+    delete process.env.SWITCHGATE_WEB_SEARCH_PROVIDER
+    process.env.PARALLEL_API_KEY = "test-key"
+    assert.equal(selectedProvider("", "stable-session"), selectedProvider("", "stable-session"))
+  } finally {
+    for (const key of keys) {
+      if (previous[key] == null) delete process.env[key]
+      else process.env[key] = previous[key]
+    }
+  }
 })
 
 test("browse_page decompresses gzip responses with a bounded output", () => {
@@ -149,4 +203,10 @@ test("MCP tools/list exposes search and page reading", async () => {
     response.result.tools.map((tool) => tool.name),
     ["web_search", "browse_page"],
   )
+  assert.equal(response.result.tools[0].inputSchema.properties.provider, undefined)
+  assert.deepEqual(response.result.tools[1].inputSchema.properties.format.enum, [
+    "markdown",
+    "text",
+    "html",
+  ])
 })

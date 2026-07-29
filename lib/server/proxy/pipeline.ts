@@ -86,31 +86,32 @@ import {
   TokenUsageSseCollector,
 } from "./token-usage"
 import { lastCompleteSseFrameBoundary } from "./sse-frame"
+import { repairResponsesMessageIdsInPayload } from "./responses-message-id-repair"
 import {
   buildProxyRequest,
-  fetchWithProviderTimeout,
   parseJsonSafe,
   type BuiltProxyRequest,
 } from "./request-builder"
-import {
-  fetchWithModelCapacityRetry,
-  MODEL_CAPACITY_MAX_RETRIES,
-} from "./model-capacity-retry"
-import {
-  fetchWithHtmlResponseRetry,
-  HTML_RESPONSE_MAX_RETRIES,
-} from "./html-response-retry"
+import { fetchWithEndpointFailover } from "./endpoint-failover"
 import { applyAuxiliaryRouting } from "./auxiliary-routing"
 import {
   maybeRectifyUpstreamError,
   type RectifierKind,
 } from "./request-rectifiers"
 import {
-  executeRelayWebSearch,
+  executeRelayWebTool,
   isHostedWebSearchToolType,
   RELAY_WEB_SEARCH_TOOL_NAME,
-  type RelayWebSearchInput,
+  type RelayWebToolResult,
 } from "./web-search-relay"
+import {
+  extractRelayWebToolCalls,
+  mergeRelayOutputItems,
+  nextRelayBody,
+  relayDisplayItem,
+  relayInputFromCall,
+  relaySessionIdFromBody,
+} from "./web-search-relay-state"
 
 const SUPPORTED_POST_PATHS = new Set([
   "v1/chat/completions",
@@ -129,7 +130,7 @@ type BuiltRequest = BuiltProxyRequest
 type ParsedImageApiRequest = Awaited<ReturnType<typeof parseImagesApiRequest>>
 type AnyRecord = Record<string, any>
 
-const WEB_SEARCH_RELAY_MAX_TURNS = 3
+const WEB_SEARCH_RELAY_MAX_TURNS = 5
 
 function isObject(value: unknown): value is AnyRecord {
   return Boolean(value && typeof value === "object" && !Array.isArray(value))
@@ -169,6 +170,9 @@ function makeLog(params: {
   body: unknown
   target: ProxyTarget
   statusCode: number
+  stream?: boolean
+  firstTokenMs?: number
+  outputTokensPerSecond?: number
   rewrittenBody?: unknown
   responseSummary: string
   tokenUsage?: TokenUsage
@@ -181,9 +185,16 @@ function makeLog(params: {
     codexModel: params.target.requestedModel,
     finalProviderId: params.target.provider.id,
     finalModelId: params.target.modelId,
+    finalEndpointId: params.target.provider.activeEndpointId,
+    finalEndpointName: params.target.provider.activeEndpointName,
+    attemptedEndpointIds: params.target.attemptedEndpointIds,
+    failoverReason: params.target.failoverReason,
     reasoning: params.target.reasoning,
     statusCode: params.statusCode,
     durationMs: Date.now() - params.startedAt,
+    stream: params.stream ?? requestWantsStream(params.body),
+    firstTokenMs: params.firstTokenMs,
+    outputTokensPerSecond: params.outputTokensPerSecond,
     tokenUsage: params.tokenUsage,
     error: params.error,
     rawRequest: compactJson(params.body),
@@ -238,6 +249,7 @@ function makeEarlyFailureLog(params: {
     reasoning: "off",
     statusCode: params.statusCode,
     durationMs: Date.now() - params.startedAt,
+    stream: requestWantsStream(params.body),
     error: params.error,
     rawRequest: compactJson(requestMeta),
     rewrittenRequest: "请求尚未解析到目标供应商",
@@ -285,10 +297,20 @@ function appendLogAfterStreamSettles(
     if (logged) return
     logged = true
     const message = errorMessage(error)
+    const usage = tokenUsage || params.tokenUsage
+    const firstTokenMs = collector.firstOutputMs(params.startedAt)
+    const durationMs = Math.max(1, Date.now() - params.startedAt)
+    const outputTokensPerSecond =
+      usage?.outputTokens != null && firstTokenMs != null
+        ? usage.outputTokens / Math.max(0.001, (durationMs - firstTokenMs) / 1000)
+        : undefined
     appendLogDetached(
       makeLog({
         ...params,
-        tokenUsage: tokenUsage || params.tokenUsage,
+        stream: true,
+        firstTokenMs,
+        outputTokensPerSecond,
+        tokenUsage: usage,
         error: message,
         errorStack: error instanceof Error ? error.stack : params.errorStack,
       }),
@@ -300,12 +322,12 @@ function appendLogAfterStreamSettles(
       try {
         const { value, done } = await reader.read()
         if (done) {
-          const usage = collector.finish()
+          const usage = collector.finish(Date.now())
           writeLog(usage, streamTerminalError("流式响应结束但没有看到 response.completed"))
           controller.close()
           return
         }
-        if (value?.length) collector.push(value)
+        if (value?.length) collector.push(value, Date.now())
         if (value) controller.enqueue(value)
       } catch (error) {
         writeLog(collector.current() || params.tokenUsage, error)
@@ -343,7 +365,10 @@ async function streamBodyMissingResponse(params: Parameters<typeof makeLog>[0]) 
 
 function withResponseModel(payload: unknown, model: string) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload
-  const next: Record<string, unknown> = { ...(payload as Record<string, unknown>), model }
+  const next: Record<string, unknown> = {
+    ...(payload as Record<string, unknown>),
+    model,
+  }
   if (next.response && typeof next.response === "object" && !Array.isArray(next.response)) {
     next.response = { ...(next.response as Record<string, unknown>), model }
   }
@@ -386,6 +411,7 @@ function transformResponse(
     const restored = built?.adapter?.type === "passthrough" && !target.provider.rawResponsesPassthrough
       ? restoreCompatibleResponsesToolCalls(payload, built.adapter.toolContext)
       : payload
+    repairResponsesMessageIdsInPayload(restored)
     const transformed = built?.adapter?.type === "passthrough"
       ? withResponseModel(restored, built.adapter.responseModelOverride || target.requestedModel)
       : restored
@@ -1121,7 +1147,7 @@ function requestHasExplicitHostedWebSearchIntent(body: unknown) {
   const action =
     /(?:搜|搜索|检索|查询|查一下|查下|查查|查找|查阅|查证|核实|核对|验证|确认|看看|看一下|帮我看|look up|search|find out|check|verify|confirm)/i
   const externalContext =
-    /(?:最新|最近|当前|现在|今天|昨日|昨天|明天|本周|本月|实时|新闻|公告|发布|上线|更新|版本|release|changelog|github|issue|pull request|npm|pypi|pip|官网|网站|网页|价格|行情|汇率|政策|法规|规则|标准|排名|榜单|论文|paper|资料|来源|出处)/i
+    /(?:最新|最近|当前|现在|今天|昨日|昨天|明天|本周|本月|实时|天气|气温|温度|预报|风力|空气质量|航班|路况|交通|营业时间|新闻|公告|发布|上线|更新|版本|release|changelog|github|issue|pull request|npm|pypi|pip|官网|网站|网页|价格|行情|汇率|股价|政策|法规|规则|标准|排名|榜单|论文|paper|资料|来源|出处)/i
   return action.test(text) && externalContext.test(text)
 }
 
@@ -1229,11 +1255,21 @@ async function handleResponsesCompactFallback(params: {
     throw new ProxyRequestBodyError("OpenAI Responses compact 不支持 stream=true", 400)
   }
   const summaryBody = buildCompactSummaryRequest(params.body, params.target.modelId)
-  const summaryTarget: ProxyTarget = { ...params.target, reasoning: "off" }
-  const built = buildProxyRequest(summaryTarget, "v1/responses", summaryBody)
+  let summaryTarget: ProxyTarget = { ...params.target, reasoning: "off" }
+  let built = buildProxyRequest(summaryTarget, "v1/responses", summaryBody)
   let upstream: Response
   try {
-    upstream = await fetchWithProviderTimeout(summaryTarget, built, params.requestSignal)
+    const result = await fetchWithEndpointFailover({
+      target: summaryTarget,
+      path: "v1/responses",
+      body: summaryBody,
+      requestSignal: params.requestSignal,
+      requestIsStream: false,
+      capacityRetryEnabled: false,
+    })
+    summaryTarget = result.target
+    built = result.built
+    upstream = result.response
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     const transformed = {
@@ -1318,149 +1354,6 @@ async function handleResponsesCompactFallback(params: {
 
 function disableRequestStream(body: unknown) {
   return isObject(body) ? { ...body, stream: false } : body
-}
-
-function inputItemsFromBody(body: AnyRecord) {
-  if (Array.isArray(body.input)) return [...body.input]
-  if (body.input == null) return []
-  if (typeof body.input === "string") {
-    return [{ type: "message", role: "user", content: body.input }]
-  }
-  return [body.input]
-}
-
-function parsedArguments(value: unknown): AnyRecord {
-  if (isObject(value)) return value
-  if (typeof value !== "string" || !value.trim()) return {}
-  try {
-    const parsed = JSON.parse(value)
-    return isObject(parsed) ? parsed : { value: parsed }
-  } catch {
-    return { query: value }
-  }
-}
-
-function relayInputFromCall(item: AnyRecord, target: ProxyTarget): RelayWebSearchInput {
-  const args = parsedArguments(item.arguments)
-  const query = String(
-    item.action?.query ||
-      args.query ||
-      args.search_query ||
-      args.q ||
-      args.input ||
-      "",
-  ).trim()
-  return {
-    query,
-    numResults: Number.isFinite(Number(args.numResults))
-      ? Math.max(1, Math.min(20, Number(args.numResults)))
-      : undefined,
-    livecrawl:
-      args.livecrawl === "preferred" || args.livecrawl === "fallback"
-        ? args.livecrawl
-        : undefined,
-    type:
-      args.type === "auto" || args.type === "fast" || args.type === "deep"
-        ? args.type
-        : undefined,
-    contextMaxCharacters: Number.isFinite(Number(args.contextMaxCharacters))
-      ? Math.max(1, Math.min(50_000, Number(args.contextMaxCharacters)))
-      : undefined,
-    sessionId: String(item.call_id || item.id || "").trim() || undefined,
-    modelName: target.modelId,
-  }
-}
-
-function extractRelayWebSearchCalls(response: unknown) {
-  if (!isObject(response) || !Array.isArray(response.output)) return []
-  return response.output
-    .filter((item): item is AnyRecord => {
-      if (!isObject(item)) return false
-      if (item.type === "web_search_call") return true
-      return item.type === "function_call" && item.name === RELAY_WEB_SEARCH_TOOL_NAME
-    })
-    .map((item, index) => ({
-      item,
-      callId: String(item.call_id || item.id || `call_web_search_${index}`).trim(),
-      argumentsText:
-        typeof item.arguments === "string"
-          ? item.arguments
-          : JSON.stringify(item.arguments || { query: item.action?.query || "" }),
-    }))
-}
-
-function relayToolHistoryItems(params: {
-  calls: Array<{ item: AnyRecord; callId: string; argumentsText: string }>
-  results: Array<{ callId: string; output: string }>
-}) {
-  return params.calls.flatMap((call) => {
-    const result = params.results.find((entry) => entry.callId === call.callId)
-    return [
-      {
-        type: "function_call",
-        call_id: call.callId,
-        name: RELAY_WEB_SEARCH_TOOL_NAME,
-        arguments: call.argumentsText || "{}",
-      },
-      {
-        type: "function_call_output",
-        call_id: call.callId,
-        output: result?.output || "",
-      },
-    ]
-  })
-}
-
-function responseAssistantHistoryItems(response: unknown) {
-  if (!isObject(response) || !Array.isArray(response.output)) return []
-  return response.output.filter(
-    (item) => !(isObject(item) && (
-      item.type === "web_search_call" ||
-      (item.type === "function_call" && item.name === RELAY_WEB_SEARCH_TOOL_NAME)
-    )),
-  )
-}
-
-function nextRelayBody(
-  body: unknown,
-  response: unknown,
-  calls: Array<{ item: AnyRecord; callId: string; argumentsText: string }>,
-  results: Array<{ callId: string; output: string }>,
-) {
-  if (!isObject(body)) return body
-  const next: AnyRecord = {
-    ...body,
-    stream: false,
-    input: [
-      ...inputItemsFromBody(body),
-      ...responseAssistantHistoryItems(response),
-      ...relayToolHistoryItems({ calls, results }),
-    ],
-  }
-  delete next.previous_response_id
-  if (
-    next.tool_choice === "required" ||
-    isHostedWebSearchToolType(next.tool_choice) ||
-    (isObject(next.tool_choice) && isHostedWebSearchToolType(next.tool_choice.type))
-  ) {
-    next.tool_choice = "auto"
-  }
-  return next
-}
-
-function mergeRelayOutputItems(response: unknown, items: AnyRecord[]) {
-  if (!items.length || !isObject(response)) return response
-  const output = Array.isArray(response.output) ? response.output : []
-  const existing = new Set(
-    output
-      .filter((item) => isObject(item))
-      .map((item) => String(item.id || item.call_id || "")),
-  )
-  const merged = [
-    ...items.filter((item) => !existing.has(String(item.id || item.call_id || ""))),
-    ...output,
-  ]
-  return { ...response, output: merged }
 }
 
 function responseFromRelayPayload(payload: unknown, built: BuiltRequest) {
@@ -1746,29 +1639,40 @@ async function handleRelayWebSearchResponses(params: {
 }) {
   let currentBody = disableRequestStream(params.body)
   let currentBuilt: BuiltRequest | undefined
+  let currentTarget = params.target
   const relayedItems: AnyRecord[] = []
+  const relaySessionId = relaySessionIdFromBody(params.body, params.target)
 
   for (let turn = 0; turn < WEB_SEARCH_RELAY_MAX_TURNS; turn += 1) {
-    currentBuilt = buildProxyRequest(params.target, params.path, currentBody)
     let upstream: Response
     try {
-      upstream = await fetchWithProviderTimeout(params.target, currentBuilt, params.requestSignal)
+      const result = await fetchWithEndpointFailover({
+        target: currentTarget,
+        path: params.path,
+        body: currentBody,
+        requestSignal: params.requestSignal,
+        requestIsStream: false,
+        capacityRetryEnabled: false,
+      })
+      currentTarget = result.target
+      currentBuilt = result.built
+      upstream = result.response
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       appendLogDetached(
         makeLog({
           startedAt: params.startedAt,
           body: params.rawBody,
-          target: params.target,
+          target: currentTarget,
           statusCode: 502,
-          rewrittenBody: currentBuilt.rewrittenBody,
+          rewrittenBody: currentBuilt?.rewrittenBody,
           responseSummary: `web_search relay 请求失败：${message}`,
           error: message,
           errorStack: error instanceof Error ? error.stack : undefined,
         }),
       )
       return relayErrorResponse({
-        target: params.target,
+        target: currentTarget,
         stream: params.stream,
         statusCode: 502,
         message,
@@ -1782,7 +1686,7 @@ async function handleRelayWebSearchResponses(params: {
         makeLog({
           startedAt: params.startedAt,
           body: params.rawBody,
-          target: params.target,
+          target: currentTarget,
           statusCode: upstream.status,
           rewrittenBody: currentBuilt.rewrittenBody,
           responseSummary: compactJson(transformed),
@@ -1800,7 +1704,7 @@ async function handleRelayWebSearchResponses(params: {
           ? upstreamError.type.trim()
           : "upstream_error"
         return relayErrorResponse({
-          target: params.target,
+          target: currentTarget,
           stream: true,
           statusCode: upstream.status,
           message,
@@ -1811,18 +1715,18 @@ async function handleRelayWebSearchResponses(params: {
       return Response.json(transformed, {
         status: upstream.status,
         headers: {
-          "x-codex-hot-switch-provider": params.target.provider.id,
-          "x-codex-hot-switch-model": params.target.modelId,
+          "x-codex-hot-switch-provider": currentTarget.provider.id,
+          "x-codex-hot-switch-model": currentTarget.modelId,
           "x-codex-hot-switch-web-search-relay": "1",
         },
       })
     }
 
     const responsePayload = responseFromRelayPayload(payload, currentBuilt)
-    const transformed = transformResponse(params.target, params.path, responsePayload, currentBuilt, {
+    const transformed = transformResponse(currentTarget, params.path, responsePayload, currentBuilt, {
       recordHistory: false,
     })
-    const calls = extractRelayWebSearchCalls(transformed)
+    const calls = extractRelayWebToolCalls(transformed)
     if (calls.length === 0) {
       const response = mergeRelayOutputItems(transformed, relayedItems)
       return relayResponse({
@@ -1832,61 +1736,55 @@ async function handleRelayWebSearchResponses(params: {
         built: currentBuilt,
         startedAt: params.startedAt,
         rawBody: params.rawBody,
-        target: params.target,
+        target: currentTarget,
         stream: params.stream,
       })
     }
 
-    const results = []
+    const results: Array<{ callId: string; output: string }> = []
     for (const call of calls) {
-      const input = relayInputFromCall(call.item, params.target)
-      let result
+      const input = relayInputFromCall(
+        call,
+        currentTarget,
+        relaySessionId,
+      )
+      let result: RelayWebToolResult
       try {
-        result = await executeRelayWebSearch(input, params.requestSignal)
+        result = await executeRelayWebTool(input, params.requestSignal)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         appendLogDetached(
           makeLog({
             startedAt: params.startedAt,
             body: params.rawBody,
-            target: params.target,
+            target: currentTarget,
             statusCode: 502,
             rewrittenBody: currentBuilt.rewrittenBody,
-            responseSummary: `web_search 执行失败：${message}`,
+            responseSummary: `${call.toolName} 执行失败：${message}`,
             error: message,
             errorStack: error instanceof Error ? error.stack : undefined,
           }),
         )
         return relayErrorResponse({
-          target: params.target,
+          target: currentTarget,
           stream: params.stream,
           statusCode: 502,
           message,
         })
       }
       results.push({ callId: call.callId, output: result.text })
-      relayedItems.push({
-        ...call.item,
-        status: "completed",
-        call_id: call.callId,
-        arguments: call.argumentsText,
-        action: {
-          type: "search",
-          query: result.query,
-          provider: result.provider,
-        },
-      })
+      relayedItems.push(relayDisplayItem(call, result))
     }
     currentBody = nextRelayBody(currentBody, transformed, calls, results)
   }
 
-  const message = `web_search 连续调用超过 ${WEB_SEARCH_RELAY_MAX_TURNS} 轮，已停止`
+  const message = `网页工具连续调用超过 ${WEB_SEARCH_RELAY_MAX_TURNS} 轮，已停止`
   if (currentBuilt) {
     appendLogDetached(
       makeLog({
         startedAt: params.startedAt,
         body: params.rawBody,
-        target: params.target,
+        target: currentTarget,
         statusCode: 429,
         rewrittenBody: currentBuilt.rewrittenBody,
         responseSummary: message,
@@ -1895,7 +1793,7 @@ async function handleRelayWebSearchResponses(params: {
     )
   }
   return relayErrorResponse({
-    target: params.target,
+    target: currentTarget,
     stream: params.stream,
     statusCode: 429,
     message,
@@ -1970,35 +1868,32 @@ export async function handleProxyPost(parts: string[], request: Request) {
       })
     }
 
+    if (!target) throw new Error("无法解析当前请求的供应商端点")
     built = buildProxyRequest(target, effectivePath, body)
-    const retryTarget = target
     let capacityRetryCount = 0
     let htmlRetryCount = 0
-    const fetchUpstream = async () => {
-      const htmlResult = await fetchWithHtmlResponseRetry({
+    const capacityRetryEnabled =
+      target.provider.rawResponsesPassthrough === true &&
+      isOpenAIResponsesProtocol(target.provider.protocol) &&
+      isResponsesPath(effectivePath) &&
+      built.adapter?.type === "passthrough"
+    const fetchEndpoint = async (requestBody: unknown) => {
+      const result = await fetchWithEndpointFailover({
+        target: target!,
+        path: effectivePath,
+        body: requestBody,
         requestSignal: request.signal,
-        maxRetries: Math.max(0, HTML_RESPONSE_MAX_RETRIES - htmlRetryCount),
-        fetchResponse: async () => {
-          const result = await fetchWithModelCapacityRetry({
-            enabled:
-              retryTarget.provider.rawResponsesPassthrough === true &&
-              isOpenAIResponsesProtocol(retryTarget.provider.protocol) &&
-              isResponsesPath(effectivePath) &&
-              built?.adapter?.type === "passthrough",
-            requestIsStream:
-              requestWantsStream(body) || requestWantsStream(built?.rewrittenBody),
-            requestSignal: request.signal,
-            maxRetries: Math.max(0, MODEL_CAPACITY_MAX_RETRIES - capacityRetryCount),
-            fetchResponse: () => fetchWithProviderTimeout(retryTarget, built!, request.signal),
-          })
-          capacityRetryCount += result.retryCount
-          return result.response
-        },
+        requestIsStream:
+          requestWantsStream(requestBody) || requestWantsStream(built?.rewrittenBody),
+        capacityRetryEnabled,
       })
-      htmlRetryCount += htmlResult.retryCount
-      return htmlResult.response
+      target = result.target
+      built = result.built
+      capacityRetryCount += result.capacityRetryCount
+      htmlRetryCount += result.htmlRetryCount
+      return result.response
     }
-    let upstream = await fetchUpstream()
+    let upstream = await fetchEndpoint(body)
     const successResponse = await maybeHandleSuccessfulUpstream({
       imageApiRequest,
       upstream,
@@ -2045,7 +1940,7 @@ export async function handleProxyPost(parts: string[], request: Request) {
 
       attemptedRectifiers.add(rectified.kind)
       built = withRewrittenBody(built, rectified.body)
-      upstream = await fetchUpstream()
+      upstream = await fetchEndpoint(rectified.body)
       const rectifiedSuccessResponse = await maybeHandleSuccessfulUpstream({
         imageApiRequest,
         upstream,
@@ -2068,12 +1963,15 @@ export async function handleProxyPost(parts: string[], request: Request) {
       isResponsesPath(path)
     const transformed = upstream.ok
       ? rawResponsesPassthrough
-        ? withResponseModel(
-            payload,
-            built.adapter?.type === "passthrough"
-              ? built.adapter.responseModelOverride || target.requestedModel
-              : target.requestedModel,
-          )
+        ? (() => {
+            repairResponsesMessageIdsInPayload(payload)
+            return withResponseModel(
+              payload,
+              built.adapter?.type === "passthrough"
+                ? built.adapter.responseModelOverride || target.requestedModel
+                : target.requestedModel,
+            )
+          })()
         : transformResponse(target, path, payload, built)
       : normalizeUpstreamErrorPayload(payload, upstream.status)
     if (upstream.ok && rawResponsesPassthrough) {

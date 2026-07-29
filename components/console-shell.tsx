@@ -13,6 +13,7 @@ import { CodexDesktopView } from "@/components/views/codex-desktop-view"
 import { CodexSessionsView } from "@/components/views/codex-sessions-view"
 import { WecomBridgeView } from "@/components/views/wecom-bridge-view"
 import { SettingsView } from "@/components/views/settings-view"
+import { McpView } from "@/components/views/mcp-view"
 
 function viewFromUrl() {
   const params = new URLSearchParams(window.location.search)
@@ -56,6 +57,7 @@ export function ConsoleShell({
             {view === "token-stats" ? <TokenStatsView /> : null}
             {view === "logs" ? <LogsView /> : null}
             {view === "codex-desktop" ? <CodexDesktopView /> : null}
+            {view === "mcp" ? <McpView /> : null}
             {view === "codex-sessions" ? <CodexSessionsView /> : null}
             {view === "wecom-bridge" ? <WecomBridgeView /> : null}
             {view === "settings" ? <SettingsView /> : null}

@@ -22,7 +22,11 @@ export function cloneProviderWithModels(
       ...source,
       id: providerId,
       name: `${source.name}（副本）`,
-      apiKey: "",
+      endpoints: source.endpoints.map((endpoint) => ({
+        ...endpoint,
+        id: newId(),
+        apiKey: "",
+      })),
       headers: source.headers.map((header) => ({ ...header, id: newId(), value: "" })),
       isDefault: false,
       health: "healthy",

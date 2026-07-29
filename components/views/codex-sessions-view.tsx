@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   Archive,
   ChevronDown,
@@ -249,6 +249,7 @@ export function CodexSessionsView() {
   const [message, setMessage] = useState("")
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [clearBackupsOpen, setClearBackupsOpen] = useState(false)
+  const initialExpansionAppliedRef = useRef(false)
 
   async function refresh() {
     setLoading(true)
@@ -294,9 +295,10 @@ export function CodexSessionsView() {
   }, [activeGroup])
 
   useEffect(() => {
-    if (expandedCwds.length > 0 || groups.length === 0) return
+    if (initialExpansionAppliedRef.current || groups.length === 0) return
+    initialExpansionAppliedRef.current = true
     setExpandedCwds([groups[0].cwd])
-  }, [expandedCwds.length, groups])
+  }, [groups])
 
   async function handleSync() {
     setWorking(true)
@@ -544,8 +546,8 @@ export function CodexSessionsView() {
           </div>
         </CardHeader>
         <CardContent>
-          <div className="grid min-h-[460px] gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
-            <div className="flex min-h-0 flex-col rounded-lg border border-border bg-muted/20">
+          <div className="grid gap-4 lg:h-[clamp(460px,68vh,760px)] lg:grid-cols-[360px_minmax(0,1fr)]">
+            <div className="flex h-[460px] min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-muted/20 lg:h-auto">
               <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
                 <div className="flex min-w-0 items-center gap-2">
                   <Checkbox
@@ -587,7 +589,7 @@ export function CodexSessionsView() {
               </div>
             </div>
 
-            <div className="flex min-w-0 flex-col rounded-lg border border-border">
+            <div className="flex h-[460px] min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-border lg:h-auto">
               <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3">
                 <div className="min-w-0">
                   <div className="flex min-w-0 items-center gap-2">

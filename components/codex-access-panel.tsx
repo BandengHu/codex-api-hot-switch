@@ -5,7 +5,6 @@ import {
   AlertTriangle,
   Bot,
   CheckCircle2,
-  FolderOpen,
   ListRestart,
   PlugZap,
   RefreshCw,
@@ -31,16 +30,10 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Field, FieldLabel } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
 import {
   fetchCodexConfigStatus,
   fetchConsoleSnapshot,
   installCodexConfig,
-  installCodexWebSearchMcp,
-  installCodexCodegraphMcp,
-  initCodexCodegraphProjects,
-  removeCodexWebSearchMcp,
-  removeCodexCodegraphMcp,
   restoreCodexConfig,
   syncCodexModelCatalog,
   syncCodexSubagentRoles,
@@ -57,7 +50,6 @@ import { toast } from "sonner"
 import { CodexConfigBackupManager } from "@/components/codex-config-backup-manager"
 import { useConsole } from "@/lib/console-store"
 import { isChatModel } from "@/lib/model-capabilities"
-import { selectDesktopDirectory } from "@/lib/desktop-directory-picker"
 
 export function CodexAccessPanel() {
   const { settings, providers, models, replaceSnapshot } = useConsole()
@@ -65,7 +57,6 @@ export function CodexAccessPanel() {
   const [subagentModelSlugs, setSubagentModelSlugs] = useState(
     settings.codexSubagentModelSlugs ?? defaultCodexSubagentModelSlugs(),
   )
-  const [codegraphProjectPath, setCodegraphProjectPath] = useState("")
   const [loading, setLoading] = useState(true)
   const [working, setWorking] = useState<
     | "install"
@@ -73,12 +64,6 @@ export function CodexAccessPanel() {
     | "refresh"
     | "sync-model-catalog"
     | "sync-subagent-roles"
-    | "install-web-search-mcp"
-    | "remove-web-search-mcp"
-    | "install-codegraph-mcp"
-    | "remove-codegraph-mcp"
-    | "select-codegraph-project"
-    | "init-codegraph-projects"
     | null
   >(null)
   const [error, setError] = useState("")
@@ -171,84 +156,6 @@ export function CodexAccessPanel() {
       setStatus(result.status)
       replaceSnapshot(await fetchConsoleSnapshot())
       toast.success(result.message)
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err))
-    } finally {
-      setWorking(null)
-    }
-  }
-
-  async function handleInstallWebSearchMcp() {
-    setWorking("install-web-search-mcp")
-    try {
-      const result = await installCodexWebSearchMcp()
-      setStatus(result.status)
-      toast.success(result.message)
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err))
-    } finally {
-      setWorking(null)
-    }
-  }
-
-  async function handleRemoveWebSearchMcp() {
-    setWorking("remove-web-search-mcp")
-    try {
-      const result = await removeCodexWebSearchMcp()
-      setStatus(result.status)
-      toast.success(result.message)
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err))
-    } finally {
-      setWorking(null)
-    }
-  }
-
-  
-  async function handleInstallCodegraphMcp() {
-    setWorking("install-codegraph-mcp")
-    try {
-      const result = await installCodexCodegraphMcp()
-      setStatus(result.status)
-      toast.success(result.message)
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err))
-    } finally {
-      setWorking(null)
-    }
-  }
-
-  async function handleRemoveCodegraphMcp() {
-    setWorking("remove-codegraph-mcp")
-    try {
-      const result = await removeCodexCodegraphMcp()
-      setStatus(result.status)
-      toast.success(result.message)
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err))
-    } finally {
-      setWorking(null)
-    }
-  }
-
-  async function handleInitCodegraphProjects() {
-    setWorking("init-codegraph-projects")
-    try {
-      const result = await initCodexCodegraphProjects(codegraphProjectPath)
-      setStatus(result.status)
-      toast.success(result.message)
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err))
-    } finally {
-      setWorking(null)
-    }
-  }
-
-  async function handleSelectCodegraphProject() {
-    setWorking("select-codegraph-project")
-    try {
-      const selectedPath = await selectDesktopDirectory(codegraphProjectPath)
-      if (selectedPath) setCodegraphProjectPath(selectedPath)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
     } finally {
@@ -440,184 +347,6 @@ export function CodexAccessPanel() {
                 ))}
               </div>
             </div>
-            <Separator />
-            <div className="flex flex-col gap-3 rounded-md border bg-muted/20 p-3">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="flex flex-col gap-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium">web_search MCP 工具</span>
-                    <Badge variant={status.webSearchMcp.installed ? "default" : "secondary"}>
-                      {status.webSearchMcp.installed ? "已写入" : "未写入"}
-                    </Badge>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    注册为 Codex 本地 MCP server，后续可替代中转内置 web_search relay。
-                  </p>
-                </div>
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void handleInstallWebSearchMcp()}
-                    disabled={busy}
-                  >
-                    {working === "install-web-search-mcp" ? (
-                      <Spinner data-icon="inline-start" />
-                    ) : (
-                      <PlugZap data-icon="inline-start" />
-                    )}
-                    一键启用
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void handleRemoveWebSearchMcp()}
-                    disabled={busy || !status.webSearchMcp.installed}
-                  >
-                    {working === "remove-web-search-mcp" ? (
-                      <Spinner data-icon="inline-start" />
-                    ) : (
-                      <RotateCcw data-icon="inline-start" />
-                    )}
-                    移除
-                  </Button>
-                </div>
-              </div>
-              <div className="grid gap-2 text-xs md:grid-cols-2">
-                <div className="flex flex-col gap-1">
-                  <span className="text-muted-foreground">MCP 名称</span>
-                  <code className="break-all rounded bg-background px-2 py-1 font-mono">
-                    {status.webSearchMcp.serverName}
-                  </code>
-                </div>
-                <div className="flex flex-col gap-1">
-                  <span className="text-muted-foreground">脚本路径</span>
-                  <code className="break-all rounded bg-background px-2 py-1 font-mono">
-                    {status.webSearchMcp.scriptPath}
-                  </code>
-                </div>
-              </div>
-            </div>
-            <Separator />
-            <div className="flex flex-col gap-3 rounded-md border bg-muted/20 p-3">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="flex flex-col gap-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium">CodeGraph MCP</span>
-                    <Badge variant={status.codegraphMcp.installed ? "default" : "secondary"}>
-                      {status.codegraphMcp.installed ? "已写入" : "未写入"}
-                    </Badge>
-                    <Badge variant={status.codegraphMcp.cliAvailable ? "secondary" : "outline"}>
-                      CLI {status.codegraphMcp.cliAvailable ? "可用" : "未安装"}
-                    </Badge>
-                    <Badge variant={status.codegraphMcp.agentsInstructionsInstalled ? "secondary" : "outline"}>
-                      AGENTS {status.codegraphMcp.agentsInstructionsInstalled ? "已写入" : "未写入"}
-                    </Badge>
-                    <Badge variant={status.codegraphMcp.ready ? "default" : "outline"}>
-                      {status.codegraphMcp.ready ? "可用" : "未就绪"}
-                    </Badge>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    接入原始 CodeGraph MCP（codegraph serve --mcp），写入 AGENTS.md 指导优先用图谱。选择工作区后会自动发现其中的 Git 项目并建立索引。
-                  </p>
-                </div>
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void handleInstallCodegraphMcp()}
-                    disabled={busy}
-                  >
-                    {working === "install-codegraph-mcp" ? (
-                      <Spinner data-icon="inline-start" />
-                    ) : (
-                      <PlugZap data-icon="inline-start" />
-                    )}
-                    一键启用
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void handleRemoveCodegraphMcp()}
-                    disabled={busy || !status.codegraphMcp.installed}
-                  >
-                    {working === "remove-codegraph-mcp" ? (
-                      <Spinner data-icon="inline-start" />
-                    ) : (
-                      <RotateCcw data-icon="inline-start" />
-                    )}
-                    移除
-                  </Button>
-                </div>
-              </div>
-              <div className="grid gap-2 text-xs md:grid-cols-2">
-                <div className="flex flex-col gap-1">
-                  <span className="text-muted-foreground">MCP 名称</span>
-                  <code className="break-all rounded bg-background px-2 py-1 font-mono">
-                    {status.codegraphMcp.serverName}
-                  </code>
-                </div>
-                <div className="flex flex-col gap-1">
-                  <span className="text-muted-foreground">CLI 命令</span>
-                  <code className="break-all rounded bg-background px-2 py-1 font-mono">
-                    {status.codegraphMcp.command || status.codegraphMcp.cliCommand}
-                  </code>
-                </div>
-                <div className="flex flex-col gap-1 md:col-span-2">
-                  <span className="text-muted-foreground">AGENTS.md</span>
-                  <code className="break-all rounded bg-background px-2 py-1 font-mono">
-                    {status.codegraphMcp.agentsPath}
-                  </code>
-                </div>
-              </div>
-              <div className="flex flex-col gap-2 rounded-md border bg-background/60 p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-xs text-muted-foreground">
-                    工作区索引（自动发现 Git 项目）
-                    {status.codegraphMcp.cliVersion
-                      ? ` · CLI ${status.codegraphMcp.cliVersion}`
-                      : ""}
-                  </span>
-                </div>
-                <div className="flex flex-col gap-2 md:flex-row">
-                  <Input
-                    value={codegraphProjectPath}
-                    onChange={(event) => setCodegraphProjectPath(event.target.value)}
-                    placeholder="工作区绝对路径，例如 C:\\repo"
-                    disabled={busy}
-                  />
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="md:w-auto"
-                    onClick={() => void handleSelectCodegraphProject()}
-                    disabled={busy}
-                  >
-                    {working === "select-codegraph-project" ? (
-                      <Spinner data-icon="inline-start" />
-                    ) : (
-                      <FolderOpen data-icon="inline-start" />
-                    )}
-                    选择文件夹
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="md:w-auto"
-                    onClick={() => void handleInitCodegraphProjects()}
-                    disabled={busy || !codegraphProjectPath.trim()}
-                  >
-                    {working === "init-codegraph-projects" ? (
-                      <Spinner data-icon="inline-start" />
-                    ) : (
-                      <ListRestart data-icon="inline-start" />
-                    )}
-                    扫描并建索引
-                  </Button>
-                </div>
-              </div>
-            </div>
-
             <Separator />
             <CodexConfigBackupManager status={status} disabled={busy} onStatus={setStatus} />
             <Separator />

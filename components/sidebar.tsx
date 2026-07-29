@@ -8,6 +8,7 @@ import {
   GitMerge,
   MessagesSquare,
   MonitorCog,
+  Network,
   Zap,
   ScrollText,
   Settings as SettingsIcon,
@@ -22,6 +23,7 @@ export type ViewKey =
   | "token-stats"
   | "logs"
   | "codex-desktop"
+  | "mcp"
   | "codex-sessions"
   | "wecom-bridge"
   | "settings"
@@ -36,6 +38,7 @@ const NAV_ITEMS: { key: ViewKey; label: string; icon: typeof LayoutDashboard }[]
   { key: "token-stats", label: "Token 统计", icon: ChartLine },
   { key: "logs", label: "请求日志", icon: ScrollText },
   { key: "codex-desktop", label: "Codex 桌面端", icon: MonitorCog },
+  { key: "mcp", label: "MCP", icon: Network },
   { key: "codex-sessions", label: "同步会话", icon: GitMerge },
   { key: "wecom-bridge", label: "企业微信机器人", icon: MessagesSquare },
   { key: "settings", label: "设置", icon: SettingsIcon },

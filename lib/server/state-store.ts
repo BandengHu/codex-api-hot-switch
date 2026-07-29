@@ -11,6 +11,11 @@ import {
 } from "@/lib/codex-model-slug"
 import { initialSnapshot } from "@/lib/mock-data"
 import { isChatModel, isImageGenerationModel } from "@/lib/model-capabilities"
+import { createProviderEndpoint } from "@/lib/provider-endpoints"
+import {
+  getProviderEndpointRuntimeStates,
+  resetProviderEndpointRuntime,
+} from "@/lib/server/provider-endpoint-runtime"
 import { appendTelemetryLog, importLegacyTelemetry } from "@/lib/server/telemetry-store"
 import { REASONING_DIALECTS } from "@/lib/types"
 import type {
@@ -19,6 +24,8 @@ import type {
   Model,
   ModelMapping,
   Provider,
+  ProviderEndpoint,
+  ProtocolType,
   ReasoningDialect,
   ReasoningEffort,
   RequestLog,
@@ -48,7 +55,7 @@ function defaultDataDir() {
 
 const DATA_DIR = process.env.CODEX_HOT_SWITCH_DATA_DIR || defaultDataDir()
 const STATE_PATH = join(DATA_DIR, "hot-switch-state.json")
-const STATE_VERSION = 1
+const STATE_VERSION = 2
 
 let writeQueue: Promise<unknown> = Promise.resolve()
 let snapshotCache: ConsoleSnapshot | null = null
@@ -75,7 +82,7 @@ function isReasoningDialect(value: unknown): value is ReasoningDialect {
 
 function inferProviderReasoningDialect(provider: Provider): ReasoningDialect {
   const protocol = String(provider.protocol)
-  const hint = `${provider.name} ${provider.baseUrl}`.toLowerCase()
+  const hint = `${provider.name} ${provider.endpoints[0]?.baseUrl || ""}`.toLowerCase()
   if (protocol === "openai-responses") return "openai-reasoning-effort"
   if (protocol === "anthropic" || protocol === "gemini") return "none"
   if (hint.includes("api.deepseek.com")) return "deepseek-official"
@@ -100,20 +107,78 @@ function inferProviderReasoningDialect(provider: Provider): ReasoningDialect {
   return "auto"
 }
 
-function normalizeProvider(provider: Provider): Provider {
+function normalizeProvider(rawProvider: Provider | Record<string, unknown>): Provider {
+  const provider = rawProvider as Record<string, unknown>
+  const id = typeof provider.id === "string" ? provider.id : `prov-${crypto.randomUUID()}`
   const storedProtocol = String(provider.protocol)
-  const protocol =
+  const protocol: ProtocolType =
     storedProtocol === "openai" || storedProtocol === "custom"
-      ? provider.id === "prov-openai"
+      ? id === "prov-openai"
         ? "openai-responses"
         : "openai-chat"
-      : provider.protocol
-  const normalizedProvider = { ...provider, protocol }
+      : storedProtocol === "openai-responses" ||
+          storedProtocol === "openai-chat" ||
+          storedProtocol === "anthropic" ||
+          storedProtocol === "gemini"
+        ? storedProtocol
+        : "openai-responses"
+  const rawEndpoints = Array.isArray(provider.endpoints)
+    ? provider.endpoints
+    : [
+        {
+          id: `${id}-primary`,
+          name: "主用",
+          baseUrl: provider.baseUrl,
+          apiKey: provider.apiKey,
+          enabled: true,
+        },
+      ]
+  const endpoints: ProviderEndpoint[] = rawEndpoints.map((value, index) => {
+    const endpoint = value && typeof value === "object"
+      ? value as Partial<ProviderEndpoint>
+      : {}
+    return createProviderEndpoint(id, {
+      id: typeof endpoint.id === "string" && endpoint.id.trim()
+        ? endpoint.id.trim()
+        : `${id}-${index === 0 ? "primary" : `fallback-${index}`}`,
+      name:
+        typeof endpoint.name === "string" && endpoint.name.trim()
+          ? endpoint.name.trim()
+          : index === 0
+            ? "主用"
+            : `备用 ${index}`,
+      baseUrl: typeof endpoint.baseUrl === "string" ? endpoint.baseUrl.trim() : "",
+      apiKey: typeof endpoint.apiKey === "string" ? endpoint.apiKey : "",
+      enabled: endpoint.enabled !== false,
+    })
+  })
+  if (endpoints.length === 0) {
+    endpoints.push(createProviderEndpoint(id, {
+      id: `${id}-primary`,
+      name: "主用",
+      baseUrl: typeof provider.baseUrl === "string" ? provider.baseUrl : "",
+      apiKey: typeof provider.apiKey === "string" ? provider.apiKey : "",
+      enabled: true,
+    }))
+  }
+  const {
+    baseUrl: _legacyBaseUrl,
+    apiKey: _legacyApiKey,
+    endpoints: _rawEndpoints,
+    ...providerWithoutLegacyCredentials
+  } = provider
+  const normalizedProvider = {
+    ...providerWithoutLegacyCredentials,
+    id,
+    protocol,
+    endpoints,
+  } as Provider
   const fallbackDialect = inferProviderReasoningDialect(normalizedProvider)
   return {
     ...normalizedProvider,
     protocol,
-    bodyOverride: typeof provider.bodyOverride === "string" ? provider.bodyOverride : "",
+    bodyOverride:
+      typeof provider.bodyOverride === "string" ? provider.bodyOverride : "",
     rawResponsesPassthrough:
       protocol === "openai-responses" &&
       typeof provider.rawResponsesPassthrough === "boolean"
@@ -217,7 +282,7 @@ function normalizeSettings(
 }
 
 function isClaudeProvider(provider: Provider) {
-  const hint = `${provider.name} ${provider.baseUrl} ${provider.protocol}`.toLowerCase()
+  const hint = `${provider.name} ${provider.endpoints[0]?.baseUrl || ""} ${provider.protocol}`.toLowerCase()
   return hint.includes("anthropic") || hint.includes("claude")
 }
 
@@ -395,8 +460,17 @@ function normalizeSnapshot(value: Partial<ConsoleSnapshot>): ConsoleSnapshot {
     mappings: Array.isArray(value.mappings) ? value.mappings : seed.mappings,
     logs: [],
     tokenStats: [],
+    endpointStates: [],
     runtime: normalizedRuntime,
     settings,
+  })
+}
+
+function containsLegacyProviderCredentials(value: Partial<ConsoleSnapshot>) {
+  return Array.isArray(value.providers) && value.providers.some((provider) => {
+    if (!provider || typeof provider !== "object") return false
+    const record = provider as unknown as Record<string, unknown>
+    return "baseUrl" in record || "apiKey" in record
   })
 }
 
@@ -407,7 +481,12 @@ async function ensureDataDir() {
 async function writeState(snapshot: ConsoleSnapshot) {
   await ensureDataDir()
   const tempPath = `${STATE_PATH}.${process.pid}.${Date.now()}.tmp`
-  const { logs: _logs, tokenStats: _tokenStats, ...configSnapshot } = snapshot
+  const {
+    logs: _logs,
+    tokenStats: _tokenStats,
+    endpointStates: _endpointStates,
+    ...configSnapshot
+  } = snapshot
   await writeFile(tempPath, `${JSON.stringify(configSnapshot, null, 2)}\n`, "utf8")
   await rename(tempPath, STATE_PATH)
 }
@@ -419,7 +498,12 @@ async function loadSnapshot(): Promise<ConsoleSnapshot> {
     const parsed = JSON.parse(raw) as Partial<ConsoleSnapshot>
     const normalized = normalizeSnapshot(parsed)
     snapshotCache = normalized
-    if (Array.isArray(parsed.logs) || Array.isArray(parsed.tokenStats)) {
+    if (
+      parsed.version !== STATE_VERSION ||
+      Array.isArray(parsed.logs) ||
+      Array.isArray(parsed.tokenStats) ||
+      containsLegacyProviderCredentials(parsed)
+    ) {
       await importLegacyTelemetry(
         {
           logs: parsed.logs,
@@ -461,7 +545,11 @@ export async function flushPendingLogs(): Promise<void> {
 
 export async function getSnapshot(): Promise<ConsoleSnapshot> {
   await writeQueue.catch(() => undefined)
-  return cloneSnapshot(await loadSnapshot())
+  const snapshot = cloneSnapshot(await loadSnapshot())
+  return {
+    ...snapshot,
+    endpointStates: await getProviderEndpointRuntimeStates(snapshot.providers),
+  }
 }
 
 export async function getRoutingSnapshot(): Promise<RoutingSnapshot> {
@@ -470,9 +558,34 @@ export async function getRoutingSnapshot(): Promise<RoutingSnapshot> {
 
 export async function saveSnapshot(snapshot: ConsoleSnapshot): Promise<ConsoleSnapshot> {
   return enqueueStateMutation(async () => {
+    const current = await loadSnapshot()
     const normalized = normalizeSnapshot(snapshot)
     await persistSnapshot(normalized)
-    return cloneSnapshot(normalized)
+    const currentProviders = new Map(
+      current.providers.map((provider) => [provider.id, provider]),
+    )
+    for (const provider of normalized.providers) {
+      const previousProvider = currentProviders.get(provider.id)
+      const previousEndpoints = new Map(
+        previousProvider?.endpoints.map((endpoint) => [endpoint.id, endpoint]) || [],
+      )
+      for (const endpoint of provider.endpoints) {
+        const previousEndpoint = previousEndpoints.get(endpoint.id)
+        const manuallyReenabled =
+          endpoint.enabled &&
+          (
+            previousEndpoint?.enabled === false ||
+            previousProvider?.enabled === false
+          )
+        if (manuallyReenabled) {
+          await resetProviderEndpointRuntime(provider.id, endpoint.id)
+        }
+      }
+    }
+    return {
+      ...cloneSnapshot(normalized),
+      endpointStates: await getProviderEndpointRuntimeStates(normalized.providers),
+    }
   })
 }
 

@@ -1,6 +1,14 @@
 import "server-only"
 
-import type { Provider, ProviderTestResult } from "@/lib/types"
+import {
+  enabledProviderEndpoints,
+  resolveProviderEndpoint,
+} from "@/lib/provider-endpoints"
+import type {
+  Provider,
+  ProviderTestResult,
+  ResolvedProvider,
+} from "@/lib/types"
 
 function withTimeout(ms: number) {
   const controller = new AbortController()
@@ -11,7 +19,7 @@ function withTimeout(ms: number) {
   }
 }
 
-function authHeaders(provider: Provider): HeadersInit {
+function authHeaders(provider: ResolvedProvider): HeadersInit {
   const headers: Record<string, string> = {}
   for (const entry of provider.headers) {
     if (entry.key.trim()) headers[entry.key.trim()] = entry.value
@@ -41,7 +49,7 @@ function modelsUrl(baseUrl: string) {
   return joinUrl(base, "models")
 }
 
-function testUrl(provider: Provider) {
+function testUrl(provider: ResolvedProvider) {
   if (provider.protocol === "gemini") {
     const url = new URL(joinUrl(provider.baseUrl, "models"))
     if (provider.apiKey.trim()) url.searchParams.set("key", provider.apiKey.trim())
@@ -57,45 +65,49 @@ export async function runProviderTest(
     return { ok: false, message: "供应商已停用，未发起健康检查", provider }
   }
 
-  const timer = withTimeout(Math.min(provider.timeoutMs, 15000))
   const started = Date.now()
-  try {
-    const response = await fetch(testUrl(provider), {
-      method: "GET",
-      headers: authHeaders(provider),
-      signal: timer.signal,
-      cache: "no-store",
-    })
-    const duration = Date.now() - started
-    if (!response.ok) {
-      const text = await response.text()
-      const detail = text ? `：${text.slice(0, 240)}` : ""
-      return {
-        ok: false,
-        message: `上游健康检查失败：HTTP ${response.status} ${response.statusText}${detail}`,
-        provider: {
-          ...provider,
-          health: response.status >= 500 ? "down" : "degraded",
-          healthMessage: `HTTP ${response.status} ${response.statusText}`,
-        },
+  const endpoints = enabledProviderEndpoints(provider)
+  if (endpoints.length === 0) {
+    return { ok: false, message: "供应商没有启用的 URL/API Key 组", provider }
+  }
+
+  const errors: string[] = []
+  for (const endpoint of endpoints) {
+    const resolved = resolveProviderEndpoint(provider, endpoint)
+    const timer = withTimeout(Math.min(provider.timeoutMs, 15000))
+    try {
+      const response = await fetch(testUrl(resolved), {
+        method: "GET",
+        headers: authHeaders(resolved),
+        signal: timer.signal,
+        cache: "no-store",
+      })
+      if (!response.ok) {
+        const text = await response.text()
+        const detail = text ? `：${text.slice(0, 240)}` : ""
+        errors.push(`${endpoint.name}：HTTP ${response.status} ${response.statusText}${detail}`)
+        continue
       }
+      return {
+        ok: true,
+        message: `${endpoint.name}健康检查通过，耗时 ${Date.now() - started}ms`,
+        provider: { ...provider, health: "healthy", healthMessage: undefined },
+      }
+    } catch (error) {
+      errors.push(
+        error instanceof Error && error.name === "AbortError"
+          ? `${endpoint.name}：健康检查超时`
+          : `${endpoint.name}：${error instanceof Error ? error.message : String(error)}`,
+      )
+    } finally {
+      timer.done()
     }
-    return {
-      ok: true,
-      message: `健康检查通过，耗时 ${duration}ms`,
-      provider: { ...provider, health: "healthy", healthMessage: undefined },
-    }
-  } catch (error) {
-    const message =
-      error instanceof Error && error.name === "AbortError"
-        ? `健康检查超时：超过 ${Math.min(provider.timeoutMs, 15000)}ms 未响应`
-        : `健康检查失败：${error instanceof Error ? error.message : String(error)}`
-    return {
-      ok: false,
-      message,
-      provider: { ...provider, health: "down", healthMessage: message },
-    }
-  } finally {
-    timer.done()
+  }
+
+  const message = `全部端点健康检查失败：${errors.join("；")}`
+  return {
+    ok: false,
+    message,
+    provider: { ...provider, health: "down", healthMessage: message },
   }
 }
