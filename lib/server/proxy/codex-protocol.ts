@@ -14,7 +14,7 @@ import {
 } from "./responses-tool-search-compat"
 import { ProxyRequestBodyError } from "./content-encoding"
 import { canonicalToolArguments } from "./json-canonical"
-import { repairResponsesMessageIdsInBody } from "./responses-message-id-repair"
+import { repairResponsesItemIdsInBody } from "./responses-item-id-repair"
 
 type AnyRecord = Record<string, any>
 
@@ -596,7 +596,7 @@ export function prepareCodexOpenAICompatibleRequest(
   const normalizedPath = path.replace(/^\/+/, "")
   if (isChatCompletionsPath(normalizedPath)) {
     const mapped = buildResponsesBodyFromChatCompletions(body)
-    mapped.body = repairResponsesMessageIdsInBody(mapped.body) as AnyRecord
+    mapped.body = repairResponsesItemIdsInBody(mapped.body) as AnyRecord
     if (!options.preserveRequestControls) {
       applyHotSwitchOverrides(mapped.body, model, reasoning)
     }
@@ -619,7 +619,7 @@ export function prepareCodexOpenAICompatibleRequest(
       throw new ProxyRequestBodyError("OpenAI Responses compact 不支持 stream=true", 400)
     }
     delete passthrough.stream
-    const repaired = repairResponsesMessageIdsInBody(passthrough)
+    const repaired = repairResponsesItemIdsInBody(passthrough)
     if (!options.preserveRequestControls) {
       applyHotSwitchOverrides(repaired as AnyRecord, model, reasoning)
     }
@@ -638,12 +638,12 @@ export function prepareCodexOpenAICompatibleRequest(
   if (isResponsesPath(normalizedPath)) {
     if (!isObject(body)) throw new Error("responses 请求体必须是合法 JSON 对象")
     const passthrough = { ...body }
-    const requestHistory = repairResponsesMessageIdsInBody(
+    const requestHistory = repairResponsesItemIdsInBody(
       historyRequestBody(body),
     ) as AnyRecord
     const requestedModel = safeTrim(passthrough.model)
     if (options.preserveRequestControls || options.rawResponsesPassthrough) {
-      const repaired = repairResponsesMessageIdsInBody(passthrough) as AnyRecord
+      const repaired = repairResponsesItemIdsInBody(passthrough) as AnyRecord
       if (!options.preserveRequestControls) {
         applyHotSwitchOverrides(repaired, model, reasoning)
       }
@@ -666,7 +666,7 @@ export function prepareCodexOpenAICompatibleRequest(
       if (options.compatibleResponsesToolSearch) {
         adaptToolSearchForCompatibleResponses(passthrough, toolContext)
       }
-      const normalized = repairResponsesMessageIdsInBody(
+      const normalized = repairResponsesItemIdsInBody(
         normalizeResponsesBodyForCodex(passthrough),
       )
       if (!isObject(normalized)) throw new Error("归一化后的 responses 请求体不是 JSON 对象")

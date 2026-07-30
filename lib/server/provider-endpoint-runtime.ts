@@ -180,6 +180,23 @@ function clearExpiredCooldown(state: ProviderEndpointRuntimeState) {
   return true
 }
 
+function hasAvailableFailoverEndpoint(
+  states: ProviderEndpointRuntimeState[],
+  provider: Provider,
+  currentEndpoint: ProviderEndpoint,
+) {
+  return provider.endpoints.some((endpoint) => {
+    if (!endpoint.enabled || endpoint.id === currentEndpoint.id) return false
+    const state = stateFor(states, provider, endpoint)
+    clearExpiredCooldown(state)
+    return (
+      !state.quotaDisabled &&
+      !state.authDisabled &&
+      !isCooldownActive(state)
+    )
+  })
+}
+
 function stateFor(
   states: ProviderEndpointRuntimeState[],
   provider: Provider,
@@ -353,9 +370,13 @@ export async function recordProviderEndpointFailure(
     }
 
     state.consecutiveFailures += 1
-    const shouldFailover = state.consecutiveFailures >= ENDPOINT_FAILURE_THRESHOLD
+    const shouldFailover =
+      state.consecutiveFailures >= ENDPOINT_FAILURE_THRESHOLD &&
+      hasAvailableFailoverEndpoint(states, provider, endpoint)
     if (shouldFailover) {
       state.cooldownUntil = new Date(Date.now() + ENDPOINT_COOLDOWN_MS).toISOString()
+    } else {
+      delete state.cooldownUntil
     }
     await persistStates(states)
     return { shouldFailover, state: { ...state } }

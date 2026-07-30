@@ -172,6 +172,35 @@ test("transient failures switch only on the fourth consecutive failure", async (
   assert.equal(reset[0].cooldownUntil, undefined)
 })
 
+test("last available endpoint stays active after the transient failure threshold", async () => {
+  const value = provider("last-available")
+  await runtime.recordProviderEndpointFailure(
+    value,
+    value.endpoints[1],
+    { kind: "quota", message: "fallback quota exhausted" },
+  )
+
+  let latest:
+    | Awaited<ReturnType<typeof runtime.recordProviderEndpointFailure>>
+    | undefined
+  for (let count = 1; count <= runtime.ENDPOINT_FAILURE_THRESHOLD; count += 1) {
+    latest = await runtime.recordProviderEndpointFailure(
+      value,
+      value.endpoints[0],
+      { kind: "transient", message: `primary failure ${count}` },
+    )
+  }
+
+  assert.ok(latest)
+  assert.equal(latest.shouldFailover, false)
+  assert.equal(latest.state.consecutiveFailures, runtime.ENDPOINT_FAILURE_THRESHOLD)
+  assert.equal(latest.state.cooldownUntil, undefined)
+  assert.deepEqual(
+    (await runtime.availableProviderEndpoints(value)).map((endpoint) => endpoint.id),
+    [value.endpoints[0].id],
+  )
+})
+
 test("expired cooldown restores the endpoint with a fresh failure count", async () => {
   const value = provider("cooldown-expiry")
   const originalNow = Date.now

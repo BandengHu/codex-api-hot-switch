@@ -11,7 +11,7 @@ import {
 } from "./responses-tool-search-compat"
 import { applyAssistantMessagePhase } from "./common"
 import { deriveVisibleActionNoteFromReasoning } from "./action-note"
-import { repairResponsesMessageIdsInSsePayload } from "./responses-message-id-repair"
+import { repairResponsesItemIdsInSsePayload } from "./responses-item-id-repair"
 
 type AnyRecord = Record<string, any>
 
@@ -352,18 +352,18 @@ class ResponsesStreamRepairer {
     const outputIndexChanged = this.applyOutputIndexShift(data)
 
     const type = data.type || event
-    const messageIdChanged = repairResponsesMessageIdsInSsePayload(data, event)
+    const itemIdChanged = repairResponsesItemIdsInSsePayload(data, event)
     if (type === "response.output_item.added") {
       return this.handleOutputItemAdded(
         event,
         data,
         frameText,
-        outputIndexChanged || messageIdChanged,
+        outputIndexChanged || itemIdChanged,
       )
     }
     if (type === "response.output_text.delta") {
       this.rememberTextDelta("message", data, data.delta)
-      return modelChanged || outputIndexChanged || messageIdChanged
+      return modelChanged || outputIndexChanged || itemIdChanged
         ? sse(event, data)
         : rawSseFrame(frameText)
     }
@@ -375,13 +375,13 @@ class ResponsesStreamRepairer {
             ? data.part.text
             : ""
       this.rememberTextDone("message", data, text)
-      return modelChanged || outputIndexChanged || messageIdChanged
+      return modelChanged || outputIndexChanged || itemIdChanged
         ? sse(event, data)
         : rawSseFrame(frameText)
     }
     if (type === "response.reasoning_summary_text.delta") {
       this.rememberTextDelta("reasoning", data, data.delta)
-      return modelChanged || outputIndexChanged || messageIdChanged
+      return modelChanged || outputIndexChanged || itemIdChanged
         ? sse(event, data)
         : rawSseFrame(frameText)
     }
@@ -393,13 +393,13 @@ class ResponsesStreamRepairer {
             ? data.part.text
             : ""
       this.rememberTextDone("reasoning", data, text)
-      return modelChanged || outputIndexChanged || messageIdChanged
+      return modelChanged || outputIndexChanged || itemIdChanged
         ? sse(event, data)
         : rawSseFrame(frameText)
     }
     if (type === "response.custom_tool_call_input.delta") {
       this.rememberTextDelta("custom_tool", data, data.delta)
-      return modelChanged || outputIndexChanged || messageIdChanged
+      return modelChanged || outputIndexChanged || itemIdChanged
         ? sse(event, data)
         : rawSseFrame(frameText)
     }
@@ -411,22 +411,32 @@ class ResponsesStreamRepairer {
             ? data.text
             : ""
       this.rememberTextDone("custom_tool", data, input)
-      return modelChanged || outputIndexChanged || messageIdChanged
+      return modelChanged || outputIndexChanged || itemIdChanged
         ? sse(event, data)
         : rawSseFrame(frameText)
     }
     if (type === "response.function_call_arguments.delta") {
-      return this.handleFunctionArgumentsDelta(event, data, frameText, outputIndexChanged)
+      return this.handleFunctionArgumentsDelta(
+        event,
+        data,
+        frameText,
+        outputIndexChanged || itemIdChanged,
+      )
     }
     if (type === "response.function_call_arguments.done") {
-      return this.handleFunctionArgumentsDone(event, data, frameText, outputIndexChanged)
+      return this.handleFunctionArgumentsDone(
+        event,
+        data,
+        frameText,
+        outputIndexChanged || itemIdChanged,
+      )
     }
     if (type === "response.output_item.done") {
       return this.handleOutputItemDone(
         event,
         data,
         frameText,
-        outputIndexChanged || messageIdChanged,
+        outputIndexChanged || itemIdChanged,
       )
     }
     if (type === "error" || event === "error") {
@@ -451,11 +461,11 @@ class ResponsesStreamRepairer {
     if (type === "response.failed") {
       this.failedSeen = true
       this.pendingDone = false
-      return modelChanged || outputIndexChanged || messageIdChanged
+      return modelChanged || outputIndexChanged || itemIdChanged
         ? sse(event, data)
         : rawSseFrame(frameText)
     }
-    return modelChanged || outputIndexChanged || messageIdChanged
+    return modelChanged || outputIndexChanged || itemIdChanged
       ? sse(event, data)
       : rawSseFrame(frameText)
   }

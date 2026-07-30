@@ -86,7 +86,7 @@ import {
   TokenUsageSseCollector,
 } from "./token-usage"
 import { lastCompleteSseFrameBoundary } from "./sse-frame"
-import { repairResponsesMessageIdsInPayload } from "./responses-message-id-repair"
+import { repairResponsesItemIdsInPayload } from "./responses-item-id-repair"
 import {
   buildProxyRequest,
   parseJsonSafe,
@@ -411,7 +411,7 @@ function transformResponse(
     const restored = built?.adapter?.type === "passthrough" && !target.provider.rawResponsesPassthrough
       ? restoreCompatibleResponsesToolCalls(payload, built.adapter.toolContext)
       : payload
-    repairResponsesMessageIdsInPayload(restored)
+    repairResponsesItemIdsInPayload(restored)
     const transformed = built?.adapter?.type === "passthrough"
       ? withResponseModel(restored, built.adapter.responseModelOverride || target.requestedModel)
       : restored
@@ -1964,7 +1964,7 @@ export async function handleProxyPost(parts: string[], request: Request) {
     const transformed = upstream.ok
       ? rawResponsesPassthrough
         ? (() => {
-            repairResponsesMessageIdsInPayload(payload)
+            repairResponsesItemIdsInPayload(payload)
             return withResponseModel(
               payload,
               built.adapter?.type === "passthrough"
