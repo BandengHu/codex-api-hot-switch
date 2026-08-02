@@ -74,6 +74,9 @@ importers:
       tw-animate-css:
         specifier: ^1.4.0
         version: 1.4.0
+      undici:
+        specifier: ^7.27.2
+        version: 7.27.2
       ws:
         specifier: 8.18.3
         version: 8.18.3
@@ -6395,8 +6398,7 @@ snapshots:
 
   undici@6.26.0: {}
 
-  undici@7.27.2:
-    optional: true
+  undici@7.27.2: {}
 
   unicorn-magic@0.3.0: {}
 

@@ -20,6 +20,7 @@ import { buildAnthropicRequest } from "./anthropic"
 import { buildGeminiRequest } from "./gemini"
 import { applyProviderBodyOverride } from "./request-overrides"
 import { readDecodedResponseText } from "./content-encoding"
+import { getSystemProxyDispatcher } from "./system-proxy"
 
 export interface BuiltProxyRequest {
   url: string
@@ -52,7 +53,10 @@ export async function fetchWithProviderTimeout(
   }
   const timer = setTimeout(() => abort("timeout"), timeoutMs)
   try {
-    return await fetch(built.url, { ...built.init, signal: controller.signal })
+    const dispatcher = getSystemProxyDispatcher(built.url)
+    const init: Record<string, unknown> = { ...built.init, signal: controller.signal }
+    if (dispatcher) init.dispatcher = dispatcher
+    return await fetch(built.url, init as RequestInit)
   } catch (error) {
     if (controller.signal.aborted && abortState.cause === "client") {
       throw new Error("客户端已取消请求，上游请求已中止")
