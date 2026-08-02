@@ -4,6 +4,7 @@ import {
   enabledProviderEndpoints,
   resolveProviderEndpoint,
 } from "@/lib/provider-endpoints"
+import { getSystemProxyDispatcher } from "./proxy/system-proxy"
 import type {
   Provider,
   ProviderTestResult,
@@ -76,12 +77,16 @@ export async function runProviderTest(
     const resolved = resolveProviderEndpoint(provider, endpoint)
     const timer = withTimeout(Math.min(provider.timeoutMs, 15000))
     try {
-      const response = await fetch(testUrl(resolved), {
+      const url = testUrl(resolved)
+      const dispatcher = getSystemProxyDispatcher(url)
+      const init: Record<string, unknown> = {
         method: "GET",
         headers: authHeaders(resolved),
         signal: timer.signal,
         cache: "no-store",
-      })
+      }
+      if (dispatcher) init.dispatcher = dispatcher
+      const response = await fetch(url, init as RequestInit)
       if (!response.ok) {
         const text = await response.text()
         const detail = text ? `：${text.slice(0, 240)}` : ""

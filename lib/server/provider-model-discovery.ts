@@ -6,6 +6,7 @@ import {
   normalizeDiscoveredModels,
   type ProviderModelDiscoveryResult,
 } from "@/lib/provider-model-discovery"
+import { getSystemProxyDispatcher } from "./proxy/system-proxy"
 
 const MAX_MODEL_LIST_BYTES = 2 * 1024 * 1024
 
@@ -30,12 +31,15 @@ export async function discoverProviderModels(
   try {
     let lastRetryableError = ""
     for (const [index, url] of urls.entries()) {
-      const response = await fetch(url, {
+      const dispatcher = getSystemProxyDispatcher(url)
+      const init: Record<string, unknown> = {
         method: "GET",
         headers: buildDiscoveryHeaders(provider, primary.apiKey),
         signal: controller.signal,
         cache: "no-store",
-      })
+      }
+      if (dispatcher) init.dispatcher = dispatcher
+      const response = await fetch(url, init as RequestInit)
       const contentLength = Number(response.headers.get("content-length") || 0)
       if (contentLength > MAX_MODEL_LIST_BYTES) {
         throw new Error("上游模型列表响应过大，已停止读取")
