@@ -143,8 +143,7 @@ export function CodexPluginDoctorPanel() {
           <>
             <div className="grid gap-3 md:grid-cols-2">
               <PathLine label="Codex Home" value={status.codexHome} />
-              <PathLine label="旧配置插件源" value={status.activeMarketplaceSource || "未配置"} />
-              <PathLine label="本地插件缓存" value={status.stableMarketplacePath} />
+              <PathLine label="Codex 当前 bundled 源" value={status.activeMarketplaceSource || "由内置 reconcile 管理"} />
               <PathLine
                 label={`最新 Codex 安装目录${status.latestInstallKind ? ` · ${status.latestInstallKind}` : ""}`}
                 value={status.latestInstallPath}
@@ -153,27 +152,17 @@ export function CodexPluginDoctorPanel() {
               <PathLine label="官方 bundled 插件源" value={status.latestBundledMarketplacePath} />
             </div>
 
-            <div className="grid gap-2 sm:grid-cols-5">
+            <div className="grid gap-2 sm:grid-cols-4">
               <div className="rounded-md border px-3 py-2">
                 <div className="text-xs text-muted-foreground">bundled 源</div>
                 <div className="mt-2">
-                  {statusBadge(!status.hasManualBundledMarketplace, "内置", "旧配置")}
+                  {statusBadge(!status.hasManualBundledMarketplace, "Codex 管理", "手工旧配置")}
                 </div>
               </div>
               <div className="rounded-md border px-3 py-2">
-                <div className="text-xs text-muted-foreground">本地缓存</div>
-                <div className="mt-2">
-                  {statusBadge(status.stableMarketplaceExists, "存在", "缺失")}
+                <div className="text-xs text-muted-foreground">
+                  Chrome host · {status.chromeNativeHostMode}
                 </div>
-              </div>
-              <div className="rounded-md border px-3 py-2">
-                <div className="text-xs text-muted-foreground">稳定源完整性</div>
-                <div className="mt-2">
-                  {statusBadge(status.stableMarketplaceComplete, "完整", "不完整")}
-                </div>
-              </div>
-              <div className="rounded-md border px-3 py-2">
-                <div className="text-xs text-muted-foreground">Chrome host</div>
                 <div className="mt-2">
                   {statusBadge(status.chromeNativeHostOk, "正常", "需修复")}
                 </div>
@@ -242,7 +231,7 @@ export function CodexPluginDoctorPanel() {
 
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="text-xs text-muted-foreground">
-                修复会备份现有配置，复制官方 bundled 插件到稳定目录，并重建 Chrome native host 路径。
+                健康状态不会重复改写；仅在检测到旧手工源或损坏缓存时备份并修复。
               </div>
               <div className="flex gap-2">
                 <Button variant="outline" onClick={() => void refresh()} disabled={busy}>

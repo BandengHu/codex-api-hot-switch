@@ -28,8 +28,12 @@ function configPath() {
   return path.join(codexHome(), "config.toml")
 }
 
-function stableMarketplacePath() {
+function legacyMarketplacePath() {
   return path.join(codexHome(), "plugins", "marketplace-source", BUNDLED_MARKETPLACE_ID)
+}
+
+function managedMarketplacePath() {
+  return path.join(codexHome(), ".tmp", "bundled-marketplaces", BUNDLED_MARKETPLACE_ID)
 }
 
 function pluginLatestPath(id) {
@@ -42,6 +46,10 @@ function chromeLatestPath() {
 
 function chromeNativeHostsPath() {
   return path.join(codexHome(), "chrome-native-hosts.json")
+}
+
+function chromeNativeHostsV2Path() {
+  return path.join(localAppData(), "OpenAI", "Codex", "chrome-native-hosts-v2.json")
 }
 
 function localAppData() {
@@ -125,9 +133,29 @@ function normalizeSlashes(value) {
   return value.replaceAll("\\", "/")
 }
 
+function normalizedPath(value) {
+  return normalizeSlashes(String(value || ""))
+    .replace(/^\/\/\?\//, "")
+    .toLowerCase()
+}
+
 function samePath(left, right) {
   if (!left || !right) return false
-  return normalizeSlashes(left).toLowerCase() === normalizeSlashes(right).toLowerCase()
+  return normalizedPath(left) === normalizedPath(right)
+}
+
+function pathIsWithin(candidate, root) {
+  if (!candidate || !root) return false
+  const normalizedCandidate = normalizedPath(candidate).replace(/\/+$/, "")
+  const normalizedRoot = normalizedPath(root).replace(/\/+$/, "")
+  return (
+    normalizedCandidate === normalizedRoot ||
+    normalizedCandidate.startsWith(`${normalizedRoot}/`)
+  )
+}
+
+function isManagedMarketplaceSource(source) {
+  return samePath(source, managedMarketplacePath())
 }
 
 function sectionBody(text, section) {
@@ -197,8 +225,19 @@ function tomlLiteral(value) {
 }
 
 function parseVersionFromInstallPath(filePath) {
-  const match = filePath.match(/OpenAI\.Codex_(.+?)_x64__/i)
+  const match = filePath.match(/OpenAI\.Codex(?:Beta)?_(.+?)_x64__/i)
   return match?.[1] || ""
+}
+
+function compareVersionStringsDescending(left, right) {
+  const leftParts = String(left || "").split(".").map((part) => Number(part) || 0)
+  const rightParts = String(right || "").split(".").map((part) => Number(part) || 0)
+  const length = Math.max(leftParts.length, rightParts.length)
+  for (let index = 0; index < length; index += 1) {
+    const difference = (rightParts[index] || 0) - (leftParts[index] || 0)
+    if (difference !== 0) return difference
+  }
+  return 0
 }
 
 async function resourcesPathFromInstallPath(installPath) {
@@ -235,10 +274,9 @@ async function listWindowsAppCodexInstallPaths() {
     }
   }
   return uniquePaths(candidates).sort((a, b) =>
-    parseVersionFromInstallPath(b).localeCompare(
+    compareVersionStringsDescending(
       parseVersionFromInstallPath(a),
-      undefined,
-      { numeric: true },
+      parseVersionFromInstallPath(b),
     ),
   )
 }
@@ -327,34 +365,77 @@ async function requiredFilesOk(root, id) {
   return true
 }
 
-async function cacheLatestOk(id) {
+async function resolvedPath(filePath) {
+  try {
+    return await fs.realpath(filePath)
+  } catch {
+    return ""
+  }
+}
+
+async function cacheLatestStatus(id) {
   const latest = pluginLatestPath(id)
-  if (!(await exists(path.join(latest, ".codex-plugin", "plugin.json")))) return false
-  if (id !== "chrome") return true
-  return (
-    (await exists(path.join(latest, "scripts", "browser-client.mjs"))) &&
-    (await exists(
-      path.join(latest, "extension-host", "windows", "x64", "extension-host.exe"),
-    ))
-  )
+  const targetPath = await resolvedPath(latest)
+  const manifestOk = await exists(path.join(latest, ".codex-plugin", "plugin.json"))
+  const requiredFilesOk =
+    manifestOk &&
+    (id !== "chrome" ||
+      ((await exists(path.join(latest, "scripts", "browser-client.mjs"))) &&
+        (await exists(
+          path.join(latest, "extension-host", "windows", "x64", "extension-host.exe"),
+        ))))
+  return {
+    ok: requiredFilesOk,
+    targetPath,
+    usesLegacySource: pathIsWithin(targetPath, legacyMarketplacePath()),
+  }
 }
 
 async function pluginChecks(configText, root) {
   const checks = []
   for (const plugin of PLUGINS) {
+    const latest = await cacheLatestStatus(plugin.id)
     checks.push({
       id: plugin.id,
       label: plugin.label,
       enabled: pluginEnabled(configText, plugin.id),
       sourceExists: await exists(pluginPath(root, plugin.id)),
       requiredFilesOk: await requiredFilesOk(root, plugin.id),
-      cacheLatestOk: await cacheLatestOk(plugin.id),
+      cacheLatestOk: latest.ok,
+      cacheLatestTarget: latest.targetPath,
+      cacheLatestUsesLegacySource: latest.usesLegacySource,
     })
   }
   return checks
 }
 
-async function chromeNativeHostOk(expectedVersion, paths) {
+async function chromeNativeHostV2Ok(expectedVersion) {
+  const value = await readJsonIfExists(chromeNativeHostsV2Path())
+  if (!Array.isArray(value?.entries)) return false
+  for (const entry of value.entries) {
+    const entryPaths = entry?.paths
+    if (
+      entry?.nativeHostVersion !== expectedVersion ||
+      !Array.isArray(entry?.extensionIds) ||
+      !entry.extensionIds.includes(CHROME_EXTENSION_ID) ||
+      !entryPaths
+    ) {
+      continue
+    }
+    if (
+      (await exists(String(entryPaths.browserClientPath || ""))) &&
+      (await exists(String(entryPaths.extensionHostPath || ""))) &&
+      (await exists(String(entryPaths.codexCliPath || ""))) &&
+      (!entryPaths.nodePath || (await exists(String(entryPaths.nodePath)))) &&
+      (!entryPaths.nodeReplPath || (await exists(String(entryPaths.nodeReplPath))))
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+async function legacyChromeNativeHostOk(expectedVersion, paths) {
   const value = await readJsonIfExists(chromeNativeHostsPath())
   const entry = value?.chromeNativeHosts?.[0]
   if (!entry) return false
@@ -368,6 +449,23 @@ async function chromeNativeHostOk(expectedVersion, paths) {
     (!entry.nodePath || (await exists(String(entry.nodePath)))) &&
     (!entry.nodeReplPath || (await exists(String(entry.nodeReplPath))))
   )
+}
+
+async function chromeNativeHostStatus(expectedVersion, paths) {
+  if (await chromeNativeHostV2Ok(expectedVersion)) {
+    return {
+      path: chromeNativeHostsV2Path(),
+      exists: true,
+      ok: true,
+      mode: "v2",
+    }
+  }
+  return {
+    path: chromeNativeHostsPath(),
+    exists: await exists(chromeNativeHostsPath()),
+    ok: await legacyChromeNativeHostOk(expectedVersion, paths),
+    mode: "legacy",
+  }
 }
 
 async function chromeManifestOk() {
@@ -393,51 +491,59 @@ async function getStatus() {
     ? path.join(latestResourcesPath, "plugins", BUNDLED_MARKETPLACE_ID)
     : ""
   const configText = await readTextIfExists(configPath())
-  const expectedPluginVersion =
-    (await pluginVersionFromMarketplace(latestBundledMarketplacePath)) ||
-    (await pluginVersionFromMarketplace(stableMarketplacePath()))
   const activeMarketplaceSource = sectionString(
     configText,
     `marketplaces.${BUNDLED_MARKETPLACE_ID}`,
     "source",
   )
-  const configuredMarketplaceSource = activeMarketplaceSource
-  const stablePath = stableMarketplacePath()
-  const rootForChecks = activeMarketplaceSource || stablePath
+  const activeMarketplaceSourceExists = Boolean(
+    activeMarketplaceSource && (await exists(activeMarketplaceSource)),
+  )
+  const managedMarketplaceSource = isManagedMarketplaceSource(activeMarketplaceSource)
+  const configuredMarketplaceSource =
+    activeMarketplaceSource && !managedMarketplaceSource
+      ? activeMarketplaceSource
+      : ""
+  const rootForChecks =
+    (activeMarketplaceSourceExists ? activeMarketplaceSource : "") ||
+    latestBundledMarketplacePath
+  const expectedPluginVersion =
+    (await pluginVersionFromMarketplace(rootForChecks)) ||
+    (await pluginVersionFromMarketplace(latestBundledMarketplacePath))
   const paths = await runtimeToolPaths()
   const plugins = await pluginChecks(configText, rootForChecks)
-  const chromeHostOk = await chromeNativeHostOk(expectedPluginVersion, paths)
+  const chromeHost = await chromeNativeHostStatus(expectedPluginVersion, paths)
   const manifestOk = await chromeManifestOk()
-  const stableComplete = await requiredFilesOk(stablePath, "chrome")
   const issues = []
 
   if (!latestBundledMarketplacePath || !(await exists(latestBundledMarketplacePath))) {
     issues.push("没有找到 Codex 官方 bundled 插件源")
   }
-  if (!stableComplete) {
-    issues.push("稳定 openai-bundled 插件源尚未准备完整")
-  }
+  if (configuredMarketplaceSource) issues.push("openai-bundled 仍指向旧的手工插件源")
   for (const plugin of plugins) {
     if (!plugin.enabled) issues.push(`${plugin.label} 插件未启用`)
     if (!plugin.requiredFilesOk) issues.push(`${plugin.label} 插件文件不完整`)
     if (!plugin.cacheLatestOk) issues.push(`${plugin.label} 缓存 latest 指向不完整`)
+    if (plugin.cacheLatestUsesLegacySource) {
+      issues.push(`${plugin.label} 缓存 latest 仍指向旧 bundled 源`)
+    }
   }
-  if (!chromeHostOk) issues.push("Chrome native host 配置需要修复")
+  if (!chromeHost.ok) issues.push("Chrome native host 配置需要修复")
   if (!manifestOk) issues.push("Chrome native messaging manifest 不可用")
   if (!paths.codexCliPath) issues.push("没有找到 Codex CLI 可执行文件")
   const notes = [
-    "本工具只修复 bundled 插件文件、latest 缓存、Chrome native host 与 manifest；不会注入或篡改 Codex 桌面端插件 UI。",
+    "Codex 自动维护的 .tmp/bundled-marketplaces/openai-bundled 属于官方内置源，不会再被误判为旧配置。",
+    "本工具只清理旧手工 bundled 源，并修复插件 latest 缓存、Chrome native host 与 manifest；不会注入或篡改 Codex 桌面端插件 UI。",
     "如果这里全部健康但 @Chrome 仍不显示，通常是 Codex 桌面端登录态、API 模式或前端过滤导致，需要从桌面端插件页启用或重启桌面端验证。",
   ]
 
   return {
     codexHome: codexHome(),
     configPath: configPath(),
-    stableMarketplacePath: stablePath,
     activeMarketplaceSource,
+    managedMarketplaceSource,
     hasManualBundledMarketplace: Boolean(configuredMarketplaceSource),
-    activeMarketplaceSourceExists: Boolean(activeMarketplaceSource && (await exists(activeMarketplaceSource))),
-    activeMarketplaceUsesStableSource: Boolean(configuredMarketplaceSource && samePath(activeMarketplaceSource, stablePath)),
+    activeMarketplaceSourceExists,
     latestInstallPath,
     latestInstallVersion,
     latestInstallKind,
@@ -446,11 +552,10 @@ async function getStatus() {
     latestBundledMarketplaceExists: Boolean(
       latestBundledMarketplacePath && (await exists(latestBundledMarketplacePath)),
     ),
-    stableMarketplaceExists: await exists(stablePath),
-    stableMarketplaceComplete: stableComplete,
-    chromeNativeHostsPath: chromeNativeHostsPath(),
-    chromeNativeHostsExists: await exists(chromeNativeHostsPath()),
-    chromeNativeHostOk: chromeHostOk,
+    chromeNativeHostsPath: chromeHost.path,
+    chromeNativeHostsExists: chromeHost.exists,
+    chromeNativeHostOk: chromeHost.ok,
+    chromeNativeHostMode: chromeHost.mode,
     chromeManifestPath: chromeManifestPath(),
     chromeManifestExists: await exists(chromeManifestPath()),
     chromeManifestOk: manifestOk,
@@ -499,7 +604,7 @@ async function rmWithRetries(target) {
 function stopChromeNativeHostProcesses() {
   const needles = [
     path.join(chromeLatestPath(), "extension-host", "windows", "x64"),
-    path.join(stableMarketplacePath(), "plugins", "chrome", "extension-host", "windows", "x64"),
+    path.join(legacyMarketplacePath(), "plugins", "chrome", "extension-host", "windows", "x64"),
   ]
   const script = String.raw`
 $ErrorActionPreference = "Stop"
@@ -582,20 +687,29 @@ Start-Sleep -Milliseconds 500
   return parsed.stopped || []
 }
 
-async function writeConfigPluginSettings(backupDir) {
-  const filePath = configPath()
-  await fs.mkdir(path.dirname(filePath), { recursive: true })
-  await backupExisting(filePath, backupDir)
-  let next = removeSection(
-    await readTextIfExists(filePath),
+function updatedPluginConfig(text) {
+  const activeSource = sectionString(
+    text,
     `marketplaces.${BUNDLED_MARKETPLACE_ID}`,
+    "source",
   )
+  let next =
+    activeSource && !isManagedMarketplaceSource(activeSource)
+      ? removeSection(text, `marketplaces.${BUNDLED_MARKETPLACE_ID}`)
+      : text
   for (const plugin of PLUGINS) {
     next = upsertSection(next, `plugins."${plugin.id}@${BUNDLED_MARKETPLACE_ID}"`, [
       "enabled = true",
     ])
   }
-  await fs.writeFile(filePath, `${next.trimEnd()}\n`, "utf8")
+  return `${next.trimEnd()}\n`
+}
+
+async function writeConfigPluginSettings(backupDir) {
+  const filePath = configPath()
+  await fs.mkdir(path.dirname(filePath), { recursive: true })
+  await backupExisting(filePath, backupDir)
+  await fs.writeFile(filePath, updatedPluginConfig(await readTextIfExists(filePath)), "utf8")
 }
 
 async function repairPluginLatest(id, stablePluginPath) {
@@ -609,6 +723,19 @@ async function repairPluginLatest(id, stablePluginPath) {
   } catch {
     await fs.mkdir(latest, { recursive: true })
     await fs.cp(stablePluginPath, latest, { recursive: true, force: true })
+  }
+}
+
+async function assertLatestCachesDetachedFromLegacySource() {
+  const legacyTargets = []
+  for (const plugin of PLUGINS) {
+    const latest = await cacheLatestStatus(plugin.id)
+    if (latest.usesLegacySource) {
+      legacyTargets.push(`${plugin.label}: ${latest.targetPath}`)
+    }
+  }
+  if (legacyTargets.length > 0) {
+    throw new Error(`插件 latest 仍引用旧 bundled 源：${legacyTargets.join("; ")}`)
   }
 }
 
@@ -671,6 +798,15 @@ async function writeChromeManifest(backupDir) {
 }
 
 async function repair() {
+  const currentStatus = await getStatus()
+  if (currentStatus.healthy) {
+    return {
+      status: currentStatus,
+      message: "Codex bundled 插件当前已健康，无需重复修复。",
+      backupDir: "",
+      stoppedHostProcesses: [],
+    }
+  }
   const latestInstallPath = await listLatestCodexInstallPath()
   if (!latestInstallPath) throw new Error("没有找到当前 Codex 桌面端安装目录")
   const bundled = await bundledMarketplacePathFromInstallPath(latestInstallPath)
@@ -683,27 +819,38 @@ async function repair() {
     codexHome(),
     `backup-codex-desktop-plugins-${new Date().toISOString().replace(/[:.]/g, "-")}`,
   )
+  const configText = await readTextIfExists(configPath())
+  const activeSource = sectionString(
+    configText,
+    `marketplaces.${BUNDLED_MARKETPLACE_ID}`,
+    "source",
+  )
+  const sourceRoot =
+    activeSource &&
+    isManagedMarketplaceSource(activeSource) &&
+    (await requiredFilesOk(activeSource, "chrome"))
+      ? activeSource
+      : bundled
   const stoppedHostProcesses = stopChromeNativeHostProcesses()
-  const stable = stableMarketplacePath()
-  await rmWithRetries(stable)
-  await fs.mkdir(path.dirname(stable), { recursive: true })
-  await fs.cp(bundled, stable, { recursive: true, force: true })
   await writeConfigPluginSettings(backupDir)
   stopChromeNativeHostProcesses()
   for (const plugin of PLUGINS) {
-    await repairPluginLatest(plugin.id, path.join(stable, "plugins", plugin.id))
+    await repairPluginLatest(plugin.id, path.join(sourceRoot, "plugins", plugin.id))
   }
+  await assertLatestCachesDetachedFromLegacySource()
+  await rmWithRetries(legacyMarketplacePath())
 
-  await writeChromeNativeHosts(
-    (await pluginVersionFromMarketplace(stable)) || parseVersionFromInstallPath(latestInstallPath),
-    await runtimeToolPaths(),
-    backupDir,
-  )
+  const pluginVersion =
+    (await pluginVersionFromMarketplace(sourceRoot)) ||
+    parseVersionFromInstallPath(latestInstallPath)
+  if (!(await chromeNativeHostV2Ok(pluginVersion))) {
+    await writeChromeNativeHosts(pluginVersion, await runtimeToolPaths(), backupDir)
+  }
   await writeChromeManifest(backupDir)
 
   return {
     status: await getStatus(),
-    message: "已修复 Codex 桌面端 bundled 插件路径，请完全退出并重启 Codex 桌面端。",
+    message: "已清理旧 bundled 配置并修复插件缓存，请完全退出并重启 Codex 桌面端。",
     backupDir,
     stoppedHostProcesses,
   }
@@ -722,7 +869,18 @@ async function main() {
   throw new Error(`未知 Codex 桌面端插件动作：${action || ""}`)
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
-  process.exit(1)
-})
+if (require.main === module) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+    process.exit(1)
+  })
+}
+
+module.exports = {
+  compareVersionStringsDescending,
+  isManagedMarketplaceSource,
+  pathIsWithin,
+  parseVersionFromInstallPath,
+  samePath,
+  updatedPluginConfig,
+}

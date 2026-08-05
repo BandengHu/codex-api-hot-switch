@@ -21,6 +21,9 @@ export interface CodexDesktopModelWhitelistStatus {
   codexInstallPath: string
   codexExePath: string
   codexExeExists: boolean
+  runningCodexInstallPath: string
+  runningCodexInstallVersion: string
+  runningCodexUsesLatestInstall: boolean
   modelSourceOk: boolean
   modelSourceError: string
   modelCount: number

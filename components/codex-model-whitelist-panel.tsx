@@ -163,7 +163,11 @@ export function CodexModelWhitelistPanel() {
               <PathLine label="Codex 可执行文件" value={status.codexExePath} />
               <PathLine label="本地模型接口" value={`${status.relayBaseUrl}/v1/models`} />
               <PathLine label="当前 CDP 页面" value={status.targetTitle || status.targetUrl} />
-              <PathLine label="Codex 安装目录" value={status.codexInstallPath} />
+              <PathLine label="最新 Codex 安装目录" value={status.codexInstallPath} />
+              <PathLine
+                label={`当前运行版本${status.runningCodexInstallVersion ? ` · ${status.runningCodexInstallVersion}` : ""}`}
+                value={status.runningCodexInstallPath || "未运行"}
+              />
             </div>
 
             <div className="grid gap-2 sm:grid-cols-5">
@@ -195,6 +199,13 @@ export function CodexModelWhitelistPanel() {
                 {status.codexRunningWithoutCdp
                   ? "当前 Codex 已经运行，但不是从 SwitchGate 白名单启动，调试端口没有打开。请正常关闭后用白名单启动。"
                   : "当前 Codex 没有开放调试端口。请用“启动带模型白名单的 Codex”打开桌面端。"}
+              </div>
+            ) : null}
+
+            {!status.runningCodexUsesLatestInstall ? (
+              <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/8 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
+                <AlertTriangle className="mt-0.5 size-4" />
+                当前运行的是旧版 Codex，请使用“正常关闭并重启注入”切换到最新安装版本。
               </div>
             ) : null}
 

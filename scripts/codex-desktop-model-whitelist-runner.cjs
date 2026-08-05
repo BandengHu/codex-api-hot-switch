@@ -1,4 +1,5 @@
 const fs = require("node:fs/promises")
+const fsSync = require("node:fs")
 const os = require("node:os")
 const path = require("node:path")
 const net = require("node:net")
@@ -105,8 +106,19 @@ function windowsAppsRoot() {
 }
 
 function parseVersionFromInstallPath(filePath) {
-  const match = filePath.match(/OpenAI\.Codex_(.+?)_x64__/i)
+  const match = filePath.match(/OpenAI\.Codex(?:Beta)?_(.+?)_x64__/i)
   return match?.[1] || ""
+}
+
+function compareVersionStringsDescending(left, right) {
+  const leftParts = String(left || "").split(".").map((part) => Number(part) || 0)
+  const rightParts = String(right || "").split(".").map((part) => Number(part) || 0)
+  const length = Math.max(leftParts.length, rightParts.length)
+  for (let index = 0; index < length; index += 1) {
+    const difference = (rightParts[index] || 0) - (leftParts[index] || 0)
+    if (difference !== 0) return difference
+  }
+  return 0
 }
 
 async function latestCodexInstallPath() {
@@ -120,22 +132,29 @@ async function latestCodexInstallPath() {
     .filter((name) => /^OpenAI\.Codex(?:Beta)?_.+_x64__/i.test(name))
     .map((name) => path.join(windowsAppsRoot(), name))
     .sort((a, b) =>
-      parseVersionFromInstallPath(b).localeCompare(
+      compareVersionStringsDescending(
         parseVersionFromInstallPath(a),
-        undefined,
-        { numeric: true },
+        parseVersionFromInstallPath(b),
       ),
     )
 
   for (const candidate of candidates) {
-    const exe = path.join(candidate, "app", "Codex.exe")
-    if (await exists(exe)) return candidate
+    if (codexExeFromInstall(candidate)) return candidate
   }
   return candidates[0] || ""
 }
 
+function codexExecutableCandidates(installPath) {
+  if (!installPath) return []
+  return [
+    path.join(installPath, "app", "ChatGPT.exe"),
+    path.join(installPath, "app", "Codex.exe"),
+  ]
+}
+
 function codexExeFromInstall(installPath) {
-  return installPath ? path.join(installPath, "app", "Codex.exe") : ""
+  const candidates = codexExecutableCandidates(installPath)
+  return candidates.find((candidate) => fsSync.existsSync(candidate)) || ""
 }
 
 function packagedAppUserModelId(installPath) {
@@ -150,9 +169,12 @@ function commandLineArguments(args) {
     .join(" ")
 }
 
+const CODEX_DESKTOP_PROCESS_FILTER =
+  "name = 'Codex.exe' OR name = 'ChatGPT.exe'"
+
 function queryCodexProcessCommandLines() {
   if (process.platform !== "win32") return Promise.resolve([])
-  const script = "Get-CimInstance Win32_Process -Filter \"name = 'Codex.exe'\" | Select-Object -ExpandProperty CommandLine | ConvertTo-Json -Compress"
+  const script = `Get-CimInstance Win32_Process -Filter "${CODEX_DESKTOP_PROCESS_FILTER}" | Select-Object -ExpandProperty CommandLine | ConvertTo-Json -Compress`
   return new Promise((resolve) => {
     execFile("pwsh", ["-NoLogo", "-NoProfile", "-Command", script], { windowsHide: true, timeout: CDP_TIMEOUT_MS }, (_error, stdout) => {
       try {
@@ -167,7 +189,7 @@ function queryCodexProcessCommandLines() {
 
 function queryCodexProcesses() {
   if (process.platform !== "win32") return Promise.resolve([])
-  const script = "Get-CimInstance Win32_Process -Filter \"name = 'Codex.exe' OR name = 'codex.exe'\" | Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress"
+  const script = `Get-CimInstance Win32_Process -Filter "${CODEX_DESKTOP_PROCESS_FILTER}" | Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress`
   return new Promise((resolve) => {
     execFile("pwsh", ["-NoLogo", "-NoProfile", "-Command", script], { windowsHide: true, timeout: CDP_TIMEOUT_MS }, (_error, stdout) => {
       try {
@@ -189,14 +211,50 @@ function queryCodexProcesses() {
   })
 }
 
+function normalizedWindowsPath(value) {
+  return String(value || "").replaceAll("/", "\\").toLowerCase()
+}
+
+function isWindowsAppsCodexPath(value) {
+  const normalized = normalizedWindowsPath(value)
+  return (
+    normalized.includes("\\windowsapps\\openai.codex_") ||
+    normalized.includes("\\windowsapps\\openai.codexbeta_")
+  )
+}
+
+function processInstallPath(processInfo) {
+  const executablePath = String(processInfo.executablePath || "")
+  if (!isWindowsAppsCodexPath(executablePath)) return ""
+  const normalized = normalizedWindowsPath(executablePath)
+  if (!/\\app\\(?:codex|chatgpt)\.exe$/i.test(normalized)) return ""
+  return path.dirname(path.dirname(executablePath))
+}
+
+function sameInstallPath(left, right) {
+  if (!left || !right) return false
+  return normalizedWindowsPath(path.resolve(left)) === normalizedWindowsPath(path.resolve(right))
+}
+
 function isDesktopCodexProcess(processInfo) {
-  const haystack = `${processInfo.executablePath || ""} ${processInfo.commandLine || ""}`.toLowerCase()
-  return haystack.includes("openai.codex") && haystack.includes("\\app\\codex.exe")
+  const haystack = normalizedWindowsPath(
+    `${processInfo.executablePath || ""} ${processInfo.commandLine || ""}`,
+  )
+  return (
+    isWindowsAppsCodexPath(haystack) &&
+    /\\app\\(?:codex|chatgpt)\.exe(?:["\s]|$)/i.test(haystack)
+  )
 }
 
 function isCodexAppServerProcess(processInfo) {
-  const haystack = `${processInfo.executablePath || ""} ${processInfo.commandLine || ""}`.toLowerCase()
-  return haystack.includes("openai.codex") && haystack.includes("\\app\\resources\\codex.exe") && haystack.includes(" app-server")
+  const haystack = normalizedWindowsPath(
+    `${processInfo.executablePath || ""} ${processInfo.commandLine || ""}`,
+  )
+  return (
+    isWindowsAppsCodexPath(haystack) &&
+    haystack.includes("\\app\\resources\\codex.exe") &&
+    haystack.includes(" app-server")
+  )
 }
 
 function isDesktopCodexMainProcess(processInfo) {
@@ -223,6 +281,17 @@ async function desktopCodexProcessCount() {
   return processes.filter(isDesktopCodexProcess).length
 }
 
+async function runningDesktopInstallPaths() {
+  const processes = await queryCodexProcesses()
+  const result = []
+  for (const processInfo of processes.filter(isDesktopCodexMainProcess)) {
+    const installPath = processInstallPath(processInfo)
+    if (!installPath || result.some((candidate) => sameInstallPath(candidate, installPath))) continue
+    result.push(installPath)
+  }
+  return result
+}
+
 async function codexRestartBlockingProcessCount() {
   const processes = await queryCodexProcesses()
   return processes.filter(isCodexRestartBlockingProcess).length
@@ -232,12 +301,17 @@ function terminateCodexDesktopProcesses() {
   if (process.platform !== "win32") return Promise.resolve(0)
   const script = `
 $ErrorActionPreference = "Stop"
-$targets = Get-CimInstance Win32_Process -Filter "name = 'Codex.exe' OR name = 'codex.exe'" |
+$targets = Get-CimInstance Win32_Process -Filter "name = 'Codex.exe' OR name = 'codex.exe' OR name = 'ChatGPT.exe'" |
   Where-Object {
     $path = ([string]$_.ExecutablePath).ToLower()
     $line = ([string]$_.CommandLine).ToLower()
-    $isDesktop = $path.Contains("\\windowsapps\\openai.codex") -and $path.EndsWith("\\app\\codex.exe")
-    $isAppServer = $path.Contains("\\windowsapps\\openai.codex") -and
+    $isPackage = $path.Contains("\\windowsapps\\openai.codex_") -or
+      $path.Contains("\\windowsapps\\openai.codexbeta_")
+    $isDesktop = $isPackage -and (
+      $path.EndsWith("\\app\\codex.exe") -or
+      $path.EndsWith("\\app\\chatgpt.exe")
+    )
+    $isAppServer = $isPackage -and
       $path.EndsWith("\\app\\resources\\codex.exe") -and
       $line.Contains(" app-server")
     $isDesktop -or $isAppServer
@@ -1036,6 +1110,10 @@ function modelListFromCatalog(catalog) {
 async function status(options) {
   const installPath = await latestCodexInstallPath()
   const exe = codexExeFromInstall(installPath)
+  const runningInstallPaths = await runningDesktopInstallPaths()
+  const runningInstallPath = runningInstallPaths[0] || ""
+  const runningUsesLatestInstall =
+    !runningInstallPath || sameInstallPath(runningInstallPath, installPath)
   const catalog = await modelCatalog(options.relayBaseUrl)
   const models = modelListFromCatalog(catalog)
   let targets = []
@@ -1093,11 +1171,19 @@ async function status(options) {
     codexInstallPath: installPath,
     codexExePath: exe,
     codexExeExists: exe ? await exists(exe) : false,
+    runningCodexInstallPath: runningInstallPath,
+    runningCodexInstallVersion: parseVersionFromInstallPath(runningInstallPath),
+    runningCodexUsesLatestInstall: runningUsesLatestInstall,
     modelSourceOk: models.ok,
     modelSourceError: models.error,
     modelCount: models.count,
     modelPreview: models.models,
-    healthy: cdpReachable && Boolean(target) && injected && models.ok,
+    healthy:
+      cdpReachable &&
+      Boolean(target) &&
+      injected &&
+      models.ok &&
+      runningUsesLatestInstall,
   }
 }
 
@@ -1157,6 +1243,15 @@ async function startAndInject(options, message) {
 }
 
 async function launch(options, requestedDebugPort) {
+  const latestInstallPath = await latestCodexInstallPath()
+  const runningInstallPaths = await runningDesktopInstallPaths()
+  if (
+    runningInstallPaths.some(
+      (runningInstallPath) => !sameInstallPath(runningInstallPath, latestInstallPath),
+    )
+  ) {
+    return restart(options, requestedDebugPort)
+  }
   try {
     return await inject(options)
   } catch {
@@ -1206,7 +1301,22 @@ async function main() {
   throw new Error(`未知 Codex 模型白名单动作：${action || ""}`)
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
-  process.exit(1)
-})
+if (require.main === module) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+    process.exit(1)
+  })
+}
+
+module.exports = {
+  CODEX_DESKTOP_PROCESS_FILTER,
+  codexExecutableCandidates,
+  codexExeFromInstall,
+  compareVersionStringsDescending,
+  isCodexAppServerProcess,
+  isDesktopCodexMainProcess,
+  isDesktopCodexProcess,
+  parseVersionFromInstallPath,
+  processInstallPath,
+  sameInstallPath,
+}

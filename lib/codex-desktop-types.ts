@@ -5,27 +5,27 @@ export interface CodexDesktopPluginCheck {
   sourceExists: boolean
   requiredFilesOk: boolean
   cacheLatestOk: boolean
+  cacheLatestTarget: string
+  cacheLatestUsesLegacySource: boolean
 }
 
 export interface CodexDesktopPluginStatus {
   codexHome: string
   configPath: string
-  stableMarketplacePath: string
   activeMarketplaceSource: string
+  managedMarketplaceSource: boolean
   hasManualBundledMarketplace: boolean
   activeMarketplaceSourceExists: boolean
-  activeMarketplaceUsesStableSource: boolean
   latestInstallPath: string
   latestInstallVersion: string
   latestInstallKind: string
   latestResourcesPath: string
   latestBundledMarketplacePath: string
   latestBundledMarketplaceExists: boolean
-  stableMarketplaceExists: boolean
-  stableMarketplaceComplete: boolean
   chromeNativeHostsPath: string
   chromeNativeHostsExists: boolean
   chromeNativeHostOk: boolean
+  chromeNativeHostMode: "v2" | "legacy"
   chromeManifestPath: string
   chromeManifestExists: boolean
   chromeManifestOk: boolean

@@ -10,7 +10,6 @@ import {
   type CompatibleResponsesFunctionProxyKind,
 } from "./responses-tool-search-compat"
 import { applyAssistantMessagePhase } from "./common"
-import { deriveVisibleActionNoteFromReasoning } from "./action-note"
 import { repairResponsesItemIdsInSsePayload } from "./responses-item-id-repair"
 
 type AnyRecord = Record<string, any>
@@ -274,13 +273,6 @@ class ResponsesStreamRepairer {
   private failedSeen = false
   private pendingDone = false
   private pendingMessageDoneFrames: Array<{ event: string; data: AnyRecord }> = []
-  // 行动说明注入：从已收到的 reasoning 摘一句，在首个工具调用前插入一条 commentary message。
-  // 仅在非原样透传（assistantMessagePhase=true）时启用，透传链路零触发。
-  private actionNoteInjected = false
-  private injectedActionNoteText = ""
-  private injectedActionNoteIndex = -1
-  // 插入合成 message 后，占用了一个 output_index，其后所有帧的 output_index 需要整体 +1。
-  private outputIndexShift = 0
   responseId = ""
   usage: any = null
 
@@ -348,8 +340,6 @@ class ResponsesStreamRepairer {
     const modelChanged = this.applyModelOverride(data)
     const model = this.extractModel(data)
     if (model) this.responseModel = model
-    // 注入行动说明后，本帧及之后所有帧的 output_index 需整体顺移；透传时 shift 恒为 0。
-    const outputIndexChanged = this.applyOutputIndexShift(data)
 
     const type = data.type || event
     const itemIdChanged = repairResponsesItemIdsInSsePayload(data, event)
@@ -358,12 +348,12 @@ class ResponsesStreamRepairer {
         event,
         data,
         frameText,
-        outputIndexChanged || itemIdChanged,
+        itemIdChanged,
       )
     }
     if (type === "response.output_text.delta") {
       this.rememberTextDelta("message", data, data.delta)
-      return modelChanged || outputIndexChanged || itemIdChanged
+      return modelChanged || itemIdChanged
         ? sse(event, data)
         : rawSseFrame(frameText)
     }
@@ -375,13 +365,13 @@ class ResponsesStreamRepairer {
             ? data.part.text
             : ""
       this.rememberTextDone("message", data, text)
-      return modelChanged || outputIndexChanged || itemIdChanged
+      return modelChanged || itemIdChanged
         ? sse(event, data)
         : rawSseFrame(frameText)
     }
     if (type === "response.reasoning_summary_text.delta") {
       this.rememberTextDelta("reasoning", data, data.delta)
-      return modelChanged || outputIndexChanged || itemIdChanged
+      return modelChanged || itemIdChanged
         ? sse(event, data)
         : rawSseFrame(frameText)
     }
@@ -393,13 +383,13 @@ class ResponsesStreamRepairer {
             ? data.part.text
             : ""
       this.rememberTextDone("reasoning", data, text)
-      return modelChanged || outputIndexChanged || itemIdChanged
+      return modelChanged || itemIdChanged
         ? sse(event, data)
         : rawSseFrame(frameText)
     }
     if (type === "response.custom_tool_call_input.delta") {
       this.rememberTextDelta("custom_tool", data, data.delta)
-      return modelChanged || outputIndexChanged || itemIdChanged
+      return modelChanged || itemIdChanged
         ? sse(event, data)
         : rawSseFrame(frameText)
     }
@@ -411,7 +401,7 @@ class ResponsesStreamRepairer {
             ? data.text
             : ""
       this.rememberTextDone("custom_tool", data, input)
-      return modelChanged || outputIndexChanged || itemIdChanged
+      return modelChanged || itemIdChanged
         ? sse(event, data)
         : rawSseFrame(frameText)
     }
@@ -420,7 +410,7 @@ class ResponsesStreamRepairer {
         event,
         data,
         frameText,
-        outputIndexChanged || itemIdChanged,
+        itemIdChanged,
       )
     }
     if (type === "response.function_call_arguments.done") {
@@ -428,7 +418,7 @@ class ResponsesStreamRepairer {
         event,
         data,
         frameText,
-        outputIndexChanged || itemIdChanged,
+        itemIdChanged,
       )
     }
     if (type === "response.output_item.done") {
@@ -436,7 +426,7 @@ class ResponsesStreamRepairer {
         event,
         data,
         frameText,
-        outputIndexChanged || itemIdChanged,
+        itemIdChanged,
       )
     }
     if (type === "error" || event === "error") {
@@ -453,7 +443,6 @@ class ResponsesStreamRepairer {
         this.repairCompletedResponseItems(response)
       }
       if (this.options.assistantMessagePhase) {
-        this.insertInjectedActionNote(response)
         applyAssistantMessagePhase(response.output)
       }
       return prefix + this.flushPendingMessageDoneFrames("final_answer") + sse(event, data)
@@ -461,11 +450,11 @@ class ResponsesStreamRepairer {
     if (type === "response.failed") {
       this.failedSeen = true
       this.pendingDone = false
-      return modelChanged || outputIndexChanged || itemIdChanged
+      return modelChanged || itemIdChanged
         ? sse(event, data)
         : rawSseFrame(frameText)
     }
-    return modelChanged || outputIndexChanged || itemIdChanged
+    return modelChanged || itemIdChanged
       ? sse(event, data)
       : rawSseFrame(frameText)
   }
@@ -509,125 +498,6 @@ class ResponsesStreamRepairer {
     return ""
   }
 
-  // 顺移当前帧的 output_index：注入合成 message 后，其后所有帧的 output_index 需要整体 +1，
-  // 否则工具调用与合成 message 会抢占同一个 index。透传时 outputIndexShift 恒为 0，零改动。
-  private applyOutputIndexShift(data: AnyRecord) {
-    if (this.outputIndexShift <= 0) return false
-    let changed = false
-    if (typeof data.output_index === "number") {
-      data.output_index += this.outputIndexShift
-      changed = true
-    }
-    return changed
-  }
-
-  // 本回合是否已经有可见的 assistant 正文（上游自己给了行动说明就不再补）。
-  private hasVisibleMessageText() {
-    for (const snapshot of this.messageItems.values()) {
-      if (this.snapshotText(snapshot).trim()) return true
-    }
-    return false
-  }
-
-  // 首个工具调用出现前，若本回合还没有任何可见 message，就从已收到的 reasoning 摘一句，
-  // 作为一条 commentary message 注入到流里，并让后续 output_index 顺移。返回要前置发送的 SSE 帧文本。
-  private maybeInjectActionNoteBeforeTool(item: unknown, data: AnyRecord) {
-    if (!this.options.assistantMessagePhase) return ""
-    if (this.actionNoteInjected) return ""
-    if (!isToolOutputItem(item)) return ""
-    if (this.hasVisibleMessageText()) return ""
-    const reasoning = Array.from(this.reasoningItems.values())
-      .map((snapshot) => this.snapshotText(snapshot))
-      .join("\n")
-    const note = deriveVisibleActionNoteFromReasoning(reasoning)
-    if (!note) return ""
-
-    // 合成 message 占用当前工具帧的 output_index，工具帧本身随后顺移 +1。
-    const rawIndex = typeof data.output_index === "number" ? data.output_index : 0
-    const injectedIndex = rawIndex + this.outputIndexShift
-    this.actionNoteInjected = true
-    this.injectedActionNoteText = note
-    this.injectedActionNoteIndex = injectedIndex
-    this.outputIndexShift += 1
-
-    const messageId = `msg_action_note_${this.responseId || Date.now()}`
-    const messageItem = {
-      id: messageId,
-      type: "message",
-      status: "completed",
-      role: "assistant",
-      content: [{ type: "output_text", text: note, annotations: [] }],
-      phase: "commentary",
-    }
-    return (
-      sse("response.output_item.added", {
-        type: "response.output_item.added",
-        output_index: injectedIndex,
-        item: {
-          id: messageId,
-          type: "message",
-          status: "in_progress",
-          role: "assistant",
-          content: [],
-        },
-      }) +
-      sse("response.content_part.added", {
-        type: "response.content_part.added",
-        item_id: messageId,
-        output_index: injectedIndex,
-        content_index: 0,
-        part: { type: "output_text", text: "", annotations: [] },
-      }) +
-      sse("response.output_text.delta", {
-        type: "response.output_text.delta",
-        item_id: messageId,
-        output_index: injectedIndex,
-        content_index: 0,
-        delta: note,
-      }) +
-      sse("response.output_text.done", {
-        type: "response.output_text.done",
-        item_id: messageId,
-        output_index: injectedIndex,
-        content_index: 0,
-        text: note,
-      }) +
-      sse("response.content_part.done", {
-        type: "response.content_part.done",
-        item_id: messageId,
-        output_index: injectedIndex,
-        content_index: 0,
-        part: { type: "output_text", text: note, annotations: [] },
-      }) +
-      sse("response.output_item.done", {
-        type: "response.output_item.done",
-        output_index: injectedIndex,
-        item: messageItem,
-      })
-    )
-  }
-
-  // 在最终 response.completed 的 output 数组里补入注入过的合成 message，保持与流式帧一致。
-  private insertInjectedActionNote(response: AnyRecord) {
-    if (!this.actionNoteInjected || !this.injectedActionNoteText) return
-    if (!Array.isArray(response.output)) return
-    const messageId = `msg_action_note_${this.responseId || Date.now()}`
-    const alreadyPresent = response.output.some(
-      (entry: AnyRecord) => isObject(entry) && entry.id === messageId,
-    )
-    if (alreadyPresent) return
-    const messageItem = {
-      id: messageId,
-      type: "message",
-      status: "completed",
-      role: "assistant",
-      content: [{ type: "output_text", text: this.injectedActionNoteText, annotations: [] }],
-      phase: "commentary",
-    }
-    const index = Math.max(0, Math.min(response.output.length, this.injectedActionNoteIndex))
-    response.output.splice(index, 0, messageItem)
-  }
-
   private handleOutputItemAdded(
     event: string,
     data: AnyRecord,
@@ -635,26 +505,21 @@ class ResponsesStreamRepairer {
     outputIndexChanged: boolean,
   ) {
     const item = data.item
-    // 首个工具调用出现前，若本回合还没有任何可见 message，尝试从 reasoning 摘一句注入。
-    // 注入会在流里先插入一条 commentary message，并让当前及后续帧的 output_index 顺移。
-    const injectPrefix = this.maybeInjectActionNoteBeforeTool(item, data)
-    const framePrefix = injectPrefix ? injectPrefix : ""
-    const reserialize = outputIndexChanged || Boolean(injectPrefix)
     const phasePrefix = this.flushPendingMessageDoneFramesBeforeTool(item)
     if (isObject(item) && item.type === "message") {
       this.rememberOutputItem("message", item, data.output_index)
-      return framePrefix + (reserialize ? sse(event, data) : rawSseFrame(frameText))
+      return outputIndexChanged ? sse(event, data) : rawSseFrame(frameText)
     }
     if (isObject(item) && item.type === "reasoning") {
       this.rememberOutputItem("reasoning", item, data.output_index)
-      return framePrefix + (reserialize ? sse(event, data) : rawSseFrame(frameText))
+      return outputIndexChanged ? sse(event, data) : rawSseFrame(frameText)
     }
     if (isObject(item) && item.type === "custom_tool_call") {
       this.rememberOutputItem("custom_tool", item, data.output_index)
-      return framePrefix + phasePrefix + (reserialize ? sse(event, data) : rawSseFrame(frameText))
+      return phasePrefix + (outputIndexChanged ? sse(event, data) : rawSseFrame(frameText))
     }
     if (!isObject(item) || item.type !== "function_call") {
-      return framePrefix + phasePrefix + (reserialize ? sse(event, data) : rawSseFrame(frameText))
+      return phasePrefix + (outputIndexChanged ? sse(event, data) : rawSseFrame(frameText))
     }
 
     const callIdChanged = ensureFunctionCallId(item)
@@ -686,15 +551,15 @@ class ResponsesStreamRepairer {
         proxyKind,
       })
       data.item = addedItem
-      return framePrefix + phasePrefix + sse(event, data)
+      return phasePrefix + sse(event, data)
     }
     if (!itemId || !isCollabToolName(name)) {
       const repaired = repairFunctionCallArguments(argumentsText)
       if (repaired !== argumentsText) {
         item.arguments = repaired
-        return framePrefix + phasePrefix + sse(event, data)
+        return phasePrefix + sse(event, data)
       }
-      return framePrefix + phasePrefix + (callIdChanged || reserialize ? sse(event, data) : rawSseFrame(frameText))
+      return phasePrefix + (callIdChanged || outputIndexChanged ? sse(event, data) : rawSseFrame(frameText))
     }
     this.pending.set(itemId, {
       name,
@@ -705,9 +570,9 @@ class ResponsesStreamRepairer {
     })
     if (argumentsText) {
       item.arguments = ""
-      return framePrefix + phasePrefix + sse(event, data)
+      return phasePrefix + sse(event, data)
     }
-    return framePrefix + phasePrefix + (callIdChanged || reserialize ? sse(event, data) : rawSseFrame(frameText))
+    return phasePrefix + (callIdChanged || outputIndexChanged ? sse(event, data) : rawSseFrame(frameText))
   }
 
   private handleFunctionArgumentsDelta(
