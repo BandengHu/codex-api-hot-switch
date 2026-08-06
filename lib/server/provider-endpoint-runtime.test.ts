@@ -201,6 +201,89 @@ test("last available endpoint stays active after the transient failure threshold
   )
 })
 
+test("removing the fallback immediately releases an existing primary cooldown", async () => {
+  const value = provider("removed-fallback")
+  for (let count = 0; count < runtime.ENDPOINT_FAILURE_THRESHOLD; count += 1) {
+    await runtime.recordProviderEndpointFailure(
+      value,
+      value.endpoints[0],
+      { kind: "transient", message: `primary failure ${count + 1}` },
+    )
+  }
+
+  const cooled = await runtime.getProviderEndpointRuntimeStates([value])
+  assert.ok(cooled[0].cooldownUntil)
+
+  const singleEndpointProvider = {
+    ...value,
+    endpoints: [value.endpoints[0]],
+  }
+  assert.deepEqual(
+    (await runtime.availableProviderEndpoints(singleEndpointProvider)).map(
+      (endpoint) => endpoint.id,
+    ),
+    [value.endpoints[0].id],
+  )
+  const released = await runtime.getProviderEndpointRuntimeStates([
+    singleEndpointProvider,
+  ])
+  assert.equal(released[0].cooldownUntil, undefined)
+})
+
+test("disabling the fallback immediately releases an existing primary cooldown", async () => {
+  const value = provider("disabled-fallback")
+  for (let count = 0; count < runtime.ENDPOINT_FAILURE_THRESHOLD; count += 1) {
+    await runtime.recordProviderEndpointFailure(
+      value,
+      value.endpoints[0],
+      { kind: "transient", message: `primary failure ${count + 1}` },
+    )
+  }
+
+  const fallbackDisabledProvider = {
+    ...value,
+    endpoints: value.endpoints.map((endpoint, index) =>
+      index === 1 ? { ...endpoint, enabled: false } : endpoint,
+    ),
+  }
+  assert.deepEqual(
+    (await runtime.availableProviderEndpoints(fallbackDisabledProvider)).map(
+      (endpoint) => endpoint.id,
+    ),
+    [value.endpoints[0].id],
+  )
+  const released = await runtime.getProviderEndpointRuntimeStates([
+    fallbackDisabledProvider,
+  ])
+  assert.equal(released[0].cooldownUntil, undefined)
+})
+
+test("removing the fallback re-enables a quota-disabled primary endpoint", async () => {
+  const value = provider("removed-after-quota")
+  const failed = await runtime.recordProviderEndpointFailure(
+    value,
+    value.endpoints[0],
+    { kind: "quota", message: "quota exhausted" },
+  )
+  assert.equal(failed.shouldFailover, true)
+  assert.equal(failed.state.quotaDisabled, true)
+
+  const singleEndpointProvider = {
+    ...value,
+    endpoints: [value.endpoints[0]],
+  }
+  assert.deepEqual(
+    (await runtime.availableProviderEndpoints(singleEndpointProvider)).map(
+      (endpoint) => endpoint.id,
+    ),
+    [value.endpoints[0].id],
+  )
+  const released = await runtime.getProviderEndpointRuntimeStates([
+    singleEndpointProvider,
+  ])
+  assert.equal(released[0].quotaDisabled, false)
+})
+
 test("expired cooldown restores the endpoint with a fresh failure count", async () => {
   const value = provider("cooldown-expiry")
   const originalNow = Date.now
@@ -288,11 +371,48 @@ test("classifies quota, authentication and terminal HTTP errors", () => {
   assert.equal(runtime.classifyEndpointFailure({ status: 503 }).kind, "transient")
   assert.equal(
     runtime.classifyEndpointFailure({
+      status: 503,
+      payload: {
+        error: {
+          message:
+            "No available channel for model gpt-5.6-luna under group gpt-额度计费",
+          code: "model_not_found",
+        },
+      },
+    }).kind,
+    "terminal",
+  )
+  assert.equal(
+    runtime.classifyEndpointFailure({
       status: 429,
       payload: { error: { code: "rate_limit_exceeded" } },
     }).kind,
     "transient",
   )
+})
+
+test("quota and authentication errors do not disable the only endpoint", async () => {
+  for (const kind of ["quota", "auth"] as const) {
+    const value = provider(`single-${kind}`)
+    const singleEndpointProvider = {
+      ...value,
+      endpoints: [value.endpoints[0]],
+    }
+    const result = await runtime.recordProviderEndpointFailure(
+      singleEndpointProvider,
+      singleEndpointProvider.endpoints[0],
+      { kind, message: `${kind} failure` },
+    )
+    assert.equal(result.shouldFailover, false)
+    assert.equal(result.state.quotaDisabled, false)
+    assert.equal(result.state.authDisabled, false)
+    assert.deepEqual(
+      (await runtime.availableProviderEndpoints(singleEndpointProvider)).map(
+        (endpoint) => endpoint.id,
+      ),
+      [singleEndpointProvider.endpoints[0].id],
+    )
+  }
 })
 
 test("endpoint failover keeps the first three failures on the primary and switches on the fourth", async () => {

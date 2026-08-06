@@ -197,6 +197,27 @@ function hasAvailableFailoverEndpoint(
   })
 }
 
+function clearAutomaticBlockWithoutFailoverEndpoint(
+  states: ProviderEndpointRuntimeState[],
+  provider: Provider,
+  endpoint: ProviderEndpoint,
+  state: ProviderEndpointRuntimeState,
+) {
+  if (
+    !state.quotaDisabled &&
+    !state.authDisabled &&
+    !isCooldownActive(state)
+  ) {
+    return false
+  }
+  if (hasAvailableFailoverEndpoint(states, provider, endpoint)) return false
+  state.quotaDisabled = false
+  state.authDisabled = false
+  delete state.cooldownUntil
+  state.updatedAt = new Date().toISOString()
+  return true
+}
+
 function stateFor(
   states: ProviderEndpointRuntimeState[],
   provider: Provider,
@@ -238,8 +259,8 @@ export async function getProviderEndpointRuntimeStates(providers: Provider[]) {
     const states = await loadStates()
     const next = compactRuntimeStates(states, providers)
     let changed = next.length !== states.length
-    const result = providers.flatMap((provider) =>
-      provider.endpoints.map((endpoint) => {
+    const result = providers.flatMap((provider) => {
+      const providerStates = provider.endpoints.map((endpoint) => {
         const existing = next.find(
           (state) =>
             state.providerId === provider.id &&
@@ -255,9 +276,15 @@ export async function getProviderEndpointRuntimeStates(providers: Provider[]) {
         const state = stateFor(next, provider, endpoint)
         if (next.length !== before) changed = true
         if (clearExpiredCooldown(state)) changed = true
-        return { ...state }
-      }),
-    )
+        return { endpoint, state }
+      })
+      for (const { endpoint, state } of providerStates) {
+        if (clearAutomaticBlockWithoutFailoverEndpoint(next, provider, endpoint, state)) {
+          changed = true
+        }
+      }
+      return providerStates.map(({ state }) => ({ ...state }))
+    })
     if (changed) {
       stateCache = next
       await persistStates(next)
@@ -270,7 +297,7 @@ async function getProviderRuntimeStates(provider: Provider) {
   return enqueueMutation(async () => {
     const states = await loadStates()
     let changed = false
-    const result = provider.endpoints.map((endpoint) => {
+    const providerStates = provider.endpoints.map((endpoint) => {
       const existing = states.find(
         (state) =>
           state.providerId === provider.id &&
@@ -279,17 +306,22 @@ async function getProviderRuntimeStates(provider: Provider) {
       )
       if (existing) {
         if (clearExpiredCooldown(existing)) changed = true
-        return { ...existing }
+        return { endpoint, state: existing }
       }
       changed = true
       const state = stateFor(states, provider, endpoint)
       if (clearExpiredCooldown(state)) changed = true
-      return { ...state }
+      return { endpoint, state }
     })
+    for (const { endpoint, state } of providerStates) {
+      if (clearAutomaticBlockWithoutFailoverEndpoint(states, provider, endpoint, state)) {
+        changed = true
+      }
+    }
     if (changed) {
       await persistStates(states)
     }
-    return result
+    return providerStates.map(({ state }) => ({ ...state }))
   })
 }
 
@@ -349,19 +381,21 @@ export async function recordProviderEndpointFailure(
     state.lastError = classification.message
 
     if (classification.kind === "quota") {
-      state.quotaDisabled = true
+      const shouldFailover = hasAvailableFailoverEndpoint(states, provider, endpoint)
+      state.quotaDisabled = shouldFailover
       state.consecutiveFailures = 0
       delete state.cooldownUntil
       await persistStates(states)
-      return { shouldFailover: true, state: { ...state } }
+      return { shouldFailover, state: { ...state } }
     }
 
     if (classification.kind === "auth") {
-      state.authDisabled = true
+      const shouldFailover = hasAvailableFailoverEndpoint(states, provider, endpoint)
+      state.authDisabled = shouldFailover
       state.consecutiveFailures = 0
       delete state.cooldownUntil
       await persistStates(states)
-      return { shouldFailover: true, state: { ...state } }
+      return { shouldFailover, state: { ...state } }
     }
 
     if (classification.kind !== "transient") {
@@ -424,6 +458,10 @@ function looksLikeQuota(text: string) {
   )
 }
 
+function looksLikeModelChannelUnavailable(text: string) {
+  return /(no available channel for model|model[_ -]?not[_ -]?found)/i.test(text)
+}
+
 function errorMessage(payload: unknown, fallback: string) {
   if (payload && typeof payload === "object") {
     const error = (payload as Record<string, unknown>).error
@@ -455,6 +493,9 @@ export function classifyEndpointFailure(params: {
         : params.text || "上游端点失败",
   )
 
+  if (looksLikeModelChannelUnavailable(text)) {
+    return { kind: "terminal", message, status }
+  }
   if (looksLikeQuota(text) || status === 402) {
     return { kind: "quota", message, status }
   }
