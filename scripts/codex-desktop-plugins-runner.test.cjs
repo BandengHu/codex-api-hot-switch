@@ -1,14 +1,18 @@
 const assert = require("node:assert/strict")
+const fs = require("node:fs/promises")
+const os = require("node:os")
 const path = require("node:path")
 const test = require("node:test")
 
 process.env.CODEX_HOME = "C:\\SwitchGateTest\\.codex"
 
 const {
+  cacheLatestStatus,
   compareVersionStringsDescending,
   isManagedMarketplaceSource,
   pathIsWithin,
   parseVersionFromInstallPath,
+  repairPluginLatest,
   samePath,
   updatedPluginConfig,
 } = require("./codex-desktop-plugins-runner.cjs")
@@ -80,4 +84,64 @@ test("plugin install versions are compared numerically", () => {
     ),
     "26.730.7989.0",
   )
+})
+
+test("dangling latest junctions are detected as existing but invalid", async () => {
+  const previousHome = process.env.CODEX_HOME
+  const testHome = await fs.mkdtemp(path.join(os.tmpdir(), "switchgate-plugin-cache-"))
+  process.env.CODEX_HOME = testHome
+  try {
+    const latest = path.join(
+      testHome,
+      "plugins",
+      "cache",
+      "openai-bundled",
+      "browser",
+      "latest",
+    )
+    await fs.mkdir(path.dirname(latest), { recursive: true })
+    await fs.symlink(path.join(testHome, "missing-browser-source"), latest, "junction")
+
+    const status = await cacheLatestStatus("browser")
+    assert.equal((await fs.lstat(latest)).isSymbolicLink(), true)
+    assert.equal(status.ok, false)
+    assert.equal(status.targetPath, "")
+  } finally {
+    process.env.CODEX_HOME = previousHome
+    await fs.rm(testHome, { recursive: true, force: true })
+  }
+})
+
+test("repair removes dangling latest junctions and is idempotent", async () => {
+  const previousHome = process.env.CODEX_HOME
+  const testHome = await fs.mkdtemp(path.join(os.tmpdir(), "switchgate-plugin-repair-"))
+  process.env.CODEX_HOME = testHome
+  try {
+    const source = path.join(testHome, "source", "plugins", "browser")
+    const latest = path.join(
+      testHome,
+      "plugins",
+      "cache",
+      "openai-bundled",
+      "browser",
+      "latest",
+    )
+    await fs.mkdir(path.join(source, ".codex-plugin"), { recursive: true })
+    await fs.writeFile(
+      path.join(source, ".codex-plugin", "plugin.json"),
+      JSON.stringify({ name: "browser", version: "test" }),
+      "utf8",
+    )
+    await fs.mkdir(path.dirname(latest), { recursive: true })
+    await fs.symlink(path.join(testHome, "missing-browser-source"), latest, "junction")
+
+    assert.equal(await repairPluginLatest("browser", source), true)
+    const repaired = await cacheLatestStatus("browser")
+    assert.equal(repaired.ok, true)
+    assert.equal(samePath(repaired.targetPath, await fs.realpath(source)), true)
+    assert.equal(await repairPluginLatest("browser", source), false)
+  } finally {
+    process.env.CODEX_HOME = previousHome
+    await fs.rm(testHome, { recursive: true, force: true })
+  }
 })

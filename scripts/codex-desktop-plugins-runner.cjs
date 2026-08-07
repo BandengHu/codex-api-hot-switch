@@ -19,6 +19,7 @@ const PLUGINS = [
   },
   { id: "computer-use", label: "电脑", required: [".codex-plugin/plugin.json"] },
 ]
+const CACHE_REPAIR_ATTEMPTS = 5
 
 function codexHome() {
   return process.env.CODEX_HOME || path.join(process.env.USERPROFILE || os.homedir(), ".codex")
@@ -582,6 +583,10 @@ function isWindowsBusyError(error) {
   return ["EBUSY", "EPERM", "ENOTEMPTY"].includes(error?.code)
 }
 
+function isCacheRepairRaceError(error) {
+  return ["EEXIST", "ENOENT", "EBUSY", "EPERM", "ENOTEMPTY"].includes(error?.code)
+}
+
 async function delay(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -594,11 +599,27 @@ async function rmWithRetries(target) {
       return
     } catch (error) {
       lastError = error
+      if (error?.code === "ENOENT") return
       if (!isWindowsBusyError(error)) throw error
       await delay(250 + attempt * 250)
     }
   }
   throw lastError
+}
+
+async function removePathEntry(target) {
+  let entry
+  try {
+    entry = await fs.lstat(target)
+  } catch (error) {
+    if (error?.code === "ENOENT") return
+    throw error
+  }
+  if (entry.isSymbolicLink()) {
+    await fs.unlink(target)
+    return
+  }
+  await rmWithRetries(target)
 }
 
 function stopChromeNativeHostProcesses() {
@@ -714,16 +735,38 @@ async function writeConfigPluginSettings(backupDir) {
 
 async function repairPluginLatest(id, stablePluginPath) {
   const latest = pluginLatestPath(id)
-  await fs.mkdir(path.dirname(latest), { recursive: true })
-  if (await exists(latest)) {
-    await rmWithRetries(latest)
+  const current = await cacheLatestStatus(id)
+  if (current.ok && !current.usesLegacySource) return false
+  if (!(await requiredFilesOk(path.dirname(path.dirname(stablePluginPath)), id))) {
+    throw new Error(`插件 ${id} 修复源不完整：${stablePluginPath}`)
   }
-  try {
-    await fs.symlink(stablePluginPath, latest, "junction")
-  } catch {
-    await fs.mkdir(latest, { recursive: true })
-    await fs.cp(stablePluginPath, latest, { recursive: true, force: true })
+
+  let lastError
+  for (let attempt = 0; attempt < CACHE_REPAIR_ATTEMPTS; attempt += 1) {
+    try {
+      await fs.mkdir(path.dirname(latest), { recursive: true })
+      const refreshed = await cacheLatestStatus(id)
+      if (refreshed.ok && !refreshed.usesLegacySource) return false
+      await removePathEntry(latest)
+      await fs.mkdir(path.dirname(latest), { recursive: true })
+      await fs.symlink(stablePluginPath, latest, "junction")
+      const verified = await cacheLatestStatus(id)
+      if (!verified.ok) {
+        lastError = new Error(`插件 ${id} latest 创建后校验失败：${latest}`)
+        if (attempt === CACHE_REPAIR_ATTEMPTS - 1) throw lastError
+        await delay(200 + attempt * 250)
+        continue
+      }
+      return true
+    } catch (error) {
+      lastError = error
+      if (!isCacheRepairRaceError(error) || attempt === CACHE_REPAIR_ATTEMPTS - 1) {
+        throw error
+      }
+      await delay(200 + attempt * 250)
+    }
   }
+  throw lastError
 }
 
 async function assertLatestCachesDetachedFromLegacySource() {
@@ -877,10 +920,12 @@ if (require.main === module) {
 }
 
 module.exports = {
+  cacheLatestStatus,
   compareVersionStringsDescending,
   isManagedMarketplaceSource,
   pathIsWithin,
   parseVersionFromInstallPath,
+  repairPluginLatest,
   samePath,
   updatedPluginConfig,
 }
