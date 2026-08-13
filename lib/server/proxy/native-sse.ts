@@ -739,7 +739,7 @@ function openAIUsageFromAnthropicStream(usage: unknown) {
     output_tokens: Number.isFinite(outputTokens) ? outputTokens : 0,
     total_tokens: totalInputTokens + (Number.isFinite(outputTokens) ? outputTokens : 0),
   }
-  if (Number.isFinite(cacheReadTokens) && cacheReadTokens > 0) {
+  if (usage.cache_read_input_tokens != null && Number.isFinite(cacheReadTokens)) {
     result.input_tokens_details = { cached_tokens: cacheReadTokens }
   }
   if (Number.isFinite(cacheCreationTokens) && cacheCreationTokens > 0) {
@@ -1131,7 +1131,7 @@ function openAIUsageFromGeminiStream(usage: unknown) {
         (Number.isFinite(outputTokens) ? outputTokens : 0),
   }
   const cachedTokens = Number(usage.cachedContentTokenCount ?? 0)
-  if (Number.isFinite(cachedTokens) && cachedTokens > 0) {
+  if (usage.cachedContentTokenCount != null && Number.isFinite(cachedTokens)) {
     result.input_tokens_details = { cached_tokens: cachedTokens }
   }
   return result

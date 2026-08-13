@@ -132,6 +132,7 @@ export interface TokenUsage {
   totalTokens?: number
   cachedInputTokens?: number
   cacheCreationInputTokens?: number
+  cacheUsageReported?: boolean
   reasoningTokens?: number
   upstreamCost?: TokenCost
 }
@@ -156,6 +157,9 @@ export interface TokenStatEntry {
   totalTokens: number
   cachedInputTokens: number
   cacheCreationInputTokens: number
+  cacheMeasuredCachedInputTokens: number
+  cacheMeasuredInputTokens: number
+  cacheMeasuredRequests: number
   reasoningTokens: number
   requestCount?: number
   aggregation?: TokenStatAggregation

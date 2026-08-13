@@ -759,6 +759,11 @@ function chatUsageToResponsesUsage(usage: unknown) {
     usage.cache_creation_input_tokens != null ||
     usage.cache_creation_5m_input_tokens != null ||
     usage.cache_creation_1h_input_tokens != null
+  const hasCacheUsageFields =
+    hasAnthropicCacheFields ||
+    usage.prompt_tokens_details?.cached_tokens != null ||
+    usage.input_tokens_details?.cached_tokens != null ||
+    usage.cachedContentTokenCount != null
   const inputTokens = hasAnthropicCacheFields
     ? (Number.isFinite(baseInputTokens) ? baseInputTokens : 0) +
       (Number.isFinite(cacheReadTokens) ? cacheReadTokens : 0) +
@@ -776,7 +781,7 @@ function chatUsageToResponsesUsage(usage: unknown) {
     output_tokens: Number.isFinite(outputTokens) ? outputTokens : 0,
     total_tokens: Number.isFinite(totalTokens) ? totalTokens : 0,
   }
-  if (cachedTokens > 0) {
+  if (hasCacheUsageFields && Number.isFinite(cachedTokens)) {
     result.input_tokens_details = { cached_tokens: cachedTokens }
   }
   if (Number.isFinite(cacheCreationTokens) && cacheCreationTokens > 0) {

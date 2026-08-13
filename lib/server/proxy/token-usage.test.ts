@@ -18,6 +18,7 @@ test("normalizes cache fields and explicit upstream cost", () => {
   })
 
   assert.equal(usage?.cachedInputTokens, 80)
+  assert.equal(usage?.cacheUsageReported, true)
   assert.equal(usage?.upstreamCost?.amount, 0.003252)
   assert.equal(usage?.upstreamCost?.currency, "CNY")
   assert.equal(
@@ -31,6 +32,37 @@ test("normalizes cache fields and explicit upstream cost", () => {
     })?.upstreamCost?.source,
     "upstream",
   )
+})
+
+test("distinguishes explicit zero cache hits from missing cache usage", () => {
+  const zeroHit = normalizeTokenUsage({
+    input_tokens: 100,
+    output_tokens: 20,
+    input_tokens_details: { cached_tokens: 0 },
+  })
+  const missing = normalizeTokenUsage({
+    input_tokens: 100,
+    output_tokens: 20,
+  })
+
+  assert.equal(zeroHit?.cachedInputTokens, 0)
+  assert.equal(zeroHit?.cacheUsageReported, true)
+  assert.equal(missing?.cachedInputTokens, undefined)
+  assert.equal(missing?.cacheUsageReported, false)
+})
+
+test("treats Anthropic cache creation fields as an explicit zero cache hit", () => {
+  const usage = normalizeTokenUsage({
+    input_tokens: 20,
+    output_tokens: 5,
+    cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 80,
+  })
+
+  assert.equal(usage?.inputTokens, 100)
+  assert.equal(usage?.cachedInputTokens, 0)
+  assert.equal(usage?.cacheCreationInputTokens, 80)
+  assert.equal(usage?.cacheUsageReported, true)
 })
 
 test("records first meaningful Responses output time", () => {

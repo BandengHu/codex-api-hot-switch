@@ -126,6 +126,10 @@ function normalizeTokenStat(value: unknown): TokenStatEntry | null {
     totalTokens: Number(entry.totalTokens),
     cachedInputTokens: Number(entry.cachedInputTokens) || 0,
     cacheCreationInputTokens: Number(entry.cacheCreationInputTokens) || 0,
+    cacheMeasuredCachedInputTokens:
+      Number(entry.cacheMeasuredCachedInputTokens) || 0,
+    cacheMeasuredInputTokens: Number(entry.cacheMeasuredInputTokens) || 0,
+    cacheMeasuredRequests: Number(entry.cacheMeasuredRequests) || 0,
     reasoningTokens: Number(entry.reasoningTokens) || 0,
     requestCount:
       Number.isFinite(entry.requestCount) && Number(entry.requestCount) >= 1

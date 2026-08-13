@@ -70,6 +70,9 @@ function addEntry(
       totalTokens: entry.totalTokens,
       cachedInputTokens: entry.cachedInputTokens,
       cacheCreationInputTokens: entry.cacheCreationInputTokens,
+      cacheMeasuredCachedInputTokens: entry.cacheMeasuredCachedInputTokens,
+      cacheMeasuredInputTokens: entry.cacheMeasuredInputTokens,
+      cacheMeasuredRequests: entry.cacheMeasuredRequests,
       reasoningTokens: entry.reasoningTokens,
       requestCount: tokenStatRequestCount(entry),
       aggregation,
@@ -81,6 +84,9 @@ function addEntry(
   current.totalTokens += entry.totalTokens
   current.cachedInputTokens += entry.cachedInputTokens
   current.cacheCreationInputTokens += entry.cacheCreationInputTokens
+  current.cacheMeasuredCachedInputTokens += entry.cacheMeasuredCachedInputTokens
+  current.cacheMeasuredInputTokens += entry.cacheMeasuredInputTokens
+  current.cacheMeasuredRequests += entry.cacheMeasuredRequests
   current.reasoningTokens += entry.reasoningTokens
   current.requestCount = tokenStatRequestCount(current) + tokenStatRequestCount(entry)
   if (

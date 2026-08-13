@@ -104,6 +104,15 @@ export function normalizeTokenUsage(value: unknown): TokenUsage | undefined {
     value.cache_creation_5m_input_tokens,
     value.cache_creation_1h_input_tokens,
   )
+  const cacheUsageReported = Boolean(
+    value.input_tokens_details?.cached_tokens != null ||
+      value.prompt_tokens_details?.cached_tokens != null ||
+      value.cachedContentTokenCount != null ||
+      value.cache_read_input_tokens != null ||
+      value.cache_creation_input_tokens != null ||
+      value.cache_creation_5m_input_tokens != null ||
+      value.cache_creation_1h_input_tokens != null,
+  )
   const rawAnthropicCacheFields =
     (value.cache_read_input_tokens != null ||
       value.cache_creation_input_tokens != null ||
@@ -144,6 +153,7 @@ export function normalizeTokenUsage(value: unknown): TokenUsage | undefined {
     totalTokens,
     cachedInputTokens,
     cacheCreationInputTokens,
+    cacheUsageReported,
     reasoningTokens,
     upstreamCost,
   }

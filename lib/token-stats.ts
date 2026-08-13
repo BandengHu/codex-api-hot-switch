@@ -6,6 +6,9 @@ export interface TokenTotals {
   totalTokens: number
   cachedInputTokens: number
   cacheCreationInputTokens: number
+  cacheMeasuredCachedInputTokens: number
+  cacheMeasuredInputTokens: number
+  cacheMeasuredRequests: number
   reasoningTokens: number
   requests: number
 }
@@ -17,6 +20,9 @@ export function emptyTokenTotals(): TokenTotals {
     totalTokens: 0,
     cachedInputTokens: 0,
     cacheCreationInputTokens: 0,
+    cacheMeasuredCachedInputTokens: 0,
+    cacheMeasuredInputTokens: 0,
+    cacheMeasuredRequests: 0,
     reasoningTokens: 0,
     requests: 0,
   }
@@ -44,6 +50,13 @@ export function tokenStatFromLog(
     totalTokens: tokenUsageTotal(log.tokenUsage),
     cachedInputTokens: log.tokenUsage.cachedInputTokens ?? 0,
     cacheCreationInputTokens: log.tokenUsage.cacheCreationInputTokens ?? 0,
+    cacheMeasuredCachedInputTokens:
+      log.tokenUsage.cacheUsageReported === true
+        ? (log.tokenUsage.cachedInputTokens ?? 0)
+        : 0,
+    cacheMeasuredInputTokens:
+      log.tokenUsage.cacheUsageReported === true ? (log.tokenUsage.inputTokens ?? 0) : 0,
+    cacheMeasuredRequests: log.tokenUsage.cacheUsageReported === true ? 1 : 0,
     reasoningTokens: log.tokenUsage.reasoningTokens ?? 0,
     requestCount: 1,
     aggregation: "request",
@@ -64,6 +77,11 @@ export function addTokenEntry(total: TokenTotals, entry: TokenStatEntry): TokenT
     cachedInputTokens: total.cachedInputTokens + entry.cachedInputTokens,
     cacheCreationInputTokens:
       total.cacheCreationInputTokens + entry.cacheCreationInputTokens,
+    cacheMeasuredCachedInputTokens:
+      total.cacheMeasuredCachedInputTokens + entry.cacheMeasuredCachedInputTokens,
+    cacheMeasuredInputTokens:
+      total.cacheMeasuredInputTokens + entry.cacheMeasuredInputTokens,
+    cacheMeasuredRequests: total.cacheMeasuredRequests + entry.cacheMeasuredRequests,
     reasoningTokens: total.reasoningTokens + entry.reasoningTokens,
     requests: total.requests + tokenStatRequestCount(entry),
   }
@@ -71,6 +89,17 @@ export function addTokenEntry(total: TokenTotals, entry: TokenStatEntry): TokenT
 
 export function sumTokenStats(entries: TokenStatEntry[]): TokenTotals {
   return entries.reduce(addTokenEntry, emptyTokenTotals())
+}
+
+export function cacheHitRate(params: {
+  cachedInputTokens: number
+  cacheMeasuredInputTokens: number
+}) {
+  if (params.cacheMeasuredInputTokens <= 0) return undefined
+  return Math.max(
+    0,
+    Math.min(1, params.cachedInputTokens / params.cacheMeasuredInputTokens),
+  )
 }
 
 export function tokenStatsSince(

@@ -42,6 +42,7 @@ import { StatusCodeBadge, ReasoningBadge } from "@/components/status-badges"
 import { useConsole } from "@/lib/console-store"
 import { fetchRequestLogDetail } from "@/lib/console-api"
 import { formatDurationSeconds, formatTokenCount } from "@/lib/display-format"
+import { cacheHitRate } from "@/lib/token-stats"
 import type { RequestLog, RequestLogDetail } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { useResizableSheetWidth } from "@/components/views/use-resizable-sheet-width"
@@ -87,19 +88,41 @@ function formatUpstreamCost(log: RequestLog) {
   return currency ? `${currency} ${amount}` : amount
 }
 
+function formatCacheHitRate(log: RequestLog) {
+  const usage = log.tokenUsage
+  if (!usage || usage.cacheUsageReported !== true) return "未上报"
+  if ((usage.inputTokens ?? 0) <= 0) return "0.0%"
+  const rate = cacheHitRate({
+    cachedInputTokens: usage.cachedInputTokens ?? 0,
+    cacheMeasuredInputTokens: usage.inputTokens ?? 0,
+  })
+  return rate == null ? "—" : `${(rate * 100).toFixed(1)}%`
+}
+
 function TokenSummary({ log }: { log: RequestLog }) {
   const usage = log.tokenUsage
-  if (!usage) return <span>—</span>
+  if (!usage) {
+    return (
+      <div className="flex flex-col items-end gap-0.5">
+        <span>— / —</span>
+        <span className="whitespace-nowrap text-[11px] text-muted-foreground">
+          缓存 未上报
+        </span>
+      </div>
+    )
+  }
+  const cacheRate = formatCacheHitRate(log)
   return (
     <div className="flex flex-col items-end gap-0.5">
       <span>
         {formatTokenCount(usage.inputTokens)} / {formatTokenCount(usage.outputTokens)}
       </span>
-      {usage.cachedInputTokens != null && usage.cachedInputTokens > 0 ? (
-        <span className="text-[11px] text-muted-foreground">
-          缓存 ↓ {formatTokenCount(usage.cachedInputTokens)}
-        </span>
-      ) : null}
+      <span className="whitespace-nowrap text-[11px] text-muted-foreground">
+        缓存 {cacheRate}
+        {usage.cacheUsageReported === true && (usage.cachedInputTokens ?? 0) > 0
+          ? ` · ${formatTokenCount(usage.cachedInputTokens)}`
+          : ""}
+      </span>
     </div>
   )
 }
@@ -179,6 +202,23 @@ function TokenMetric({
       <div className="mt-1 font-mono text-sm tabular-nums">
         {formatTokenCount(value)}
       </div>
+    </div>
+  )
+}
+
+function TextMetric({
+  label,
+  value,
+  className,
+}: {
+  label: string
+  value: string
+  className?: string
+}) {
+  return (
+    <div className={cn("rounded-md border border-border px-3 py-2", className)}>
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-1 font-mono text-sm tabular-nums">{value}</div>
     </div>
   )
 }
@@ -613,24 +653,25 @@ export function LogsView() {
                 ) : null}
               </div>
 
-              <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
+              <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
                 <TokenMetric label="输入 tokens" value={selected.tokenUsage?.inputTokens} />
                 <TokenMetric label="输出 tokens" value={selected.tokenUsage?.outputTokens} />
                 <TokenMetric label="总 tokens" value={selected.tokenUsage?.totalTokens} />
+                <TextMetric
+                  label="缓存命中率"
+                  value={formatCacheHitRate(selected)}
+                />
                 <TokenMetric
                   label="缓存命中"
                   value={selected.tokenUsage?.cachedInputTokens}
-                  className="md:col-span-1"
                 />
                 <TokenMetric
                   label="缓存写入"
                   value={selected.tokenUsage?.cacheCreationInputTokens}
-                  className="md:col-span-1"
                 />
                 <TokenMetric
                   label="推理 tokens"
                   value={selected.tokenUsage?.reasoningTokens}
-                  className="md:col-span-1"
                 />
               </div>
 

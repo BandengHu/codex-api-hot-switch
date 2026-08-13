@@ -166,7 +166,7 @@ export function openAIUsageFromAnthropic(usage: unknown) {
     total_tokens: totalInputTokens + (Number.isFinite(outputTokens) ? outputTokens : 0),
     output_tokens_details: { reasoning_tokens: 0 },
   }
-  if (Number.isFinite(cacheReadTokens) && cacheReadTokens > 0) {
+  if (record.cache_read_input_tokens != null && Number.isFinite(cacheReadTokens)) {
     result.input_tokens_details = { cached_tokens: cacheReadTokens }
   }
   if (Number.isFinite(cacheCreationTokens) && cacheCreationTokens > 0) {
@@ -193,7 +193,7 @@ export function openAIUsageFromGemini(usage: unknown) {
     output_tokens_details: { reasoning_tokens: 0 },
   }
   const cachedTokens = Number(record.cachedContentTokenCount ?? 0)
-  if (Number.isFinite(cachedTokens) && cachedTokens > 0) {
+  if (record.cachedContentTokenCount != null && Number.isFinite(cachedTokens)) {
     result.input_tokens_details = { cached_tokens: cachedTokens }
   }
   return result

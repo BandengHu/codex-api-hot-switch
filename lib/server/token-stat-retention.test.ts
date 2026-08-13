@@ -23,6 +23,9 @@ function entry(
     totalTokens,
     cachedInputTokens: 0,
     cacheCreationInputTokens: 0,
+    cacheMeasuredCachedInputTokens: 0,
+    cacheMeasuredInputTokens: 0,
+    cacheMeasuredRequests: 0,
     reasoningTokens: 0,
     requestCount: 1,
     aggregation: "request",
@@ -31,13 +34,20 @@ function entry(
 }
 
 test("token compaction preserves totals beyond the recent request limit", () => {
-  const entries = Array.from({ length: 2005 }, (_, index) =>
-    entry(
+  const entries = Array.from({ length: 2005 }, (_, index) => {
+    const item = entry(
       index,
       index + 1,
       `2026-07-26T00:${String(index % 60).padStart(2, "0")}:00.000Z`,
-    ),
-  )
+    )
+    return {
+      ...item,
+      cachedInputTokens: index,
+      cacheMeasuredCachedInputTokens: index,
+      cacheMeasuredInputTokens: index + 1,
+      cacheMeasuredRequests: 1,
+    }
+  })
   const compacted = compactTokenStats(
     entries,
     Date.parse("2026-07-26T12:00:00.000Z"),
@@ -80,19 +90,37 @@ test("history rollups stay separate across reset eras", () => {
 
 test("reset filtering excludes previous rollup eras", () => {
   const currentReset = "2026-07-26T08:00:00.000Z"
+  const previous = {
+    ...entry(1, 100, "2026-01-01T00:00:00.000Z"),
+    cachedInputTokens: 90,
+    cacheMeasuredCachedInputTokens: 90,
+    cacheMeasuredInputTokens: 100,
+    cacheMeasuredRequests: 1,
+    aggregation: "history" as const,
+  }
+  const current = {
+    ...entry(2, 20, "2026-07-26T09:00:00.000Z"),
+    cachedInputTokens: 5,
+    cacheMeasuredCachedInputTokens: 5,
+    cacheMeasuredInputTokens: 20,
+    cacheMeasuredRequests: 1,
+    resetAt: currentReset,
+  }
   const compacted = compactTokenStats(
-    [
-      {
-        ...entry(1, 100, "2026-01-01T00:00:00.000Z"),
-        aggregation: "history",
-      },
-      {
-        ...entry(2, 20, "2026-07-26T09:00:00.000Z"),
-        resetAt: currentReset,
-      },
-    ],
+    [previous, current],
     Date.parse("2026-07-26T12:00:00.000Z"),
   )
 
-  assert.equal(sumTokenStats(tokenStatsSince(compacted, currentReset)).totalTokens, 20)
+  assert.deepEqual(sumTokenStats(tokenStatsSince(compacted, currentReset)), {
+    inputTokens: 20,
+    outputTokens: 0,
+    totalTokens: 20,
+    cachedInputTokens: 5,
+    cacheCreationInputTokens: 0,
+    cacheMeasuredCachedInputTokens: 5,
+    cacheMeasuredInputTokens: 20,
+    cacheMeasuredRequests: 1,
+    reasoningTokens: 0,
+    requests: 1,
+  })
 })

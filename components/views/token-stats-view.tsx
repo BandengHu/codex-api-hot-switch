@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { BarChart3, Coins, RotateCcw, TrendingUp } from "lucide-react"
+import { BarChart3, Coins, Gauge, RotateCcw, TrendingUp } from "lucide-react"
 import {
   Card,
   CardContent,
@@ -18,6 +18,7 @@ import {
   formatTokenCount,
 } from "@/lib/display-format"
 import {
+  cacheHitRate,
   sumTokenStats,
   tokenStatsSince,
 } from "@/lib/token-stats"
@@ -372,21 +373,13 @@ export function TokenStatsView() {
     [settings.tokenStatsResetAt, tokenStats],
   )
   const totals = useMemo(() => sumTokenStats(sinceReset), [sinceReset])
+  const totalCacheHitRate = cacheHitRate({
+    cachedInputTokens: totals.cacheMeasuredCachedInputTokens,
+    cacheMeasuredInputTokens: totals.cacheMeasuredInputTokens,
+  })
   const chartPoints = useMemo(
     () => buildChartPoints(sinceReset, range),
     [range, sinceReset],
-  )
-  const rangeTotals = useMemo(
-    () => ({
-      inputTokens: chartPoints.reduce((sum, point) => sum + point.inputTokens, 0),
-      outputTokens: chartPoints.reduce((sum, point) => sum + point.outputTokens, 0),
-      totalTokens: chartPoints.reduce((sum, point) => sum + point.totalTokens, 0),
-      cachedInputTokens: 0,
-      cacheCreationInputTokens: 0,
-      reasoningTokens: 0,
-      requests: chartPoints.reduce((sum, point) => sum + point.requests, 0),
-    }),
-    [chartPoints],
   )
 
   async function handleReset() {
@@ -455,16 +448,30 @@ export function TokenStatsView() {
         </Card>
         <Card className="gap-0 py-0">
           <CardHeader className="flex flex-row items-center justify-between px-4 pt-4">
-            <CardDescription className="text-xs">当前范围</CardDescription>
-            <BarChart3 className="size-4 text-muted-foreground" />
+            <CardDescription className="text-xs">缓存命中率</CardDescription>
+            <Gauge className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent className="px-4 pb-4 pt-1">
             <div className="font-mono text-2xl font-semibold tabular-nums">
-              {formatTokenCount(rangeTotals.totalTokens)}
+              {totals.cacheMeasuredRequests === 0
+                ? "未上报"
+                : `${((totalCacheHitRate ?? 0) * 100).toFixed(1)}%`}
             </div>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {RANGE_LABELS[range]}视图
-            </p>
+            {totals.cacheMeasuredRequests > 0 ? (
+              <>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  命中 {formatTokenCount(totals.cacheMeasuredCachedInputTokens)} / 可统计输入{" "}
+                  {formatTokenCount(totals.cacheMeasuredInputTokens)}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {formatIntegerCount(totals.cacheMeasuredRequests)} 次可统计请求
+                </p>
+              </>
+            ) : (
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                暂无上游缓存统计
+              </p>
+            )}
           </CardContent>
         </Card>
       </div>
