@@ -74,6 +74,12 @@ import {
   writeQwenResponsesStreamFallthroughDiagnostic,
 } from "./qwen-responses-diagnostics"
 import {
+  createDeepSeekResponsesReasoningStream,
+  isDeepSeekResponsesThinkingTarget,
+  normalizeDeepSeekResponsesPayload,
+  normalizeDeepSeekResponsesSseText,
+} from "./deepseek-responses-reasoning"
+import {
   toOpenAIChatFromAnthropic,
   toOpenAIResponseFromAnthropic,
 } from "./anthropic"
@@ -411,6 +417,7 @@ function transformResponse(
     const restored = built?.adapter?.type === "passthrough" && !target.provider.rawResponsesPassthrough
       ? restoreCompatibleResponsesToolCalls(payload, built.adapter.toolContext)
       : payload
+    normalizeDeepSeekResponsesPayload(restored, target)
     repairResponsesItemIdsInPayload(restored)
     const transformed = built?.adapter?.type === "passthrough"
       ? withResponseModel(restored, built.adapter.responseModelOverride || target.requestedModel)
@@ -714,7 +721,7 @@ async function maybeAdaptOpenAICompatibleStream(
 
   if (adapter.type === "chat_completions" && !adapter.stream) {
     const text = await upstream.text()
-    const repaired = transformResponsesSseText(text)
+    const repaired = transformResponsesSseText(normalizeDeepSeekResponsesSseText(text, target))
     const capture = extractFinalResponseFromSse(repaired.text)
     if (!capture.final) {
       const failed = responseFailedError(capture.failed, "上游没有返回完整 response.completed")
@@ -781,10 +788,13 @@ async function maybeAdaptOpenAICompatibleStream(
     statusCode: upstream.status,
     rewrittenBody: built.rewrittenBody,
   })
+  const normalizedSource = isDeepSeekResponsesThinkingTarget(target)
+    ? diagnosticSource.pipeThrough(createDeepSeekResponsesReasoningStream(target))
+    : diagnosticSource
 
   const stream =
     adapter.type === "chat_completions"
-      ? diagnosticSource
+      ? normalizedSource
           .pipeThrough(createResponsesSseRepairStream({
             synthesizeFinalOnStreamEnd: true,
           }))
@@ -794,7 +804,7 @@ async function maybeAdaptOpenAICompatibleStream(
               adapter.reverseToolNameMap,
             ),
           )
-      : diagnosticSource.pipeThrough(
+      : normalizedSource.pipeThrough(
           createResponsesSseRepairStream({
             modelOverride: adapter.responseModelOverride,
             synthesizeFinalOnStreamEnd: true,
