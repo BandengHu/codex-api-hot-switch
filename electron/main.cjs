@@ -82,7 +82,13 @@ function isDevelopment() {
 function appRoot() {
   return isDevelopment()
     ? path.resolve(__dirname, "..")
-    : path.resolve(process.resourcesPath, "app")
+    : path.resolve(process.resourcesPath, "app.asar", "server")
+}
+
+// Next 生成的 server.js 会自己 process.chdir(__dirname)，但 CreateProcess 的工作目录必须是真实目录，
+// asar 路径不是目录，所以子进程 cwd 固定指向解包出来的真实 server 目录。
+function packagedServerCwd() {
+  return path.resolve(process.resourcesPath, "app.asar.unpacked", "server")
 }
 
 function preloadPath() {
@@ -356,7 +362,9 @@ function startDevServer() {
 function startPackagedServer() {
   const root = appRoot()
   const runtime = currentRuntime()
-  const serverFile = path.join(root, "server.js")
+  // server.js 必须从解包后的真实路径拉起：它自己会 process.chdir(__dirname)，asar 路径无法 chdir。
+  // vendor 仍留在 app.asar 内，通过 NODE_PATH 解析（已实测可 require）。
+  const serverFile = path.join(packagedServerCwd(), "server.js")
   const vendorPath = path.join(root, "vendor")
   if (!existsSync(serverFile)) {
     throw new Error(`缺少 Next 服务文件：${serverFile}`)
@@ -365,7 +373,7 @@ function startPackagedServer() {
     throw new Error(`缺少 Next 服务依赖目录：${vendorPath}`)
   }
   serverProcess = spawn(process.execPath, [...SERVER_NODE_OPTIONS, serverFile], {
-    cwd: root,
+    cwd: packagedServerCwd(),
     env: {
       ...process.env,
       ELECTRON_RUN_AS_NODE: "1",

@@ -3,12 +3,13 @@ const path = require("node:path")
 
 const root = path.resolve(__dirname, "..")
 const standaloneDir = path.join(root, ".next", "standalone")
-const electronServerDir = path.join(root, ".electron-server")
 const electronShellDir = path.join(root, ".electron-shell")
+// 服务端运行时放进 Electron 应用目录，由 electron-builder 打进单个 app.asar：
+// 安装包从一万多个散文件降到几百个，NSIS 的逐文件解压与杀软逐文件扫描开销随之消失。
+const electronServerDir = path.join(electronShellDir, "server")
 
 const tracedBuildArtifacts = [
   ".data",
-  ".electron-server",
   ".electron-shell",
   ".tmp",
   "dist",
@@ -307,9 +308,38 @@ async function pruneNonRuntimeFiles(dir) {
   }
 }
 
+// 留在 app.asar 内的大树：只剩纯 JS 依赖树，它只经由 require / NODE_PATH 解析（已实测可用）。
+// 会跨进程的东西——Next 入口、被 esbuild 读取的 TS、被 spawn 的 esbuild/ffprobe、脚本与 public——都必须真身落盘。
+const INTENTIONALLY_PACKED_SERVER_ENTRIES = new Set(["vendor"])
+
+// Next 生成的 server.js 会 process.chdir(__dirname) 并按相对路径读 .next，asar 内 chdir 会 ENOENT。
+// 所以凡是需要真实路径的条目都必须在 package.json 的 asarUnpack 中登记，这里做显式校验。
+async function assertServerUnpackCoverage() {
+  const pkg = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"))
+  const patterns = pkg.build?.asarUnpack || []
+  const uncovered = []
+  for (const entry of await fs.readdir(electronServerDir, { withFileTypes: true })) {
+    const name = entry.name
+    if (INTENTIONALLY_PACKED_SERVER_ENTRIES.has(name)) continue
+    const relative = `server/${name}`
+    const covered = patterns.some((pattern) =>
+      pattern === relative ||
+      pattern === `${relative}/**` ||
+      (pattern === "server/*.*" && !entry.isDirectory()),
+    )
+    if (!covered) uncovered.push(relative)
+  }
+  if (uncovered.length > 0) {
+    throw new Error(
+      `server/ 出现未登记为 asarUnpack 的条目：${uncovered.join(", ")}\n` +
+      "installer 需要这些条目是真实文件；若可留在 app.asar 内，请加入 INTENTIONALLY_PACKED_SERVER_ENTRIES。",
+    )
+  }
+}
+
 async function main() {
-  await fs.rm(electronServerDir, { recursive: true, force: true })
   await fs.rm(electronShellDir, { recursive: true, force: true })
+  await fs.mkdir(electronShellDir, { recursive: true })
 
   if (!(await exists(path.join(standaloneDir, "server.js")))) {
     throw new Error("缺少 .next/standalone/server.js，请先运行 next build")
@@ -358,6 +388,7 @@ async function main() {
   )
   await restoreTsxRuntimeDependencies(path.join(electronServerDir, "vendor"))
   await prunePackagedVendor(path.join(electronServerDir, "vendor"))
+  await assertServerUnpackCoverage()
 
   await copyDir(path.join(root, "electron"), path.join(electronShellDir, "electron"))
   await fs.mkdir(path.join(electronShellDir, "node_modules"), { recursive: true })

@@ -64,22 +64,24 @@
     },
     "files": [
       "electron/**/*",
-      "!node_modules/**/*",
-      "!**/node_modules/**/*",
-      "package.json"
+      "server/**/*",
+      "package.json",
+      "!node_modules/**/*"
     ],
-    "asarUnpack": [],
-    "extraResources": [
-      {
-        "from": ".electron-server",
-        "to": "app",
-        "filter": [
-          "**",
-          "**/*",
-          "vendor/**",
-          "!.data/**"
-        ]
-      }
+    "asarUnpack": [
+      "server/.next/**",
+      "server/app/**",
+      "server/components/**",
+      "server/electron/**",
+      "server/integrations/**",
+      "server/lib/**",
+      "server/public/**",
+      "server/scripts/**",
+      "server/vendor/tsx/**",
+      "server/*.*",
+      "**/*.node",
+      "**/*.dll",
+      "**/*.exe"
     ],
     "electronDist": "node_modules/electron/dist",
     "electronVersion": "42.4.0",
