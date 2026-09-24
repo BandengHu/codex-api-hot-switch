@@ -1,7 +1,12 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { foldChatSsePayload, parseChatSseFrames } from "./chat-sse-fold"
+import {
+  chatToolDeltaHasContent,
+  chatToolDeltas,
+  foldChatSsePayload,
+  parseChatSseFrames,
+} from "./chat-sse-fold"
 
 function chunk(payload: Record<string, unknown>) {
   return `data: ${JSON.stringify(payload)}\n\n`
@@ -100,4 +105,65 @@ test("帧解析保留事件名并跳过空帧", () => {
   assert.deepEqual(parseChatSseFrames("event: response.output_text.delta\ndata: {\"a\":1}\n\n\n\n"), [
     { event: "response.output_text.delta", payload: "{\"a\":1}" },
   ])
+})
+
+test("空工具占位符不算工具边界", () => {
+  // WorkBuddy 每帧都带 tool_calls:[] 和 function_call:null，把它们当工具调用
+  // 会让推理在第一个 delta 就被收尾，客户端只剩前几个字。
+  assert.equal(chatToolDeltaHasContent([]), false)
+  assert.equal(chatToolDeltaHasContent(null), false)
+  assert.equal(chatToolDeltaHasContent({}), false)
+  assert.equal(chatToolDeltaHasContent({ id: "call_1", function: { name: "", arguments: "" } }), false)
+
+  const placeholder = {
+    tool_calls: [],
+    function_call: null,
+    reasoning_content: "第一段",
+    content: "",
+  }
+  assert.deepEqual(chatToolDeltas(placeholder), [])
+
+  const real = {
+    tool_calls: [
+      { index: 0, id: "call_1", type: "function", function: { name: "get_weather", arguments: "" } },
+    ],
+  }
+  assert.deepEqual(chatToolDeltas(real), [
+    { position: 0, value: real.tool_calls[0] },
+  ])
+
+  // 单数形态的旧字段统一包成带 index 的形态。
+  assert.deepEqual(chatToolDeltas({ function_call: { name: "get_time", arguments: "{}" } }), [
+    {
+      position: 0,
+      value: { index: 0, id: undefined, type: "function", function: { name: "get_time", arguments: "{}" } },
+    },
+  ])
+})
+
+test("折叠时忽略空工具占位符，只收真工具调用", () => {
+  const folded = foldChatSsePayload(
+    chunk({
+      id: "cmb-1",
+      model: "glm-5.3-flash",
+      choices: [{
+        index: 0,
+        delta: { reasoning_content: "先想", tool_calls: [], function_call: null, content: "" },
+      }],
+    }) +
+      chunk({
+        id: "cmb-1",
+        model: "glm-5.3-flash",
+        choices: [{ index: 0, delta: { reasoning_content: "再想", tool_calls: [], content: "好" } }],
+      }) +
+      chunk({
+        id: "cmb-1",
+        model: "glm-5.3-flash",
+        choices: [{ index: 0, delta: { function_call: { name: "", arguments: "" }, content: "" }, finish_reason: "stop" }],
+      }) +
+      "data: [DONE]\n\n",
+  ) as Record<string, any>
+  assert.equal(folded.choices[0].message.reasoning_content, "先想再想")
+  assert.equal(folded.choices[0].message.content, "好")
+  assert.equal(folded.choices[0].message.tool_calls, undefined)
 })

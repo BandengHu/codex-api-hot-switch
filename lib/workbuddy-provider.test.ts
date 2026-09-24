@@ -5,9 +5,9 @@ import type { Model, Provider } from "@/lib/types"
 import {
   WORKBUDDY_CREDENTIAL_PLACEHOLDER,
   WORKBUDDY_PROVIDER_ID,
+  WORKBUDDY_SEED_STATE_VERSION,
   isWorkbuddyProvider,
-  mergeWorkbuddyModels,
-  mergeWorkbuddyProvider,
+  seedWorkbuddyBuiltin,
   workbuddyCatalogModels,
   workbuddyCatalogUrl,
   workbuddyPresetModels,
@@ -94,42 +94,52 @@ test("目录里只保留能走 chat 接口的模型", () => {
   assert.deepEqual(workbuddyCatalogModels({ data: {} }), [])
 })
 
-test("内置供应商不随状态消失，结构字段以代码为准", () => {
+test("老数据里没有内置供应商时补一份模板和内置模型", () => {
   const other = { id: "prov-openai" } as Provider
-  const added = mergeWorkbuddyProvider([other])
-  assert.equal(added.length, 2)
-  assert.equal(added[1].id, WORKBUDDY_PROVIDER_ID)
+  const seeded = seedWorkbuddyBuiltin([other], [], 2)
 
-  const tampered = workbuddyProviderTemplate()
-  tampered.endpoints[0].baseUrl = "https://evil.example/v1"
-  tampered.endpoints[0].apiKey = "sk-user-typed"
-  tampered.enabled = false
-  tampered.reasoningDialect = "none"
-  const merged = mergeWorkbuddyProvider([other, tampered])
-  assert.equal(merged[1].id, WORKBUDDY_PROVIDER_ID)
-  assert.equal(merged[1].endpoints[0].baseUrl, "https://www.codebuddy.cn/v2")
-  assert.equal(merged[1].endpoints[0].apiKey, WORKBUDDY_CREDENTIAL_PLACEHOLDER)
-  assert.equal(merged[1].reasoningDialect, "workbuddy-effort")
-  assert.equal(merged[1].enabled, false)
+  assert.equal(seeded.providers.length, 2)
+  assert.equal(seeded.providers[1].id, WORKBUDDY_PROVIDER_ID)
+  assert.equal(seeded.providers[1].endpoints[0].baseUrl, "https://www.codebuddy.cn/v2")
+  assert.equal(
+    seeded.providers[1].endpoints[0].apiKey,
+    WORKBUDDY_CREDENTIAL_PLACEHOLDER,
+  )
+  assert.equal(seeded.providers[1].reasoningDialect, "workbuddy-effort")
+  assert.equal(seeded.models.length, workbuddyPresetModels().length)
 })
 
-test("内置模型名单由代码说了算，用户开关和额外模型保留", () => {
-  const presets = workbuddyPresetModels()
-  const first = presets[0]
-  const disabled: Model = { ...first, id: "m-user-renamed", enabled: false }
-  const extra: Model = {
-    ...first,
-    id: "m-discovered-1",
-    displayName: "GLM 4.7",
-    modelId: "glm-4.7",
-    contextLength: 200_000,
-  }
-  const merged = mergeWorkbuddyModels([disabled, extra])
+test("用户删掉、改坏或停用内置供应商之后不再被强行改回来", () => {
+  const tampered = workbuddyProviderTemplate()
+  tampered.endpoints[0].baseUrl = "https://mirror.example/v1"
+  tampered.enabled = false
+  const seeded = seedWorkbuddyBuiltin([tampered], [], 2)
 
-  assert.equal(merged.length, presets.length + 1)
-  const restored = merged.find((model) => model.modelId === first.modelId)
-  assert.equal(restored?.id, "m-user-renamed")
-  assert.equal(restored?.enabled, false)
-  assert.equal(restored?.reasoningDialect, "workbuddy-effort")
-  assert.ok(merged.some((model) => model.modelId === "glm-4.7"))
+  // 供应商还在状态里（哪怕被改过），就原样保留，不按代码归位。
+  assert.equal(seeded.providers.length, 1)
+  assert.equal(seeded.providers[0].endpoints[0].baseUrl, "https://mirror.example/v1")
+  assert.equal(seeded.providers[0].enabled, false)
+})
+
+test("内置模型删掉之后不再被强行塞回来", () => {
+  const presets = workbuddyPresetModels()
+  const kept = presets.slice(0, 3)
+  const seeded = seedWorkbuddyBuiltin([workbuddyProviderTemplate()], kept, 2)
+
+  assert.equal(seeded.models.length, 3)
+  assert.deepEqual(
+    seeded.models.map((model) => model.modelId),
+    kept.map((model) => model.modelId),
+  )
+})
+
+test("铺底版本之后，用户删光内置供应商和模型都不会复活", () => {
+  const version = WORKBUDDY_SEED_STATE_VERSION
+  const deleted = seedWorkbuddyBuiltin([{ id: "prov-openai" } as Provider], [], version)
+  assert.equal(deleted.providers.some((p) => p.id === WORKBUDDY_PROVIDER_ID), false)
+  assert.deepEqual(deleted.models, [])
+
+  const emptied = seedWorkbuddyBuiltin([workbuddyProviderTemplate()], [], version)
+  assert.deepEqual(emptied.models, [])
+  assert.equal(emptied.providers.length, 1)
 })

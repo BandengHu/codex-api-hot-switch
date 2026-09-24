@@ -13,6 +13,40 @@ function safeTrim(value: unknown) {
   return typeof value === "string" ? value.trim() : ""
 }
 
+/**
+ * 上游会把空的工具占位符原样带进每一帧：`"tool_calls": []`、`"function_call": null`，
+ * WorkBuddy 甚至连 `{"name":"","arguments":""}` 这种空壳都在每帧带上。
+ * 只有真带出名字或参数才算「这一帧在调用工具」，否则把空数组当工具边界会让推理
+ * 在第一个 delta 就被收尾，客户端只留前几个字。
+ */
+export function chatToolDeltaHasContent(value: unknown) {
+  if (!isObject(value)) return false
+  const fn = isObject(value.function) ? value.function : value
+  return Boolean(safeTrim(fn.name) || safeTrim(fn.arguments))
+}
+
+/**
+ * 取出这一帧真正要合并的工具调用增量，保留它在原数组里的下标作为兜底索引。
+ * `function_call` 是单数形式的旧字段，统一包装成带 index 的形态。
+ */
+export function chatToolDeltas(payload: AnyRecord) {
+  const deltas: Array<{ position: number; value: AnyRecord }> = []
+  if (Array.isArray(payload.tool_calls)) {
+    payload.tool_calls.forEach((entry, position) => {
+      if (chatToolDeltaHasContent(entry)) deltas.push({ position, value: entry })
+    })
+    return deltas
+  }
+  if (chatToolDeltaHasContent(payload.function_call)) {
+    const fn = payload.function_call as AnyRecord
+    deltas.push({
+      position: 0,
+      value: { index: 0, id: fn.id, type: "function", function: fn },
+    })
+  }
+  return deltas
+}
+
 /** 一帧一帧地读 SSE 文本，只保留带 data 的帧。 */
 export function parseChatSseFrames(text: string): ChatSseFrame[] {
   return String(text || "")
@@ -100,11 +134,10 @@ export function foldChatSsePayload(payload: unknown): unknown {
       if (chunkReasoning) reasoning.push(chunkReasoning)
       const chunkContent = deltaText(delta.content)
       if (chunkContent) content.push(chunkContent)
-      for (const rawCall of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) {
-        if (!isObject(rawCall)) continue
+      for (const { position, value: rawCall } of chatToolDeltas(delta)) {
         const index = Number.isFinite(Number(rawCall.index))
           ? Number(rawCall.index)
-          : toolCalls.size
+          : position
         const current = toolCalls.get(index) ?? { id: "", name: "", arguments: "" }
         current.id = safeTrim(rawCall.id) || current.id
         const fn = isObject(rawCall.function) ? rawCall.function : {}

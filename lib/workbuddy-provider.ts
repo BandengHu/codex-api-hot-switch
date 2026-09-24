@@ -189,53 +189,27 @@ export function workbuddyPresetModels(): Model[] {
 }
 
 /**
- * 把内置供应商并回状态。
+ * 内置供应商与内置模型的铺底版本。
  *
- * 结构字段（地址、协议、超时、方言）每次都以代码为准：这些是上游约束，用户改坏只会
- * 让请求失败。用户自己的开关（`enabled`、模型 `enabled`）保留。
+ * 早于它的状态（老数据）补一次内置供应商和内置模型；从它开始，状态里存的是什么就是
+ * 什么——用户删掉、停用、改地址都算数，不再被代码改回来。
  */
-export function mergeWorkbuddyProvider(providers: Provider[]): Provider[] {
-  const stored = providers.find((provider) => provider.id === WORKBUDDY_PROVIDER_ID)
-  const template = workbuddyProviderTemplate()
-  if (!stored) return [...providers, template]
-  const merged: Provider = {
-    ...template,
-    enabled: stored.enabled !== false,
-    health: stored.health === "down" || stored.health === "degraded"
-      ? stored.health
-      : template.health,
-    healthMessage: stored.healthMessage,
-  }
-  const index = providers.findIndex((provider) => provider.id === WORKBUDDY_PROVIDER_ID)
-  return providers.map((provider, position) => (position === index ? merged : provider))
-}
+export const WORKBUDDY_SEED_STATE_VERSION = 3
 
-export function mergeWorkbuddyModels(models: Model[]): Model[] {
-  const presets = workbuddyPresetModels()
-  const stored = new Map(
-    models
-      .filter((model) => model.providerId === WORKBUDDY_PROVIDER_ID)
-      .map((model) => [model.modelId, model]),
+export function seedWorkbuddyBuiltin(
+  providers: Provider[],
+  models: Model[],
+  stateVersion: number,
+): { providers: Provider[]; models: Model[] } {
+  if (stateVersion >= WORKBUDDY_SEED_STATE_VERSION) return { providers, models }
+  const hasProvider = providers.some(
+    (provider) => provider.id === WORKBUDDY_PROVIDER_ID,
   )
-  const merged = presets.map((preset) => {
-    const previous = stored.get(preset.modelId)
-    return {
-      ...preset,
-      id: previous?.id ?? preset.id,
-      enabled: previous ? previous.enabled !== false : preset.enabled,
-    }
-  })
-  const presetModelIds = new Set(presets.map((preset) => preset.modelId))
-  // 「获取模型」拉回来的额外模型留在状态里，只有内置名单由代码说了算。
-  const extra = models.filter(
-    (model) =>
-      model.providerId === WORKBUDDY_PROVIDER_ID && !presetModelIds.has(model.modelId),
-  )
-  return [
-    ...models.filter((model) => model.providerId !== WORKBUDDY_PROVIDER_ID),
-    ...merged,
-    ...extra,
-  ]
+  if (hasProvider) return { providers, models }
+  return {
+    providers: [...providers, workbuddyProviderTemplate()],
+    models: [...models, ...workbuddyPresetModels()],
+  }
 }
 
 /**

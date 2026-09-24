@@ -13,8 +13,7 @@ import { initialSnapshot } from "@/lib/mock-data"
 import { isChatModel, isImageGenerationModel } from "@/lib/model-capabilities"
 import { createProviderEndpoint } from "@/lib/provider-endpoints"
 import {
-  mergeWorkbuddyModels,
-  mergeWorkbuddyProvider,
+  seedWorkbuddyBuiltin,
 } from "@/lib/workbuddy-provider"
 import {
   getProviderEndpointRuntimeStates,
@@ -59,7 +58,8 @@ function defaultDataDir() {
 
 const DATA_DIR = process.env.CODEX_HOT_SWITCH_DATA_DIR || defaultDataDir()
 const STATE_PATH = join(DATA_DIR, "hot-switch-state.json")
-const STATE_VERSION = 2
+// 3 起内置供应商与内置模型只在升级那一次铺一遍，之后用户增删都算数。
+const STATE_VERSION = 3
 
 let writeQueue: Promise<unknown> = Promise.resolve()
 let snapshotCache: ConsoleSnapshot | null = null
@@ -378,17 +378,18 @@ function sortBuiltInModels(models: Model[]) {
 
 function normalizeSnapshot(value: Partial<ConsoleSnapshot>): ConsoleSnapshot {
   const seed = cloneSnapshot(initialSnapshot)
-  // 内置供应商（WorkBuddy 本机账号）不随状态消失：老数据里没有就补上，被改坏就按代码归位。
-  const providers = mergeWorkbuddyProvider(
+  // 内置供应商（WorkBuddy 本机账号）只在老数据里没有它时补一次，之后用户增删都算数。
+  const seeded = seedWorkbuddyBuiltin(
     Array.isArray(value.providers)
       ? value.providers.map(normalizeProvider)
       : seed.providers,
-  )
-  const models = sortBuiltInModels(
-    mergeWorkbuddyModels(
+    sortBuiltInModels(
       Array.isArray(value.models) ? value.models.map(normalizeModel) : seed.models,
     ),
+    Number(value.version) || 0,
   )
+  const providers = seeded.providers
+  const models = seeded.models
   const settings = normalizeSettings(value.settings ?? {}, seed.settings)
   const enabledProviderIds = new Set(
     providers.filter((provider) => provider.enabled).map((provider) => provider.id),

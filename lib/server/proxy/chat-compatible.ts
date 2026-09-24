@@ -30,7 +30,7 @@ import {
   canonicalToolArgumentsString,
 } from "./json-canonical"
 import { lastCompleteSseFrameBoundary } from "./sse-frame"
-import { parseChatSseFrames } from "./chat-sse-fold"
+import { chatToolDeltas, parseChatSseFrames } from "./chat-sse-fold"
 import { isWorkbuddyProvider } from "@/lib/workbuddy-provider"
 import {
   enrichCodexChatRequest,
@@ -222,6 +222,19 @@ function extractChatReasoningText(value: unknown): string {
   if (!isObject(value)) return ""
   const direct = safeTrim(value.reasoning_content)
   if (direct) return direct
+  return extractReasoningFields(value)
+}
+
+/**
+ * 流式推理增量必须原样保留，不能 trim。
+ *
+ * 上游按 token 逐片发，空格经常单独成帧或者挂在片头（`"Simple question"` 会切成
+ * `"Simple"` + `" question"`），trim 之后就会粘成 `"Simplequestion"`。
+ * 这里只认字段在不在：空串表示这一帧没有推理内容，纯空格则是一份真实内容。
+ */
+function extractChatReasoningDelta(value: unknown): string {
+  if (!isObject(value)) return ""
+  if (typeof value.reasoning_content === "string") return value.reasoning_content
   return extractReasoningFields(value)
 }
 
@@ -1346,16 +1359,12 @@ function applyChatSseFullMessageSnapshot(
   }
 
   const toolContext = deserializeToolContext(serializedContext)
-  const toolCalls = Array.isArray(payload.tool_calls)
-    ? payload.tool_calls
-    : isObject(payload.function_call)
-      ? [{ index: 0, id: payload.function_call.id, type: "function", function: payload.function_call }]
-      : []
-  if (toolCalls.length > 0) {
+  const toolDeltas = chatToolDeltas(payload)
+  if (toolDeltas.length > 0) {
     out += flushChatSseInlineThinkAtBoundary(state)
     out += finalizeChatSseReasoning(state)
-    for (const [position, toolCall] of toolCalls.entries()) {
-      out += mergeChatSseToolCallDelta(state, toolCall, position, toolContext, {
+    for (const { position, value } of toolDeltas) {
+      out += mergeChatSseToolCallDelta(state, value, position, toolContext, {
         replaceArguments: true,
       })
     }
@@ -1664,7 +1673,7 @@ function chatSseTextToResponsesSse(
       continue
     }
     if (isFullMessage) resetChatSseAccumulatedOutput(state)
-    const reasoning = extractChatReasoningText(payload)
+    const reasoning = extractChatReasoningDelta(payload)
     if (reasoning) {
       out += pushChatSseReasoningDelta(state, reasoning)
     }
@@ -1672,23 +1681,14 @@ function chatSseTextToResponsesSse(
     if (content) {
       out += pushChatSseContentDelta(state, content)
     }
-    if (Array.isArray(payload.tool_calls)) {
+    const toolDeltas = chatToolDeltas(payload)
+    if (toolDeltas.length > 0) {
       out += flushChatSseInlineThinkAtBoundary(state)
       out += finalizeChatSseReasoning(state)
       const toolContext = deserializeToolContext(serializedContext)
-      for (const [position, toolCall] of payload.tool_calls.entries()) {
-        out += mergeChatSseToolCallDelta(state, toolCall, position, toolContext)
+      for (const { position, value } of toolDeltas) {
+        out += mergeChatSseToolCallDelta(state, value, position, toolContext)
       }
-    } else if (isObject(payload.function_call)) {
-      out += flushChatSseInlineThinkAtBoundary(state)
-      out += finalizeChatSseReasoning(state)
-      const toolContext = deserializeToolContext(serializedContext)
-      out += mergeChatSseToolCallDelta(
-        state,
-        { index: 0, id: payload.function_call.id, type: "function", function: payload.function_call },
-        0,
-        toolContext,
-      )
     }
     if (!state.finishReason && choice.finish_reason) state.finishReason = safeTrim(choice.finish_reason)
   }
