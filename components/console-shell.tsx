@@ -12,6 +12,7 @@ import { LogsView } from "@/components/views/logs-view"
 import { CodexDesktopView } from "@/components/views/codex-desktop-view"
 import { CodexSessionsView } from "@/components/views/codex-sessions-view"
 import { WecomBridgeView } from "@/components/views/wecom-bridge-view"
+import { WorkbuddyPoolView } from "@/components/views/workbuddy-pool-view"
 import { SettingsView } from "@/components/views/settings-view"
 import { McpView } from "@/components/views/mcp-view"
 
@@ -60,6 +61,7 @@ export function ConsoleShell({
             {view === "mcp" ? <McpView /> : null}
             {view === "codex-sessions" ? <CodexSessionsView /> : null}
             {view === "wecom-bridge" ? <WecomBridgeView /> : null}
+            {view === "workbuddy-pool" ? <WorkbuddyPoolView /> : null}
             {view === "settings" ? <SettingsView /> : null}
           </div>
         </main>

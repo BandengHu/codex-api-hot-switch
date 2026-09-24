@@ -13,6 +13,7 @@ const VIEW_KEYS = new Set<ViewKey>([
   "logs",
   "codex-sessions",
   "wecom-bridge",
+  "workbuddy-pool",
   "settings",
 ])
 

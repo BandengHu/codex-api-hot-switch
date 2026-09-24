@@ -9,6 +9,7 @@ import {
   MessagesSquare,
   MonitorCog,
   Network,
+  Users,
   Zap,
   ScrollText,
   Settings as SettingsIcon,
@@ -26,6 +27,7 @@ export type ViewKey =
   | "mcp"
   | "codex-sessions"
   | "wecom-bridge"
+  | "workbuddy-pool"
   | "settings"
 
 export const DEFAULT_VIEW: ViewKey = "codex-desktop"
@@ -41,6 +43,7 @@ const NAV_ITEMS: { key: ViewKey; label: string; icon: typeof LayoutDashboard }[]
   { key: "mcp", label: "MCP", icon: Network },
   { key: "codex-sessions", label: "同步会话", icon: GitMerge },
   { key: "wecom-bridge", label: "企业微信机器人", icon: MessagesSquare },
+  { key: "workbuddy-pool", label: "WorkBuddy 号池", icon: Users },
   { key: "settings", label: "设置", icon: SettingsIcon },
 ]
 
