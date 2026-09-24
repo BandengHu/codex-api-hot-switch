@@ -425,13 +425,35 @@ function isInjectablePage(target) {
   return target?.type === "page" && typeof target.webSocketDebuggerUrl === "string" && target.webSocketDebuggerUrl
 }
 
+function targetUrl(target) {
+  try {
+    return new URL(String(target?.url || ""))
+  } catch {
+    return null
+  }
+}
+
+//主窗口固定加载 app://index.html；avatar-overlay、hotkey-window、detached-window等
+//附加窗口一律带 ?initialRoute=，它们不渲染模型下拉，注入进去没有意义。
+function isAuxiliaryWindowTarget(target) {
+  return Boolean(targetUrl(target)?.searchParams.has("initialRoute"))
+}
+
+//新版 Codex主窗口标题是当前会话名（实测「回复问候」），标题和 url里都不含 codex字样，
+//旧的按标题匹配整片失效；这里改成按窗口身份识别：app:协议、且不是附加窗口。
+function isCodexMainWindowTarget(target) {
+  return targetUrl(target)?.protocol === "app:" && !isAuxiliaryWindowTarget(target)
+}
+
 function isCodexPage(target) {
   const haystack = `${target?.title || ""} ${target?.url || ""}`.toLowerCase()
   return haystack.includes("codex")
 }
 
 function pickCodexTarget(targets) {
-  return targets.filter(isInjectablePage).find(isCodexPage) || null
+  const pages = targets.filter(isInjectablePage)
+  const mainWindows = pages.filter(isCodexMainWindowTarget)
+  return mainWindows.find(isCodexPage) || mainWindows[0] || pages.find(isCodexPage) || null
 }
 
 class CdpSession {
@@ -506,20 +528,27 @@ function injectionScript(catalog) {
   return `
 (() => {
   const injectedCatalog = ${JSON.stringify(embeddedCatalog)};
-  const injectionVersion = "2026-07-11-models-only-v2";
+  const injectionVersion = "2026-09-25-models-only-v3";
   const state = window.__codexSwitchGateModelWhitelist || {
     installed: false,
     catalogLoadedAt: 0,
-    catalogPromise: null,
     catalog: { status: "loading", model: "", default_model: "", provider_name: "codex_switchgate", models: [], labels: {} },
     modelListRequestIds: new Set(),
     patchFailures: [],
   };
+  //上一次注入启用的补丁仍在后台持有定时器与 MutationObserver，会继续跑旧代码路径并污染 patchFailures。
+  //这里递增代际并断开旧句柄，让本次注入完整接管，而不是与旧实例共用 state.observer / state.refreshTimer。
+  state.generation = (state.generation ||0) +1;
+  const generation = state.generation;
+  state.refreshUntil =0;
+  state.refreshTimer =0;
+  if (state.observer) {
+    try { state.observer.disconnect(); } catch {}
+    state.observer = null;
+  }
   state.catalog = injectedCatalog;
   state.injectionVersion = injectionVersion;
   state.catalogLoadedAt = Date.now();
-  state.catalogPromise = null;
-  state.appServerRequestPatchInstalled = false;
   if (!(state.modelListRequestIds instanceof Set)) state.modelListRequestIds = new Set();
   state.modelListRequestIds.add("__codex_switchgate_model_list_request_sentinel__");
   state.patchFailures = [];
@@ -544,7 +573,7 @@ function injectionScript(catalog) {
       if (!normalized || seen.has(normalized.id)) return;
       seen.add(normalized.id);
       entries.push(normalized);
-    };
+  };
     if (Array.isArray(state.catalog.models)) state.catalog.models.forEach(add);
     add(state.catalog.default_model);
     add(state.catalog.model);
@@ -557,10 +586,6 @@ function injectionScript(catalog) {
 
   function modelInfo(modelName) {
     return modelEntries().find((entry) => entry.id === modelName) || { id: modelName };
-  }
-
-  async function loadCatalog() {
-    return state.catalog;
   }
 
   function descriptor(modelName) {
@@ -835,104 +860,13 @@ function injectionScript(catalog) {
     }, true);
   }
 
-  function assetUrl(namePart) {
-    const urls = [
-      ...Array.from(document.scripts || []).map((script) => script.src),
-      ...Array.from(document.querySelectorAll("link[href]") || []).map((link) => link.href),
-      ...performance.getEntriesByType("resource").map((entry) => entry.name),
-    ].filter(Boolean);
-    return urls.find((url) => url.includes("/assets/") && url.includes(namePart) && url.split("?")[0].endsWith(".js")) || "";
-  }
-
-  async function loadAppModule(namePart) {
-    state.modulePromises = state.modulePromises || new Map();
-    if (!state.modulePromises.has(namePart)) {
-      state.modulePromises.set(namePart, Promise.resolve().then(async () => {
-        const url = assetUrl(namePart);
-        if (!url) throw new Error("未找到 Codex App asset: " + namePart);
-        return await import(url);
-      }).catch((error) => {
-        state.modulePromises.delete(namePart);
-        throw error;
-      }));
-    }
-    return await state.modulePromises.get(namePart);
-  }
-
-  async function invalidateModelQueries() {
-    const vscodeApi = await loadAppModule("vscode-api-");
-    const dispatcher = Object.values(vscodeApi).find((value) =>
-      value &&
-      typeof value === "object" &&
-      typeof value.dispatchMessage === "function"
-    );
-    if (!dispatcher) throw new Error("未找到 Codex query cache 通知接口");
-    dispatcher.dispatchMessage("query-cache-invalidate", {
-      queryKey: ["models", "list"],
-    });
-  }
-
-  function appServerMethod(method, params) {
-    if (method === "send-cli-request-for-host" && params?.method) return String(params.method);
-    return String(method || "");
-  }
-
-  function patchAppServerResult(method, result) {
-    if (method !== "list-models-for-host") return result;
-    try {
-      if (Array.isArray(result)) patchModelArray(result, true);
-      if (Array.isArray(result?.data)) patchModelArray(result.data, true);
-      if (Array.isArray(result?.models)) patchModelArray(result.models, true);
-      patchModelContainer(result);
-    } catch (error) {
-      state.patchFailures.push(String(error?.stack || error));
-    }
-    return result;
-  }
-
-  function patchAppServerClient(client) {
-    if (!client || typeof client.sendRequest !== "function") return false;
-    if (client.__codexSwitchGateModelRequestPatchVersion === injectionVersion) return true;
-    const original = client.__codexSwitchGateOriginalSendRequest || client.sendRequest.bind(client);
-    client.__codexSwitchGateOriginalSendRequest = original;
-    client.sendRequest = async function codexSwitchGateSendRequest(method, params, options) {
-      const result = await original(method, params, options);
-      if (!modelNames().length) await loadCatalog();
-      return patchAppServerResult(appServerMethod(String(method || ""), params), result);
-    };
-    client.__codexSwitchGateModelRequestPatch = true;
-    client.__codexSwitchGateModelRequestPatchVersion = injectionVersion;
-    return true;
-  }
-
-  function installAppServerRequestPatch() {
-    if (state.appServerRequestPatchInstalled) return;
-    void Promise.resolve().then(async () => {
-      const module = await loadAppModule("use-host-config-");
-      const candidates = Object.values(module).filter((value) => value && typeof value === "object");
-      let patched = 0;
-      for (const candidate of candidates) {
-        if (patchAppServerClient(candidate)) patched += 1;
-        if (typeof candidate.sendRequest !== "function" && typeof candidate.get === "function") {
-          try { if (patchAppServerClient(candidate.get())) patched += 1; } catch {}
-        }
-      }
-      if (patched > 0) {
-        state.appServerRequestPatchInstalled = true;
-        await invalidateModelQueries();
-      }
-    }).catch((error) => {
-      state.patchFailures.push(String(error?.message || error));
-    });
-  }
-
   function refreshPass() {
+    if (state.generation !== generation) return false;
     if (!modelNames().length) return false;
     let changed = false;
     try {
       patchStatsig();
       if (patchVisibleModelLabels()) changed = true;
-      installAppServerRequestPatch();
     } catch (error) {
       state.patchFailures.push(String(error?.stack || error));
     }
@@ -940,10 +874,12 @@ function injectionScript(catalog) {
   }
 
   function scheduleRefresh(durationMs = 2500) {
+    if (state.generation !== generation) return;
     state.refreshUntil = Math.max(state.refreshUntil || 0, Date.now() + durationMs);
     if (state.refreshTimer) return;
     const tick = () => {
       state.refreshTimer = 0;
+      if (state.generation !== generation) return;
       refreshPass();
       if (Date.now() < state.refreshUntil) state.refreshTimer = window.setTimeout(tick, 120);
     };
@@ -954,12 +890,9 @@ function injectionScript(catalog) {
     state.installed = true;
     state.installedAt = new Date().toISOString();
     installAppServerMessagePatch();
-    installAppServerRequestPatch();
-    void invalidateModelQueries().catch((error) => {
-      state.patchFailures.push(String(error?.message || error));
-    });
-    void loadCatalog().then(() => scheduleRefresh(4000));
+    scheduleRefresh(4000);
     const observer = state.observer || new MutationObserver((mutations) => {
+      if (state.generation !== generation) return;
       if (!modelNames().length) return;
       if (mutations.some((mutation) => Array.from(mutation.addedNodes || []).some((node) => node.nodeType === 1))) scheduleRefresh(1200);
     });
@@ -1313,9 +1246,14 @@ module.exports = {
   codexExecutableCandidates,
   codexExeFromInstall,
   compareVersionStringsDescending,
+  isAuxiliaryWindowTarget,
   isCodexAppServerProcess,
+  isCodexMainWindowTarget,
+  isCodexPage,
+  isInjectablePage,
   isDesktopCodexMainProcess,
   isDesktopCodexProcess,
+  pickCodexTarget,
   parseVersionFromInstallPath,
   processInstallPath,
   sameInstallPath,
