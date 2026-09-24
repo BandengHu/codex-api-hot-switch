@@ -16,24 +16,39 @@ function safeTrim(value: unknown) {
 /**
  * 上游会把空的工具占位符原样带进每一帧：`"tool_calls": []`、`"function_call": null`，
  * WorkBuddy 甚至连 `{"name":"","arguments":""}` 这种空壳都在每帧带上。
- * 只有真带出名字或参数才算「这一帧在调用工具」，否则把空数组当工具边界会让推理
- * 在第一个 delta 就被收尾，客户端只留前几个字。
+ *
+ * 这里判的是「这一帧有没有带任何信息」——空占位符要丢掉，但只带 `id` 的开场帧必须留下，
+ * 否则后面补上名字时已经没地方挂了，整个工具调用会凭空消失。
  */
 export function chatToolDeltaHasContent(value: unknown) {
+  if (!isObject(value)) return false
+  const fn = isObject(value.function) ? value.function : value
+  return Boolean(safeTrim(value.id) || safeTrim(fn.name) || safeTrim(fn.arguments))
+}
+
+/**
+ * 这一帧是不是「真的开始调用工具」。
+ *
+ * 只有带出名字或参数才算数：这才是推理该收尾的边界。像 WorkBuddy 那样每帧都塞一个
+ * 只有 id 的空壳时，不能拿它当边界，否则推理在第一个 delta 就被收尾，客户端只剩前几个字。
+ */
+export function chatToolDeltaStartsCall(value: unknown) {
   if (!isObject(value)) return false
   const fn = isObject(value.function) ? value.function : value
   return Boolean(safeTrim(fn.name) || safeTrim(fn.arguments))
 }
 
 /**
- * 取出这一帧真正要合并的工具调用增量，保留它在原数组里的下标作为兜底索引。
+ * 取出这一帧要合并的工具调用增量，保留它在原数组里的下标作为兜底索引。
  * `function_call` 是单数形式的旧字段，统一包装成带 index 的形态。
  */
 export function chatToolDeltas(payload: AnyRecord) {
-  const deltas: Array<{ position: number; value: AnyRecord }> = []
+  const deltas: Array<{ position: number; value: AnyRecord; startsCall: boolean }> = []
   if (Array.isArray(payload.tool_calls)) {
     payload.tool_calls.forEach((entry, position) => {
-      if (chatToolDeltaHasContent(entry)) deltas.push({ position, value: entry })
+      if (chatToolDeltaHasContent(entry)) {
+        deltas.push({ position, value: entry, startsCall: chatToolDeltaStartsCall(entry) })
+      }
     })
     return deltas
   }
@@ -42,6 +57,7 @@ export function chatToolDeltas(payload: AnyRecord) {
     deltas.push({
       position: 0,
       value: { index: 0, id: fn.id, type: "function", function: fn },
+      startsCall: chatToolDeltaStartsCall(fn),
     })
   }
   return deltas
@@ -74,7 +90,9 @@ function deltaText(value: unknown): string {
     .map((part) => {
       if (typeof part === "string") return part
       if (!isObject(part)) return ""
-      return safeTrim(part.text) || (typeof part.content === "string" ? part.content : "")
+      // 文本块同样按 token 切片，空格是内容的一部分，不能 trim。
+      if (typeof part.text === "string") return part.text
+      return typeof part.content === "string" ? part.content : ""
     })
     .filter(Boolean)
     .join("")
@@ -130,7 +148,11 @@ export function foldChatSsePayload(payload: unknown): unknown {
         : isObject(choice.message)
           ? choice.message
           : {}
-      const chunkReasoning = safeTrim(delta.reasoning_content)
+      // 推理增量按 token 切开，空格常单独成帧或挂在片头，trim 会把它粘成
+      // "Simplequestion"。这里原样保留，只跳过空串。
+      const chunkReasoning = typeof delta.reasoning_content === "string"
+        ? delta.reasoning_content
+        : ""
       if (chunkReasoning) reasoning.push(chunkReasoning)
       const chunkContent = deltaText(delta.content)
       if (chunkContent) content.push(chunkContent)

@@ -1361,8 +1361,10 @@ function applyChatSseFullMessageSnapshot(
   const toolContext = deserializeToolContext(serializedContext)
   const toolDeltas = chatToolDeltas(payload)
   if (toolDeltas.length > 0) {
-    out += flushChatSseInlineThinkAtBoundary(state)
-    out += finalizeChatSseReasoning(state)
+    if (toolDeltas.some((delta) => delta.startsCall)) {
+      out += flushChatSseInlineThinkAtBoundary(state)
+      out += finalizeChatSseReasoning(state)
+    }
     for (const { position, value } of toolDeltas) {
       out += mergeChatSseToolCallDelta(state, value, position, toolContext, {
         replaceArguments: true,
@@ -1683,8 +1685,10 @@ function chatSseTextToResponsesSse(
     }
     const toolDeltas = chatToolDeltas(payload)
     if (toolDeltas.length > 0) {
-      out += flushChatSseInlineThinkAtBoundary(state)
-      out += finalizeChatSseReasoning(state)
+      if (toolDeltas.some((delta) => delta.startsCall)) {
+        out += flushChatSseInlineThinkAtBoundary(state)
+        out += finalizeChatSseReasoning(state)
+      }
       const toolContext = deserializeToolContext(serializedContext)
       for (const { position, value } of toolDeltas) {
         out += mergeChatSseToolCallDelta(state, value, position, toolContext)

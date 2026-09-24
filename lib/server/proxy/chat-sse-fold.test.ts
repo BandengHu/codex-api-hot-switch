@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
   chatToolDeltaHasContent,
+  chatToolDeltaStartsCall,
   chatToolDeltas,
   foldChatSsePayload,
   parseChatSseFrames,
@@ -113,7 +114,9 @@ test("空工具占位符不算工具边界", () => {
   assert.equal(chatToolDeltaHasContent([]), false)
   assert.equal(chatToolDeltaHasContent(null), false)
   assert.equal(chatToolDeltaHasContent({}), false)
-  assert.equal(chatToolDeltaHasContent({ id: "call_1", function: { name: "", arguments: "" } }), false)
+  // 完全没有内容的空壳（连 id 都没有）要丢掉。
+  assert.equal(chatToolDeltaHasContent({ function: { name: "", arguments: "" } }), false)
+  assert.equal(chatToolDeltaStartsCall({ function: { name: "", arguments: "" } }), false)
 
   const placeholder = {
     tool_calls: [],
@@ -129,7 +132,7 @@ test("空工具占位符不算工具边界", () => {
     ],
   }
   assert.deepEqual(chatToolDeltas(real), [
-    { position: 0, value: real.tool_calls[0] },
+    { position: 0, value: real.tool_calls[0], startsCall: true },
   ])
 
   // 单数形态的旧字段统一包成带 index 的形态。
@@ -137,8 +140,62 @@ test("空工具占位符不算工具边界", () => {
     {
       position: 0,
       value: { index: 0, id: undefined, type: "function", function: { name: "get_time", arguments: "{}" } },
+      startsCall: true,
     },
   ])
+})
+
+test("只带 id 的开场帧要合并，但不作为推理收尾边界", () => {
+  // OpenAI 风格的工具调用可能先发一个只有 id/type 的开场帧，名字和参数随后才到。
+  // 这种帧要保留（丢掉的话后面补上名字时没地方挂），但不能拿它当推理边界。
+  const opening = { tool_calls: [{ index: 0, id: "call_abc", type: "function", function: {} }] }
+  assert.deepEqual(chatToolDeltas(opening), [
+    { position: 0, value: opening.tool_calls[0], startsCall: false },
+  ])
+  assert.equal(chatToolDeltaHasContent(opening.tool_calls[0]), true)
+  assert.equal(chatToolDeltaStartsCall(opening.tool_calls[0]), false)
+
+  // 名字到了才算开始调用，这时候才是推理的收尾边界。
+  const named = { tool_calls: [{ index: 0, id: "call_abc", function: { name: "get_weather" } }] }
+  assert.equal(chatToolDeltaStartsCall(named.tool_calls[0]), true)
+})
+
+test("只有 id 的开场帧也把工具调用带进折叠结果", () => {
+  // 先给 id，再给名字和参数；如果开场帧被当成空占位符丢掉，这次调用会整个消失。
+  const folded = foldChatSsePayload(
+    chunk({
+      id: "cmb-2",
+      model: "hy4-preview",
+      choices: [{ index: 0, delta: { reasoning_content: "先看天气", tool_calls: [], content: "" } }],
+    }) +
+      chunk({
+        id: "cmb-2",
+        model: "hy4-preview",
+        choices: [{
+          index: 0,
+          delta: { tool_calls: [{ index: 0, id: "call_xyz", type: "function", function: {} }] },
+        }],
+      }) +
+      chunk({
+        id: "cmb-2",
+        model: "hy4-preview",
+        choices: [{
+          index: 0,
+          delta: { tool_calls: [{ index: 0, function: { name: "get_weather", arguments: "{\"city\":\"北京\"}" } }] },
+          finish_reason: "tool_calls",
+        }],
+      }) +
+      "data: [DONE]\n\n",
+  ) as Record<string, any>
+
+  assert.deepEqual(folded.choices[0].message.tool_calls, [
+    {
+      id: "call_xyz",
+      type: "function",
+      function: { name: "get_weather", arguments: "{\"city\":\"北京\"}" },
+    },
+  ])
+  assert.equal(folded.choices[0].message.reasoning_content, "先看天气")
 })
 
 test("折叠时忽略空工具占位符，只收真工具调用", () => {
@@ -166,4 +223,29 @@ test("折叠时忽略空工具占位符，只收真工具调用", () => {
   assert.equal(folded.choices[0].message.reasoning_content, "先想再想")
   assert.equal(folded.choices[0].message.content, "好")
   assert.equal(folded.choices[0].message.tool_calls, undefined)
+})
+
+test("折叠时保留推理与正文里的空格", () => {
+  // 上游按 token 切片，空格常单独成帧或挂在片头；trim 会把 "Simple question" 粘成
+  // "Simplequestion"。非流式折叠同样要原样拼回去。
+  const folded = foldChatSsePayload(
+    chunk({ choices: [{ index: 0, delta: { reasoning_content: "Simple", content: "" } }] }) +
+      chunk({ choices: [{ index: 0, delta: { reasoning_content: " question", content: "Hello" } }] }) +
+      chunk({ choices: [{ index: 0, delta: { reasoning_content: ".", content: " world" } }] }) +
+      chunk({ choices: [{ index: 0, delta: { content: "。" } }] }) +
+      "data: [DONE]\n\n",
+  ) as Record<string, any>
+
+  assert.equal(folded.choices[0].message.reasoning_content, "Simple question.")
+  assert.equal(folded.choices[0].message.content, "Hello world。")
+})
+
+test("折叠文本块数组时也保留空格", () => {
+  const folded = foldChatSsePayload(
+    chunk({ choices: [{ index: 0, delta: { content: [{ type: "text", text: "Hello" }] } }] }) +
+      chunk({ choices: [{ index: 0, delta: { content: [{ type: "text", text: " world" }] } }] }) +
+      "data: [DONE]\n\n",
+  ) as Record<string, any>
+
+  assert.equal(folded.choices[0].message.content, "Hello world")
 })
