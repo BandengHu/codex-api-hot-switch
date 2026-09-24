@@ -13,6 +13,10 @@ import { initialSnapshot } from "@/lib/mock-data"
 import { isChatModel, isImageGenerationModel } from "@/lib/model-capabilities"
 import { createProviderEndpoint } from "@/lib/provider-endpoints"
 import {
+  mergeWorkbuddyModels,
+  mergeWorkbuddyProvider,
+} from "@/lib/workbuddy-provider"
+import {
   getProviderEndpointRuntimeStates,
   resetProviderEndpointRuntime,
 } from "@/lib/server/provider-endpoint-runtime"
@@ -374,12 +378,17 @@ function sortBuiltInModels(models: Model[]) {
 
 function normalizeSnapshot(value: Partial<ConsoleSnapshot>): ConsoleSnapshot {
   const seed = cloneSnapshot(initialSnapshot)
-  const providers = Array.isArray(value.providers)
-    ? value.providers.map(normalizeProvider)
-    : seed.providers
-  const models = Array.isArray(value.models)
-    ? sortBuiltInModels(value.models.map(normalizeModel))
-    : sortBuiltInModels(seed.models)
+  // 内置供应商（WorkBuddy 本机账号）不随状态消失：老数据里没有就补上，被改坏就按代码归位。
+  const providers = mergeWorkbuddyProvider(
+    Array.isArray(value.providers)
+      ? value.providers.map(normalizeProvider)
+      : seed.providers,
+  )
+  const models = sortBuiltInModels(
+    mergeWorkbuddyModels(
+      Array.isArray(value.models) ? value.models.map(normalizeModel) : seed.models,
+    ),
+  )
   const settings = normalizeSettings(value.settings ?? {}, seed.settings)
   const enabledProviderIds = new Set(
     providers.filter((provider) => provider.enabled).map((provider) => provider.id),

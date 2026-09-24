@@ -35,6 +35,7 @@ export type ReasoningDialect =
   | "minimax-reasoning-split"
   | "stepfun-low-high"
   | "tencent-tokenhub-thinking"
+  | "workbuddy-effort"
 
 export type ModelReasoningDialect = ReasoningDialect | "inherit"
 
@@ -52,6 +53,7 @@ export const REASONING_DIALECTS: ReasoningDialect[] = [
   "minimax-reasoning-split",
   "stepfun-low-high",
   "tencent-tokenhub-thinking",
+  "workbuddy-effort",
 ]
 
 export interface HeaderEntry {
@@ -301,6 +303,7 @@ export const REASONING_DIALECT_LABELS: Record<ReasoningDialect, string> = {
   "minimax-reasoning-split": "MiniMax reasoning_split",
   "stepfun-low-high": "StepFun reasoning_effort",
   "tencent-tokenhub-thinking": "腾讯 TokenHub thinking",
+  "workbuddy-effort": "WorkBuddy reasoning_effort",
 }
 
 export const HEALTH_LABELS: Record<HealthStatus, string> = {

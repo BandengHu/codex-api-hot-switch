@@ -5,6 +5,7 @@ import {
   appendRequestLogDetails,
   registerRequestLogDetailSource,
 } from "@/lib/server/request-log-details"
+import { withWorkbuddyTargetCredentials } from "@/lib/server/workbuddy/upstream"
 import {
   buildCodexClientModelsResponse,
   buildOpenAIModelsResponse,
@@ -58,6 +59,7 @@ import {
   createChatToResponsesSseStream,
   transformChatCompatibleResponse,
 } from "./chat-compatible"
+import { foldChatSsePayload } from "./chat-sse-fold"
 import {
   createNativeSseStreamToClient,
 } from "./native-sse"
@@ -1852,6 +1854,8 @@ export async function handleProxyPost(parts: string[], request: Request) {
       )
     }
 
+    // 目标定下来之后再注入本机登录态：内置供应商的 API Key 是占位值，真实 token 每次请求现取。
+    target = await withWorkbuddyTargetCredentials(target)
     body = sanitizeImagesForTargetModel(body, target.model, target.modelId).body
     const effectivePath = isImagesApiPath(path) ? "v1/responses" : path
     if (shouldStripHostedWebSearch(target, effectivePath, body, snapshot.settings.webSearchMode)) {
@@ -1936,7 +1940,9 @@ export async function handleProxyPost(parts: string[], request: Request) {
       }).catch(() => null)
     }
 
-    let payload = await parseJsonSafe(upstream)
+    // 有的上游只肯流式回答（WorkBuddy 会直接 400 拒掉 stream:false），客户端要 JSON 时
+    // 把整段 SSE 折成一条 chat completion，后面照常走 chat → Responses 转换。
+    let payload = foldChatSsePayload(await parseJsonSafe(upstream))
     const attemptedRectifiers = new Set<RectifierKind>()
     while (!upstream.ok) {
       const rectified = maybeRectifyUpstreamError({

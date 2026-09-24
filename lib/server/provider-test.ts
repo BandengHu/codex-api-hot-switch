@@ -4,7 +4,9 @@ import {
   enabledProviderEndpoints,
   resolveProviderEndpoint,
 } from "@/lib/provider-endpoints"
+import { isWorkbuddyProvider, workbuddyCatalogUrl } from "@/lib/workbuddy-provider"
 import { getSystemProxyDispatcher } from "./proxy/system-proxy"
+import { withWorkbuddyCredentials } from "./workbuddy/upstream"
 import type {
   Provider,
   ProviderTestResult,
@@ -56,12 +58,15 @@ function testUrl(provider: ResolvedProvider) {
     if (provider.apiKey.trim()) url.searchParams.set("key", provider.apiKey.trim())
     return url.toString()
   }
+  // WorkBuddy 没有 /models，健康检查打在账号配置接口上。
+  if (isWorkbuddyProvider(provider)) return workbuddyCatalogUrl(provider.baseUrl)
   return modelsUrl(provider.baseUrl)
 }
 
 export async function runProviderTest(
-  provider: Provider,
+  rawProvider: Provider,
 ): Promise<ProviderTestResult> {
+  const provider = await withWorkbuddyCredentials(rawProvider)
   if (!provider.enabled) {
     return { ok: false, message: "供应商已停用，未发起健康检查", provider }
   }

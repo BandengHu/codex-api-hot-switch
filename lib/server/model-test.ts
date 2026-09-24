@@ -9,7 +9,9 @@ import {
   parseJsonSafe,
 } from "./proxy/request-builder"
 import type { ProxyTarget as RelayProxyTarget } from "./proxy/common"
+import { foldChatSsePayload } from "./proxy/chat-sse-fold"
 import { fetchWithEndpointFailover } from "./proxy/endpoint-failover"
+import { withWorkbuddyCredentials } from "./workbuddy/upstream"
 
 function testBody(modelId: string, reasoning: ReasoningEffort) {
   return {
@@ -36,7 +38,8 @@ export async function runModelTest(params: {
   model: Model
   reasoning?: ReasoningEffort
 }): Promise<ModelTestResult> {
-  const { provider, model } = params
+  const { model } = params
+  const provider = await withWorkbuddyCredentials(params.provider)
   const started = Date.now()
   const duration = () => Date.now() - started
 
@@ -97,7 +100,7 @@ export async function runModelTest(params: {
       capacityRetryEnabled: false,
     })
     const response = result.response
-    const payload = await parseJsonSafe(response)
+    const payload = foldChatSsePayload(await parseJsonSafe(response))
     const outputText = extractTextSummary(payload)
     const tokenUsage = extractUsageSummary(payload)
     const detail = !response.ok

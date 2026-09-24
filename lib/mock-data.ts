@@ -8,6 +8,7 @@ import type {
   Settings,
 } from "./types"
 import { defaultCodexSubagentModelSlugs } from "./codex-model-slug"
+import { workbuddyPresetModels, workbuddyProviderTemplate } from "./workbuddy-provider"
 
 export const initialProviders: Provider[] = [
   {
@@ -92,6 +93,7 @@ export const initialProviders: Provider[] = [
     health: "down",
     healthMessage: "连接被拒绝：dial tcp 192.168.1.20:8000: connect: connection refused",
   },
+  workbuddyProviderTemplate(),
 ]
 
 export const initialModels: Model[] = [
@@ -287,6 +289,7 @@ export const initialModels: Model[] = [
     supportsVision: false,
     enabled: false,
   },
+  ...workbuddyPresetModels(),
 ]
 
 export const initialMappings: ModelMapping[] = []

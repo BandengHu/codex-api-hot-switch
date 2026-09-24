@@ -6,13 +6,21 @@ import {
   normalizeDiscoveredModels,
   type ProviderModelDiscoveryResult,
 } from "@/lib/provider-model-discovery"
+import { isWorkbuddyProvider } from "@/lib/workbuddy-provider"
 import { getSystemProxyDispatcher } from "./proxy/system-proxy"
+import {
+  discoverWorkbuddyCatalogModels,
+  withWorkbuddyCredentials,
+} from "./workbuddy/upstream"
 
 const MAX_MODEL_LIST_BYTES = 2 * 1024 * 1024
 
 export async function discoverProviderModels(
-  provider: Provider,
+  rawProvider: Provider,
 ): Promise<ProviderModelDiscoveryResult> {
+  const provider = await withWorkbuddyCredentials(rawProvider)
+  // WorkBuddy 的模型目录不在 /models 上，是账号配置接口里的 models[]。
+  if (isWorkbuddyProvider(provider)) return discoverWorkbuddyCatalogModels(provider)
   const primary = provider.endpoints[0]
   if (!primary) throw new Error("供应商没有主用端点")
   if (!primary.enabled) throw new Error("主用端点已停用，不能获取模型")

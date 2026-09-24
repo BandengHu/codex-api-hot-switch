@@ -1,6 +1,7 @@
 import "server-only"
 
 import type { ReasoningDialect, ReasoningEffort } from "@/lib/types"
+import { isWorkbuddyProvider } from "@/lib/workbuddy-provider"
 import type { ProxyTarget } from "./common"
 
 type AnyRecord = Record<string, any>
@@ -36,6 +37,9 @@ function isDeepSeekV4Model(model: string) {
 }
 
 function inferChatReasoningDialect(target: ProxyTarget): ReasoningDialect {
+  // WorkBuddy 上游只认它自己的 reasoning_effort 阶梯，模型名（hy/glm/kimi…）落不到
+  // 原生厂商的方言上，先按供应商定死。
+  if (isWorkbuddyProvider(target.provider)) return "workbuddy-effort"
   const lower = target.modelId.toLowerCase()
   if (lower.includes("openrouter") || lower.startsWith("openrouter/")) return "openrouter-reasoning"
   if (lower.includes("deepseek")) return "deepseek-official"
@@ -140,6 +144,13 @@ function mapReasoningEffort(effort: string, dialect: ReasoningDialect) {
       ? normalized
       : undefined
   }
+  if (dialect === "workbuddy-effort") {
+    if (normalized === "minimal" || normalized === "low") return "low"
+    if (normalized === "medium") return "medium"
+    if (normalized === "high") return "high"
+    if (normalized === "xhigh" || normalized === "max" || normalized === "ultra") return "max"
+    return undefined
+  }
   if (normalized === "ultra") return "max"
   return ["minimal", "low", "medium", "high", "xhigh", "max"].includes(normalized)
     ? normalized
@@ -208,6 +219,8 @@ export function applyChatReasoningOptions(
 
   if (!enabled) {
     if (dialect === "openrouter-reasoning") result.reasoning = { effort: "none" }
+    // WorkBuddy 的模型都关不掉思考，最低就是 low，所以「关闭」落到那一档。
+    if (dialect === "workbuddy-effort") result.reasoning_effort = "low"
     return
   }
 
@@ -224,7 +237,8 @@ export function applyChatReasoningOptions(
     dialect === "deepseek-official" ||
     dialect === "volcengine-thinking" ||
     dialect === "stepfun-low-high" ||
-    dialect === "tencent-tokenhub-thinking"
+    dialect === "tencent-tokenhub-thinking" ||
+    dialect === "workbuddy-effort"
   ) {
     result.reasoning_effort = mapped
   }

@@ -30,6 +30,8 @@ import {
   canonicalToolArgumentsString,
 } from "./json-canonical"
 import { lastCompleteSseFrameBoundary } from "./sse-frame"
+import { parseChatSseFrames } from "./chat-sse-fold"
+import { isWorkbuddyProvider } from "@/lib/workbuddy-provider"
 import {
   enrichCodexChatRequest,
   recordCodexChatResponse,
@@ -892,6 +894,16 @@ export function chatCompletionToResponse(
   return response
 }
 
+/**
+ * WorkBuddy 上游只认 `stream: true`，非流式请求会被它直接 400 掉，所以发出去的身体一律
+ * 要求流式；客户端到底要流式还是一次性 JSON，由 adapter.requestIsStream 另外记着，
+ * 非流式响应再由 foldChatSsePayload 折回来。
+ */
+function forceUpstreamStream(body: AnyRecord, target: ProxyTarget) {
+  if (!isWorkbuddyProvider(target.provider)) return
+  body.stream = true
+}
+
 function chatCompatibleUrl(baseUrl: string, endpoint: "chat/completions" | "models") {
   const rawBase = baseUrl.trim()
   const skipVersionPrefix = rawBase.endsWith("#")
@@ -926,20 +938,22 @@ export function buildChatCompatibleRequest(
       )
     }
     appendOutputLanguagePolicyToChatBody(passthrough, target)
+    const requestedStream = Boolean(passthrough.stream)
+    forceUpstreamStream(passthrough, target)
     return {
       url: chatCompatibleUrl(target.provider.baseUrl, "chat/completions"),
       rewrittenBody: passthrough,
       adapter: {
         type: "chat_compatible_passthrough",
         source: "chat_completions",
-        requestIsStream: Boolean(passthrough.stream),
+        requestIsStream: requestedStream,
         requestedModel: safeTrim(body.model),
         reverseToolNameMap: {},
       },
       init: {
         method: "POST",
         headers: providerHeaders(target.provider, {
-          accept: Boolean(passthrough.stream) ? "text/event-stream" : "application/json",
+          accept: requestedStream ? "text/event-stream" : "application/json",
           "content-type": "application/json",
         }),
         body: JSON.stringify(passthrough),
@@ -956,20 +970,22 @@ export function buildChatCompatibleRequest(
   enrichCodexChatRequest(request)
   appendOutputLanguagePolicyToResponsesBody(request, target)
   const converted = responsesToChatCompletions(request, target)
+  const requestedStream = Boolean(converted.body.stream)
+  forceUpstreamStream(converted.body, target)
   return {
     url: chatCompatibleUrl(target.provider.baseUrl, "chat/completions"),
     rewrittenBody: converted.body,
     adapter: {
       type: "chat_compatible",
       source: "responses",
-      requestIsStream: Boolean(converted.body.stream),
+      requestIsStream: requestedStream,
       originalRequest,
       toolContext: serializeToolContext(converted.toolContext),
     },
     init: {
       method: "POST",
       headers: providerHeaders(target.provider, {
-        accept: converted.body.stream ? "text/event-stream" : "application/json",
+        accept: requestedStream ? "text/event-stream" : "application/json",
         "content-type": "application/json",
       }),
       body: JSON.stringify(converted.body),
@@ -1051,24 +1067,6 @@ export function createChatToResponsesSseStream(
       if (out) controller.enqueue(encoder.encode(out))
     },
   })
-}
-
-function parseSseFrames(text: string) {
-  return String(text || "")
-    .trimStart()
-    .replace(/^\uFEFF/, "")
-    .split(/\r?\n\r?\n/)
-    .map((frame) => {
-      let event = ""
-      const data: string[] = []
-      for (const rawLine of frame.split(/\r?\n/)) {
-        const line = rawLine.trimStart()
-        if (line.startsWith("event:")) event = line.slice(6).trim()
-        else if (line.startsWith("data:")) data.push(line.slice(5).trimStart())
-      }
-      return { event, payload: data.join("\n") }
-    })
-    .filter((frame) => frame.payload)
 }
 
 function sseErrorMessage(value: unknown) {
@@ -1607,7 +1605,7 @@ function chatSseTextToResponsesSse(
   flushTail = true,
 ) {
   let out = ""
-  for (const frame of parseSseFrames(text)) {
+  for (const frame of parseChatSseFrames(text)) {
     if (frame.payload === "[DONE]") {
       state.sawDone = true
       if (!state.sawChoice && !hasSubstantiveChatSseOutput(state)) {
