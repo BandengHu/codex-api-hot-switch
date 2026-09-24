@@ -68,21 +68,59 @@ async function pruneStaticToolBinaries(dir) {
   }
 }
 
-async function pruneAllStaticToolBinaries(vendorDir) {
-  const packageNames = new Set(["ffprobe-static", "ffmpeg-static"])
-  const visit = async (dir) => {
-    if (!(await exists(dir))) return
-    for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+const STATIC_TOOL_PACKAGE_NAMES = new Set(["ffprobe-static", "ffmpeg-static"])
+
+// 递归找到所有静态工具包（ffmpeg / ffprobe）的 bin 目录，交给调用方处理。
+// 裁剪与校验必须共用同一条遍历逻辑，否则两条打包路径会再次出现裁剪不一致。
+async function forEachStaticToolBinDir(dir, handler) {
+  if (!(await exists(dir))) return
+  for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    const child = path.join(dir, entry.name)
+    if (STATIC_TOOL_PACKAGE_NAMES.has(entry.name.toLowerCase())) {
+      await handler(path.join(child, "bin"))
+      continue
+    }
+    await forEachStaticToolBinDir(child, handler)
+  }
+}
+
+// 只发布 Windows x64 安装包，裁掉静态工具里的其它平台/架构二进制。
+async function pruneAllStaticToolBinaries(nodeModulesDir) {
+  await forEachStaticToolBinDir(nodeModulesDir, async (binDir) => {
+    await pruneStaticToolBinaries(binDir)
+  })
+}
+
+// 打包末尾硬校验一次，避免将来又漏掉某条打包路径而把非 win32/x64 二进制塞进安装包。
+async function assertWin64StaticToolBinaries(nodeModulesDir) {
+  const offenders = []
+  await forEachStaticToolBinDir(nodeModulesDir, async (binDir) => {
+    if (!(await exists(binDir))) return
+    for (const entry of await fs.readdir(binDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue
-      const child = path.join(dir, entry.name)
-      if (packageNames.has(entry.name.toLowerCase())) {
-        await pruneStaticToolBinaries(path.join(child, "bin"))
+      const platformDir = path.join(binDir, entry.name)
+      if (entry.name.toLowerCase() !== "win32") {
+        offenders.push(platformDir)
         continue
       }
-      await visit(child)
+      for (const arch of await fs.readdir(platformDir, { withFileTypes: true })) {
+        if (arch.isDirectory() && arch.name.toLowerCase() !== "x64") {
+          offenders.push(path.join(platformDir, arch.name))
+        }
+      }
     }
+  })
+  if (offenders.length > 0) {
+    throw new Error(`静态工具仍打包了非 Windows x64 二进制：${offenders.join(", ")}`)
   }
-  await visit(vendorDir)
+}
+
+// 运行依赖的统一裁剪入口：先裁静态工具的其它平台/架构，再删运行时不会被 require 的文件。
+// vendor 与 codexbridge 的运行依赖都必须走这里，避免两条打包路径再次分叉。
+async function pruneRuntimeNodeModules(nodeModulesDir) {
+  await pruneAllStaticToolBinaries(nodeModulesDir)
+  await pruneNonRuntimeFiles(nodeModulesDir)
 }
 
 async function pruneDuplicatedTopLevelVendorPackages(vendorDir) {
@@ -212,12 +250,12 @@ async function copyCodexBridgeRuntimeNodeModules(codexBridgeDir) {
   for (const dependency of Object.keys(packageJson.dependencies || {}).sort()) {
     await copyRuntimePackageClosure(dependency, targetNodeModules, seen, true, [codexBridgeDir, root])
   }
-  await pruneNonRuntimeFiles(targetNodeModules)
+  await pruneRuntimeNodeModules(targetNodeModules)
+  await assertWin64StaticToolBinaries(targetNodeModules)
 }
 
 async function prunePackagedVendor(vendorDir) {
-  // 只发布 Windows x64 安装包，裁掉静态工具里的其它平台/架构二进制。
-  await pruneAllStaticToolBinaries(vendorDir)
+  await pruneRuntimeNodeModules(vendorDir)
 
   // better-sqlite3 运行只需要 .node 原生模块，源码、构建中间文件和静态库很占空间。
   for (const relativePath of [
@@ -236,9 +274,8 @@ async function prunePackagedVendor(vendorDir) {
     await removePath(vendorDir, ...relativePath)
   }
 
-  // 移除不会被运行时 require 的测试、示例、源码映射和 Markdown 文档。
-  await pruneNonRuntimeFiles(vendorDir)
   await pruneDuplicatedTopLevelVendorPackages(vendorDir)
+  await assertWin64StaticToolBinaries(vendorDir)
 }
 
 async function pruneNonRuntimeFiles(dir) {
