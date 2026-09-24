@@ -34,6 +34,13 @@ import { normalizeChatToolPairing } from "./chat-tool-pairing"
 import { chatWireToolChoice } from "./chat-tool-choice"
 import { chatStreamHasUsableOutput, chatToolDeltas, parseChatSseFrames } from "./chat-sse-fold"
 import { normalizeContextCheckpointRecoveryMessages } from "./context-checkpoint-recovery"
+import {
+  buildRemoteCompactionChatBody,
+  chatCompletionToRemoteCompactionResponse,
+  compactionItemToChatMessage,
+  findRemoteCompactionTrigger,
+} from "./chat-compaction"
+import { chatUsageToResponsesUsage } from "./chat-usage"
 import { isWorkbuddyProvider } from "@/lib/workbuddy-provider"
 import {
   enrichCodexChatRequest,
@@ -92,6 +99,11 @@ export type ChatCompatibleAdapter =
       requestIsStream: boolean
       requestedModel: string
       reverseToolNameMap: Record<string, string>
+    }
+  | {
+      type: "chat_compatible_compaction"
+      source: "responses"
+      requestIsStream: boolean
     }
 
 export interface ChatCompatibleBuiltRequest {
@@ -400,6 +412,16 @@ function appendResponsesInput(input: unknown, messages: AnyRecord[]) {
     if (!isObject(raw)) return
     const type = safeTrim(raw.type || (raw.role || raw.content ? "message" : ""))
 
+    if (type === "compaction") {
+      flushToolCalls()
+      flushReasoning()
+      const message = compactionItemToChatMessage(raw)
+      if (message) pushMessage(message)
+      return
+    }
+
+    if (type === "compaction_trigger") return
+
     if (type === "input_text" || type === "input_image" || type === "input_file" || type === "input_audio") {
       flushToolCalls()
       const role = responseRoleToChat(raw.role)
@@ -633,7 +655,11 @@ const EXTRA_CHAT_PASSTHROUGH_FIELDS = [
   "user",
 ]
 
-export function responsesToChatCompletions(body: AnyRecord, target: ProxyTarget) {
+export function responsesToChatCompletions(
+  body: AnyRecord,
+  target: ProxyTarget,
+  options: { applyLanguagePolicy?: boolean } = {},
+) {
   const model = safeTrim(body.model)
   const result: AnyRecord = {}
   if (model) result.model = model
@@ -644,7 +670,9 @@ export function responsesToChatCompletions(body: AnyRecord, target: ProxyTarget)
   if (instructions) messages.push({ role: "system", content: instructions })
   appendResponsesInput(body.input, messages)
   normalizeChatMessages(messages)
-  appendOutputLanguagePolicyToLatestChatUserMessage(messages, target)
+  if (options.applyLanguagePolicy !== false) {
+    appendOutputLanguagePolicyToLatestChatUserMessage(messages, target)
+  }
   backfillToolCallReasoningPlaceholders(messages, target)
   // 出站前把工具配对收口：结果重排到一起、剔掉无法配对的半截条目。上游对配对断裂的
   // 请求会直接 400，而坏历史会被每次请求重放，等于整条会话报废（见 chat-tool-pairing.ts）。
@@ -754,83 +782,6 @@ function chatMessageText(message: AnyRecord) {
     return answer || safeTrim(message.refusal)
   }
   return contentToText(message.content) || safeTrim(message.refusal)
-}
-
-function chatUsageToResponsesUsage(usage: unknown) {
-  if (!isObject(usage)) {
-    return {
-      input_tokens: 0,
-      output_tokens: 0,
-      total_tokens: 0,
-      output_tokens_details: { reasoning_tokens: 0 },
-    }
-  }
-  const baseInputTokens = Number(
-    usage.prompt_tokens ?? usage.input_tokens ?? usage.promptTokenCount ?? 0,
-  )
-  const outputTokens = Number(usage.completion_tokens ?? usage.output_tokens ?? usage.candidatesTokenCount ?? 0)
-  const cacheReadTokens = Number(usage.cache_read_input_tokens ?? 0)
-  const cacheCreationTokens =
-    Number(usage.cache_creation_input_tokens ?? 0) +
-    Number(usage.cache_creation_5m_input_tokens ?? 0) +
-    Number(usage.cache_creation_1h_input_tokens ?? 0)
-  const cachedTokens = Number(
-    usage.prompt_tokens_details?.cached_tokens ??
-      usage.input_tokens_details?.cached_tokens ??
-      usage.cachedContentTokenCount ??
-      cacheReadTokens ??
-      0,
-  )
-  const hasAnthropicCacheFields =
-    usage.cache_read_input_tokens != null ||
-    usage.cache_creation_input_tokens != null ||
-    usage.cache_creation_5m_input_tokens != null ||
-    usage.cache_creation_1h_input_tokens != null
-  const hasCacheUsageFields =
-    hasAnthropicCacheFields ||
-    usage.prompt_tokens_details?.cached_tokens != null ||
-    usage.input_tokens_details?.cached_tokens != null ||
-    usage.cachedContentTokenCount != null
-  const inputTokens = hasAnthropicCacheFields
-    ? (Number.isFinite(baseInputTokens) ? baseInputTokens : 0) +
-      (Number.isFinite(cacheReadTokens) ? cacheReadTokens : 0) +
-      (Number.isFinite(cacheCreationTokens) ? cacheCreationTokens : 0)
-    : baseInputTokens
-  const computedTotal =
-    (Number.isFinite(inputTokens) ? inputTokens : 0) +
-    (Number.isFinite(outputTokens) ? outputTokens : 0)
-  const reportedTotal = Number(usage.total_tokens ?? usage.totalTokenCount)
-  const totalTokens = Number.isFinite(reportedTotal)
-    ? Math.max(reportedTotal, computedTotal)
-    : computedTotal
-  const result: AnyRecord = {
-    input_tokens: Number.isFinite(inputTokens) ? inputTokens : 0,
-    output_tokens: Number.isFinite(outputTokens) ? outputTokens : 0,
-    total_tokens: Number.isFinite(totalTokens) ? totalTokens : 0,
-  }
-  if (hasCacheUsageFields && Number.isFinite(cachedTokens)) {
-    result.input_tokens_details = { cached_tokens: cachedTokens }
-  }
-  if (Number.isFinite(cacheCreationTokens) && cacheCreationTokens > 0) {
-    result.cache_creation_input_tokens = cacheCreationTokens
-  }
-  if (isObject(usage.completion_tokens_details)) {
-    result.output_tokens_details = {
-      ...usage.completion_tokens_details,
-      reasoning_tokens: Number(usage.completion_tokens_details.reasoning_tokens) || 0,
-    }
-  } else {
-    result.output_tokens_details = { reasoning_tokens: 0 }
-  }
-  for (const key of [
-    "cache_read_input_tokens",
-    "cache_creation_input_tokens",
-    "cache_creation_5m_input_tokens",
-    "cache_creation_1h_input_tokens",
-  ]) {
-    if (usage[key] != null) result[key] = usage[key]
-  }
-  return result
 }
 
 function responseStatusFromFinishReason(finishReason: unknown) {
@@ -989,13 +940,40 @@ export function buildChatCompatibleRequest(
   if (!isResponsesPath(path)) throw new Error(`OpenAI Chat Completions 协议暂不支持：/${path}`)
   const originalRequest: AnyRecord = { ...body }
   const request: AnyRecord = target.paused ? { ...body } : { ...body, model: target.modelId }
+  const compactionTrigger = findRemoteCompactionTrigger(body.input)
   if (!target.paused) {
     setCanonicalReasoning(request, target.reasoning)
   }
   enrichCodexChatRequest(request)
-  appendOutputLanguagePolicyToResponsesBody(request, target)
-  const converted = responsesToChatCompletions(request, target)
+  if (!compactionTrigger) {
+    appendOutputLanguagePolicyToResponsesBody(request, target)
+  }
+  const converted = responsesToChatCompletions(request, target, {
+    applyLanguagePolicy: !compactionTrigger,
+  })
   const requestedStream = Boolean(converted.body.stream)
+  if (compactionTrigger) {
+    const compactionBody = buildRemoteCompactionChatBody(converted.body, compactionTrigger)
+    forceUpstreamStream(compactionBody, target)
+    const upstreamIsStream = Boolean(compactionBody.stream)
+    return {
+      url: chatCompatibleUrl(target.provider.baseUrl, "chat/completions"),
+      rewrittenBody: compactionBody,
+      adapter: {
+        type: "chat_compatible_compaction",
+        source: "responses",
+        requestIsStream: requestedStream,
+      },
+      init: {
+        method: "POST",
+        headers: providerHeaders(target.provider, {
+          accept: upstreamIsStream ? "text/event-stream" : "application/json",
+          "content-type": "application/json",
+        }),
+        body: JSON.stringify(compactionBody),
+      },
+    }
+  }
   forceUpstreamStream(converted.body, target)
   return {
     url: chatCompatibleUrl(target.provider.baseUrl, "chat/completions"),
@@ -1026,6 +1004,9 @@ export function transformChatCompatibleResponse(
   if (adapter.type === "chat_compatible_passthrough") {
     if (!isObject(payload) || !adapter.requestedModel) return payload
     return { ...payload, model: adapter.requestedModel }
+  }
+  if (adapter.type === "chat_compatible_compaction") {
+    return chatCompletionToRemoteCompactionResponse(payload)
   }
   const response = chatCompletionToResponse(
     payload,

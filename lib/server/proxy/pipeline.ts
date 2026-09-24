@@ -434,7 +434,8 @@ function transformResponse(
   }
   if (isOpenAIChatProtocol(target.provider.protocol)) {
     return built?.adapter?.type === "chat_compatible" ||
-      built?.adapter?.type === "chat_compatible_passthrough"
+      built?.adapter?.type === "chat_compatible_passthrough" ||
+      built?.adapter?.type === "chat_compatible_compaction"
       ? transformChatCompatibleResponse(payload, built.adapter, {
           recordHistory: shouldRecordHistory,
         })
@@ -1898,7 +1899,9 @@ export async function handleProxyPost(parts: string[], request: Request) {
         body: requestBody,
         requestSignal: request.signal,
         requestIsStream:
-          requestWantsStream(requestBody) || requestWantsStream(built?.rewrittenBody),
+          built?.adapter?.type === "chat_compatible_compaction"
+            ? requestWantsStream(built.rewrittenBody)
+            : requestWantsStream(requestBody) || requestWantsStream(built?.rewrittenBody),
         capacityRetryEnabled,
       })
       target = result.target
@@ -2018,6 +2021,23 @@ export async function handleProxyPost(parts: string[], request: Request) {
         error,
       }),
     )
+
+    if (
+      upstream.ok &&
+      built.adapter?.type === "chat_compatible_compaction" &&
+      built.adapter.requestIsStream
+    ) {
+      return new Response(streamText(responseToSse(transformed)), {
+        status: upstream.status,
+        headers: {
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-cache",
+          "connection": "keep-alive",
+          "x-codex-hot-switch-provider": target.provider.id,
+          "x-codex-hot-switch-model": target.modelId,
+        },
+      })
+    }
 
     if (!upstream.ok && requestWantsStream(body)) {
       const upstreamError = transformed && typeof transformed === "object"

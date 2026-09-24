@@ -35,7 +35,7 @@ import {
 import type { ConsoleSnapshot, Settings } from "@/lib/types"
 
 const NEW_CONFIG_PROVIDER_ID = "codex_local_access"
-const DEFAULT_PROVIDER_NAME = "Codex API Service"
+const DEFAULT_PROVIDER_NAME = "OpenAI"
 const DEFAULT_MODEL = CODEX_AUTO_MODEL_SLUG
 const DEFAULT_REASONING = "high"
 const MODEL_CATALOG_NAME = "codex-switchgate-model-catalog.json"
@@ -310,10 +310,8 @@ function webSearchMcpStatus(text: string) {
   }
 }
 
-function installConfigText(current: string, baseUrl: string, catalogPath: string) {
+export function installConfigText(current: string, baseUrl: string, catalogPath: string) {
   const providerId = accessProviderId(current)
-  const providerName =
-    sectionString(current, `model_providers.${providerId}`, "name") || DEFAULT_PROVIDER_NAME
   let next = current.trimEnd()
   next = removeSection(next, `model_providers.${providerId}`).trimEnd()
   next = removeTopLevelKey(next, "model_catalog_json").trimEnd()
@@ -324,7 +322,7 @@ function installConfigText(current: string, baseUrl: string, catalogPath: string
   if (!/^disable_response_storage\s*=/m.test(next)) {
     next = `disable_response_storage = true\n${next}`
   }
-  return `${next.trimEnd()}\n\n${providerBlock(providerId, baseUrl, providerName)}\n`
+  return `${next.trimEnd()}\n\n${providerBlock(providerId, baseUrl, DEFAULT_PROVIDER_NAME)}\n`
 }
 
 async function ensureAuthPlaceholder() {
