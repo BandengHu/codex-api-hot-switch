@@ -1,6 +1,6 @@
 {
   "name": "codex-api-hot-switch",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Codex SwitchGate local API relay and desktop console.",
   "author": "Local",
   "private": true,
