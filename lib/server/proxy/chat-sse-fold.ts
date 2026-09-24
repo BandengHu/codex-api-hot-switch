@@ -13,6 +13,16 @@ function safeTrim(value: unknown) {
   return typeof value === "string" ? value.trim() : ""
 }
 
+function chatToolArgumentDeltaHasContent(value: unknown) {
+  if (typeof value === "string") return value.length > 0
+  return value != null
+}
+
+function chatToolArgumentDeltaStartsCall(value: unknown) {
+  if (typeof value === "string") return value.trim().length > 0
+  return value != null
+}
+
 /**
  * 上游会把空的工具占位符原样带进每一帧：`"tool_calls": []`、`"function_call": null`，
  * WorkBuddy 甚至连 `{"name":"","arguments":""}` 这种空壳都在每帧带上。
@@ -23,7 +33,11 @@ function safeTrim(value: unknown) {
 export function chatToolDeltaHasContent(value: unknown) {
   if (!isObject(value)) return false
   const fn = isObject(value.function) ? value.function : value
-  return Boolean(safeTrim(value.id) || safeTrim(fn.name) || safeTrim(fn.arguments))
+  return Boolean(
+    safeTrim(value.id) ||
+    safeTrim(fn.name) ||
+    chatToolArgumentDeltaHasContent(fn.arguments),
+  )
 }
 
 /**
@@ -35,7 +49,10 @@ export function chatToolDeltaHasContent(value: unknown) {
 export function chatToolDeltaStartsCall(value: unknown) {
   if (!isObject(value)) return false
   const fn = isObject(value.function) ? value.function : value
-  return Boolean(safeTrim(fn.name) || safeTrim(fn.arguments))
+  return Boolean(
+    safeTrim(fn.name) ||
+    chatToolArgumentDeltaStartsCall(fn.arguments),
+  )
 }
 
 /**

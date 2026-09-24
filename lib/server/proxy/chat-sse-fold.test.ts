@@ -118,6 +118,14 @@ test("空工具占位符不算工具边界", () => {
   // 完全没有内容的空壳（连 id 都没有）要丢掉。
   assert.equal(chatToolDeltaHasContent({ function: { name: "", arguments: "" } }), false)
   assert.equal(chatToolDeltaStartsCall({ function: { name: "", arguments: "" } }), false)
+  // 工具 JSON 字符串可能把空格单独切成一帧。它不是空占位符，必须进入参数累积；
+  // 但纯空格本身也不应提前触发“工具调用开始”的推理收尾边界。
+  const whitespaceArgument = { function: { name: "", arguments: " " } }
+  assert.equal(chatToolDeltaHasContent(whitespaceArgument), true)
+  assert.equal(chatToolDeltaStartsCall(whitespaceArgument), false)
+  assert.deepEqual(chatToolDeltas({ tool_calls: [whitespaceArgument] }), [
+    { position: 0, value: whitespaceArgument, startsCall: false },
+  ])
 
   const placeholder = {
     tool_calls: [],
@@ -239,6 +247,58 @@ test("折叠时保留推理与正文里的空格", () => {
 
   assert.equal(folded.choices[0].message.reasoning_content, "Simple question.")
   assert.equal(folded.choices[0].message.content, "Hello world。")
+})
+
+test("折叠时保留工具参数单独成帧的空格", () => {
+  const folded = foldChatSsePayload(
+    chunk({
+      id: "cmb-tool-space",
+      model: "deepseek-v4.1-flash",
+      choices: [{
+        index: 0,
+        delta: {
+          tool_calls: [{
+            index: 0,
+            id: "call_space",
+            type: "function",
+            function: {
+              name: "exec_command",
+              arguments: "{\"cmd\":\"Start-Sleep -Seconds",
+            },
+          }],
+        },
+      }],
+    }) +
+      chunk({
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{
+              index: 0,
+              function: { name: "", arguments: " " },
+            }],
+          },
+        }],
+      }) +
+      chunk({
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{
+              index: 0,
+              function: { name: "", arguments: "30\"}" },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      }) +
+      "data: [DONE]\n\n",
+  ) as Record<string, any>
+
+  assert.equal(
+    folded.choices[0].message.tool_calls[0].function.arguments,
+    "{\"cmd\":\"Start-Sleep -Seconds 30\"}",
+  )
 })
 
 test("折叠文本块数组时也保留空格", () => {
