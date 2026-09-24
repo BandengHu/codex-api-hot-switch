@@ -4,8 +4,10 @@ import test from "node:test"
 import type { Model, Provider } from "@/lib/types"
 import {
   WORKBUDDY_CREDENTIAL_PLACEHOLDER,
+  WORKBUDDY_MAX_CONTEXT_LENGTH,
   WORKBUDDY_PROVIDER_ID,
   WORKBUDDY_SEED_STATE_VERSION,
+  clampWorkbuddyContextLength,
   isWorkbuddyProvider,
   seedWorkbuddyBuiltin,
   workbuddyCatalogModels,
@@ -57,7 +59,7 @@ test("模型目录地址取站点根上的 /v3/config", () => {
   )
 })
 
-test("目录里只保留能走 chat 接口的模型", () => {
+test("目录里只保留能走 chat 接口的模型，并把上下文压到账号实际可用容量", () => {
   const models = workbuddyCatalogModels({
     code: 0,
     data: {
@@ -68,6 +70,12 @@ test("目录里只保留能走 chat 接口的模型", () => {
           maxInputTokens: 1_000_000,
           supportsImages: true,
           supportsReasoning: true,
+          supportsToolCall: true,
+        },
+        {
+          id: "hy3",
+          name: "Hy3",
+          maxInputTokens: 192_000,
           supportsToolCall: true,
         },
         { id: "hunyuan-image-alpha", name: "Hunyuan Image" },
@@ -85,9 +93,17 @@ test("目录里只保留能走 chat 接口的模型", () => {
     {
       id: "hy4-preview",
       displayName: "Hy4 preview",
-      contextLength: 1_000_000,
+      contextLength: WORKBUDDY_MAX_CONTEXT_LENGTH,
       supportsReasoning: true,
       supportsVision: true,
+      supportsTools: true,
+    },
+    {
+      id: "hy3",
+      displayName: "Hy3",
+      contextLength: 192_000,
+      supportsReasoning: false,
+      supportsVision: false,
       supportsTools: true,
     },
   ])
@@ -142,4 +158,18 @@ test("铺底版本之后，用户删光内置供应商和模型都不会复活",
   const emptied = seedWorkbuddyBuiltin([workbuddyProviderTemplate()], [], version)
   assert.deepEqual(emptied.models, [])
   assert.equal(emptied.providers.length, 1)
+})
+
+test("上下文上限只压不抬，铺底模型一律不超过 272K", () => {
+  assert.equal(clampWorkbuddyContextLength(1_000_000), WORKBUDDY_MAX_CONTEXT_LENGTH)
+  assert.equal(clampWorkbuddyContextLength(512_000), WORKBUDDY_MAX_CONTEXT_LENGTH)
+  assert.equal(clampWorkbuddyContextLength(272_000), 272_000)
+  assert.equal(clampWorkbuddyContextLength(192_000), 192_000)
+
+  for (const model of workbuddyPresetModels()) {
+    assert.ok(
+      model.contextLength <= WORKBUDDY_MAX_CONTEXT_LENGTH,
+      `${model.modelId} 的上下文 ${model.contextLength} 超过了上限`,
+    )
+  }
 })

@@ -53,6 +53,21 @@ const WORKBUDDY_MODEL_IDS = [
 ] as const
 
 /**
+ * 内置 WorkBuddy 模型对 Codex 报的上下文上限。
+ *
+ * 上游目录把它那批模型写成 100 万，但账号侧实际给不了那么大：请求堆到 35 万 token 上下
+ * 之后多次出现「模型只吐一句计划、不返回 tool_calls」的软失败——上游不报错、也不截断，
+ * 只是工具调用静默消失，Codex 那边就当成回合正常结束，看起来就是任务做到一半断了。
+ * 这里按上游实际可用容量铺底，让 Codex 早一点压缩，而不是等到 40 万 token 才动。
+ */
+export const WORKBUDDY_MAX_CONTEXT_LENGTH = 272_000
+
+/** 目录与状态里的上下文长度统一压到上限，避免把 100 万直接透给 Codex。 */
+export function clampWorkbuddyContextLength(value: number) {
+  return value > WORKBUDDY_MAX_CONTEXT_LENGTH ? WORKBUDDY_MAX_CONTEXT_LENGTH : value
+}
+
+/**
  * 内置供应商的初始模型。
  *
  * 名单取自上游 `/v3/config` 里 `agents[cli].models`（也就是它给自己 CLI Agent 开的那批
@@ -66,21 +81,21 @@ const WORKBUDDY_PRESET_MODELS: Array<{
   supportsReasoning: boolean
   supportsVision: boolean
 }> = [
-  { displayName: "Hy4 Preview", modelId: "hy4-preview", contextLength: 1_000_000, supportsReasoning: true, supportsVision: true },
-  { displayName: "Hy4 Preview X", modelId: "hy4-preview-x", contextLength: 1_000_000, supportsReasoning: true, supportsVision: true },
+  { displayName: "Hy4 Preview", modelId: "hy4-preview", contextLength: WORKBUDDY_MAX_CONTEXT_LENGTH, supportsReasoning: true, supportsVision: true },
+  { displayName: "Hy4 Preview X", modelId: "hy4-preview-x", contextLength: WORKBUDDY_MAX_CONTEXT_LENGTH, supportsReasoning: true, supportsVision: true },
   { displayName: "Hy3", modelId: "hy3", contextLength: 192_000, supportsReasoning: true, supportsVision: true },
   { displayName: "Hy3 X", modelId: "hy3-x", contextLength: 192_000, supportsReasoning: true, supportsVision: true },
-  { displayName: "DeepSeek V4 Pro", modelId: "deepseek-v4-pro", contextLength: 1_000_000, supportsReasoning: true, supportsVision: true },
-  { displayName: "DeepSeek V4.1 Flash", modelId: "deepseek-v4.1-flash", contextLength: 1_000_000, supportsReasoning: true, supportsVision: true },
-  { displayName: "GLM 5.3", modelId: "glm-5.3", contextLength: 1_000_000, supportsReasoning: true, supportsVision: true },
-  { displayName: "GLM 5.3 Flash", modelId: "glm-5.3-flash", contextLength: 1_000_000, supportsReasoning: true, supportsVision: true },
-  { displayName: "GLM 5.2", modelId: "glm-5.2", contextLength: 1_000_000, supportsReasoning: true, supportsVision: true },
+  { displayName: "DeepSeek V4 Pro", modelId: "deepseek-v4-pro", contextLength: WORKBUDDY_MAX_CONTEXT_LENGTH, supportsReasoning: true, supportsVision: true },
+  { displayName: "DeepSeek V4.1 Flash", modelId: "deepseek-v4.1-flash", contextLength: WORKBUDDY_MAX_CONTEXT_LENGTH, supportsReasoning: true, supportsVision: true },
+  { displayName: "GLM 5.3", modelId: "glm-5.3", contextLength: WORKBUDDY_MAX_CONTEXT_LENGTH, supportsReasoning: true, supportsVision: true },
+  { displayName: "GLM 5.3 Flash", modelId: "glm-5.3-flash", contextLength: WORKBUDDY_MAX_CONTEXT_LENGTH, supportsReasoning: true, supportsVision: true },
+  { displayName: "GLM 5.2", modelId: "glm-5.2", contextLength: WORKBUDDY_MAX_CONTEXT_LENGTH, supportsReasoning: true, supportsVision: true },
   { displayName: "GLM 5.1", modelId: "glm-5.1", contextLength: 200_000, supportsReasoning: true, supportsVision: true },
   { displayName: "GLM 5V Turbo", modelId: "glm-5v-turbo", contextLength: 200_000, supportsReasoning: true, supportsVision: true },
-  { displayName: "MiniMax M3", modelId: "minimax-m3", contextLength: 512_000, supportsReasoning: true, supportsVision: true },
+  { displayName: "MiniMax M3", modelId: "minimax-m3", contextLength: WORKBUDDY_MAX_CONTEXT_LENGTH, supportsReasoning: true, supportsVision: true },
   { displayName: "MiniMax M2.7", modelId: "minimax-m2.7", contextLength: 200_000, supportsReasoning: true, supportsVision: true },
-  { displayName: "Kimi K3", modelId: "kimi-k3-1", contextLength: 1_000_000, supportsReasoning: true, supportsVision: true },
-  { displayName: "Kimi K2.8 Preview", modelId: "kimi-k2.8-preview", contextLength: 1_000_000, supportsReasoning: true, supportsVision: true },
+  { displayName: "Kimi K3", modelId: "kimi-k3-1", contextLength: WORKBUDDY_MAX_CONTEXT_LENGTH, supportsReasoning: true, supportsVision: true },
+  { displayName: "Kimi K2.8 Preview", modelId: "kimi-k2.8-preview", contextLength: WORKBUDDY_MAX_CONTEXT_LENGTH, supportsReasoning: true, supportsVision: true },
   { displayName: "Kimi K2.7 Code", modelId: "kimi-k2.7", contextLength: 256_000, supportsReasoning: true, supportsVision: true },
   { displayName: "Kimi K2.6", modelId: "kimi-k2.6", contextLength: 256_000, supportsReasoning: true, supportsVision: true },
 ]
@@ -180,7 +195,7 @@ export function workbuddyPresetModels(): Model[] {
       ...(preset.supportsVision ? ["vision"] : []),
       "tools",
     ],
-    contextLength: preset.contextLength,
+    contextLength: clampWorkbuddyContextLength(preset.contextLength),
     supportsReasoning: preset.supportsReasoning,
     reasoningDialect: WORKBUDDY_REASONING_DIALECT,
     supportsVision: preset.supportsVision,
@@ -234,7 +249,7 @@ export function workbuddyCatalogModels(payload: unknown): DiscoveredModel[] {
     discovered.push({
       id,
       displayName: asString(record.name) || id,
-      contextLength,
+      contextLength: clampWorkbuddyContextLength(contextLength),
       supportsReasoning: record.supportsReasoning === true,
       supportsVision: record.supportsImages === true,
       supportsTools: record.supportsToolCall === true,

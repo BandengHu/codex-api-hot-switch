@@ -13,6 +13,8 @@ import { initialSnapshot } from "@/lib/mock-data"
 import { isChatModel, isImageGenerationModel } from "@/lib/model-capabilities"
 import { createProviderEndpoint } from "@/lib/provider-endpoints"
 import {
+  clampWorkbuddyContextLength,
+  isWorkbuddyProvider,
   seedWorkbuddyBuiltin,
 } from "@/lib/workbuddy-provider"
 import {
@@ -205,6 +207,24 @@ function normalizeModel(model: Model): Model {
   }
 }
 
+/**
+ * 把 WorkBuddy 系模型的上下文长度收敛到账号实际可用容量。
+ *
+ * 老状态里存的还是上游目录报的 100 万；只在铺底那一刻改常量管不到已存数据，所以这里
+ * 按供应商归属在读取时统一压一次，用户自己填的更小值不动。
+ */
+function clampWorkbuddyModelContexts(models: Model[], providers: Provider[]): Model[] {
+  const workbuddyProviderIds = new Set(
+    providers.filter((provider) => isWorkbuddyProvider(provider)).map((provider) => provider.id),
+  )
+  if (workbuddyProviderIds.size === 0) return models
+  return models.map((model) =>
+    workbuddyProviderIds.has(model.providerId)
+      ? { ...model, contextLength: clampWorkbuddyContextLength(model.contextLength) }
+      : model,
+  )
+}
+
 function normalizeFloatingBallPosition(value: unknown): FloatingBallPosition | undefined {
   if (!value || typeof value !== "object") return undefined
   const position = value as Partial<FloatingBallPosition>
@@ -389,7 +409,7 @@ function normalizeSnapshot(value: Partial<ConsoleSnapshot>): ConsoleSnapshot {
     Number(value.version) || 0,
   )
   const providers = seeded.providers
-  const models = seeded.models
+  const models = clampWorkbuddyModelContexts(seeded.models, providers)
   const settings = normalizeSettings(value.settings ?? {}, seed.settings)
   const enabledProviderIds = new Set(
     providers.filter((provider) => provider.enabled).map((provider) => provider.id),
