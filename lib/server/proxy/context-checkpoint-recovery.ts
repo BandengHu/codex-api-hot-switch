@@ -4,13 +4,10 @@ const CODEX_HANDOFF_PREFIX =
   "Another language model started to solve this problem and produced a summary of its thinking process."
 const LOCAL_CHECKPOINT_PREFIX = "<conversation-checkpoint>"
 
-export const CONTEXT_CHECKPOINT_RECOVERY_INSTRUCTION = [
-  "这是一次上下文压缩后的恢复请求。",
-  "最近一条包含交接摘要的用户消息替代了它之前的普通对话；更早的用户消息都是已处理历史，不能重新回答或重新执行。",
-  "交接摘要之后的消息是压缩后新增的指令，必须按顺序处理，并以后发消息为准。",
-  "如果最新用户消息是“继续”等续接指令，请直接从交接摘要中的当前主线、正在进行的工作或下一步继续。",
-  "只有交接摘要明确标记为未完成的事项才可继续处理，不要复述这条恢复规则。",
-].join("")
+export const CONTEXT_CHECKPOINT_HEADING =
+  "The following is the compacted conversation context from an earlier turn:"
+export const CONTEXT_CHECKPOINT_CONTINUE_PROMPT =
+  "请根据上述压缩后的会话状态，直接继续尚未完成的当前任务。"
 
 function isObject(value: unknown): value is AnyRecord {
   return Boolean(value && typeof value === "object" && !Array.isArray(value))
@@ -73,10 +70,18 @@ export function normalizeContextCheckpointRecoveryMessages(messages: AnyRecord[]
       retained.push({ ...message, role: "system" })
     }
   }
-  retained.push(...messages.slice(checkpointIndex))
+  const checkpointText = contentText(messages[checkpointIndex]?.content).trim()
   retained.push({
-    role: "system",
-    content: CONTEXT_CHECKPOINT_RECOVERY_INSTRUCTION,
+    role: "assistant",
+    content: `${CONTEXT_CHECKPOINT_HEADING}\n\n${checkpointText}`,
   })
+  const following = messages.slice(checkpointIndex + 1)
+  retained.push(...following)
+  if (!following.some((message) => isObject(message) && message.role === "user")) {
+    retained.push({
+      role: "user",
+      content: CONTEXT_CHECKPOINT_CONTINUE_PROMPT,
+    })
+  }
   return retained
 }

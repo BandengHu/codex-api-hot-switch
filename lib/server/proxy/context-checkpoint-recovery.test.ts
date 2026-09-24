@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
-  CONTEXT_CHECKPOINT_RECOVERY_INSTRUCTION,
+  CONTEXT_CHECKPOINT_CONTINUE_PROMPT,
   isContextCheckpointRecovery,
   normalizeContextCheckpointRecoveryMessages,
 } from "./context-checkpoint-recovery"
@@ -28,12 +28,13 @@ test("Codex 交接摘要触发恢复指令", () => {
   const normalized = normalizeContextCheckpointRecoveryMessages(messages)
 
   assert.equal(isContextCheckpointRecovery(messages), true)
-  assert.deepEqual(normalized.map((message) => message.role), ["system", "user", "system"])
+  assert.deepEqual(normalized.map((message) => message.role), ["system", "assistant", "user"])
   assert.equal(normalized.some((message) => message.content === "已经处理过的旧问题"), false)
   assert.deepEqual(normalized.at(-1), {
-    role: "system",
-    content: CONTEXT_CHECKPOINT_RECOVERY_INSTRUCTION,
+    role: "user",
+    content: CONTEXT_CHECKPOINT_CONTINUE_PROMPT,
   })
+  assert.match(normalized[1].content, /当前主线：继续修复/u)
 })
 
 test("本地 compact fallback 的 checkpoint 标签触发恢复指令", () => {
@@ -63,8 +64,9 @@ test("checkpoint 后只有工具结果时仍保留 checkpoint 与工具结果", 
   const normalized = normalizeContextCheckpointRecoveryMessages(messages)
 
   assert.equal(isContextCheckpointRecovery(messages), true)
-  assert.deepEqual(normalized.map((message) => message.role), ["user", "tool", "system"])
+  assert.deepEqual(normalized.map((message) => message.role), ["assistant", "tool", "user"])
   assert.equal(normalized[0].content.includes("下一步：运行测试"), true)
+  assert.equal(normalized[2].content, CONTEXT_CHECKPOINT_CONTINUE_PROMPT)
 })
 
 test("checkpoint 后出现新的用户消息时保留新任务并清除旧历史", () => {
@@ -77,7 +79,7 @@ test("checkpoint 后出现新的用户消息时保留新任务并清除旧历史
   const normalized = normalizeContextCheckpointRecoveryMessages(messages)
 
   assert.equal(isContextCheckpointRecovery(messages), true)
-  assert.deepEqual(normalized.map((message) => message.role), ["user", "user", "system"])
+  assert.deepEqual(normalized.map((message) => message.role), ["assistant", "user"])
   assert.equal(normalized[0].content.includes("旧摘要"), true)
   assert.equal(normalized[1].content, "这是压缩后新发的任务")
   assert.equal(normalized.some((message) => message.content === "压缩前已经处理完的旧问题"), false)
@@ -97,7 +99,7 @@ test("checkpoint 后发送继续时仍能从摘要恢复", () => {
 
   const normalized = normalizeContextCheckpointRecoveryMessages(messages)
 
-  assert.deepEqual(normalized.map((message) => message.role), ["user", "user", "system"])
+  assert.deepEqual(normalized.map((message) => message.role), ["assistant", "user"])
   assert.equal(normalized[0].content.includes("当前主线：排查 chat_5"), true)
   assert.equal(normalized[1].content, "继续")
   assert.equal(normalized.some((message) => message.content === "压缩前已经处理完的旧问题"), false)
@@ -117,7 +119,7 @@ test("AGENTS 指令被提升为 system，普通历史用户消息被摘要替代
 
   const normalized = normalizeContextCheckpointRecoveryMessages(messages)
 
-  assert.deepEqual(normalized.map((message) => message.role), ["system", "user", "system"])
+  assert.deepEqual(normalized.map((message) => message.role), ["system", "assistant", "user"])
   assert.equal(normalized[0].content.includes("只能使用 pwsh"), true)
   assert.equal(normalized.some((message) => message.content === "旧任务"), false)
 })
