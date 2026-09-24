@@ -33,6 +33,7 @@ import { assertSseBufferWithinLimit, lastCompleteSseFrameBoundary } from "./sse-
 import { normalizeChatToolPairing } from "./chat-tool-pairing"
 import { chatWireToolChoice } from "./chat-tool-choice"
 import { chatStreamHasUsableOutput, chatToolDeltas, parseChatSseFrames } from "./chat-sse-fold"
+import { normalizeContextCheckpointRecoveryMessages } from "./context-checkpoint-recovery"
 import { isWorkbuddyProvider } from "@/lib/workbuddy-provider"
 import {
   enrichCodexChatRequest,
@@ -647,7 +648,10 @@ export function responsesToChatCompletions(body: AnyRecord, target: ProxyTarget)
   backfillToolCallReasoningPlaceholders(messages, target)
   // 出站前把工具配对收口：结果重排到一起、剔掉无法配对的半截条目。上游对配对断裂的
   // 请求会直接 400，而坏历史会被每次请求重放，等于整条会话报废（见 chat-tool-pairing.ts）。
-  result.messages = collapseSystemMessagesToHead(normalizeChatToolPairing(messages))
+  const normalizedMessages = normalizeContextCheckpointRecoveryMessages(
+    normalizeChatToolPairing(messages),
+  )
+  result.messages = collapseSystemMessagesToHead(normalizedMessages)
 
   const reasoningDialect = resolveReasoningDialect(target)
   const maxOutputTokens = body.max_output_tokens ?? body.max_tokens ?? body.max_completion_tokens
