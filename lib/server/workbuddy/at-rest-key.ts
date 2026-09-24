@@ -63,7 +63,7 @@ export async function resolveWorkbuddyAtRestKey(expectedKeyId: string): Promise<
     [
       "WorkBuddy 本机登录态里的字段已被新版桌面端加密（$wbEncrypted），但没取到解密钥。",
       ...rejected.map((reason) => `- ${reason}`),
-      `请确认 WorkBuddy 桌面端正在运行且已登录（中转需要从它的进程里取构建期 at-rest 密钥）；`,
+      "启动一次 WorkBuddy 桌面端（保持已登录）再重试即可：中转会从它的进程里取到构建期 at-rest 密钥并缓存到本机，之后不用再开着 WorkBuddy；",
       `也可以把密钥写进 ${workbuddyAtRestKeyCachePath()} 的 secret 字段，或设置环境变量 ${ENV_KEY_NAME}。`,
     ].join("\n"),
   )
@@ -150,13 +150,14 @@ async function scanSecretFromWorkbuddyProcess(
 }
 
 function describeCommandError(error: unknown) {
-  const detail = error as NodeJS.ErrnoException & { stderr?: string; stdout?: string }
+  const detail = error as NodeJS.ErrnoException & { stderr?: string; stdout?: string; killed?: boolean }
   if (detail.code === "ENOENT") return "本机既没有 pwsh 也没有 powershell.exe"
-  const text = [detail.stderr, detail.stdout, detail.message]
-    .map((part) => part?.trim())
-    .filter(Boolean)
-    .join(" ")
-  return text.slice(0, 500) || "未知错误"
+  if (detail.killed) return `扫描 WorkBuddy 进程内存超过 ${SCAN_TIMEOUT_MS / 1000} 秒被终止`
+  // 脚本自己写的 stderr 就是最准确的失败原因。execFile 的 message 会把整条命令行和这段
+  // stderr 再拼一遍，用它会把同一句原因重复显示三遍并夹进命令行。
+  const reported = detail.stderr?.trim() || detail.stdout?.trim()
+  if (reported) return reported.slice(0, 500)
+  return detail.code ? `启动扫描进程失败：${detail.code}` : "未知错误"
 }
 
 /**
