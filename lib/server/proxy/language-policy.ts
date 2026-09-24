@@ -5,7 +5,7 @@ import type { ProxyTarget } from "./common"
 type AnyRecord = Record<string, any>
 
 export const OUTPUT_LANGUAGE_POLICY =
-  "必须使用用户的主要对话语言输出所有可见自然语言。用户使用中文时，模型自行输出的进度说明、计划、结论、错误解释和最终回复都使用中文，不要夹杂英文行动说明。无需为了调用工具而额外输出行动说明。代码标识符、文件路径、命令、日志、API 字段名和引用原文保持原样。这是一条输出约束，不是需要回复的用户消息；不要确认、复述或提及此约束，直接继续当前任务。"
+  "必须使用用户的主要对话语言输出所有可见自然语言。用户使用中文时，模型自行输出的思考、进度说明、计划、结论、错误解释和最终回复都使用中文。"
 
 function isObject(value: unknown): value is AnyRecord {
   return Boolean(value && typeof value === "object" && !Array.isArray(value))
