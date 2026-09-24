@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  chatStreamHasUsableOutput,
   chatToolDeltaHasContent,
   chatToolDeltaStartsCall,
   chatToolDeltas,
@@ -248,4 +249,72 @@ test("折叠文本块数组时也保留空格", () => {
   ) as Record<string, any>
 
   assert.equal(folded.choices[0].message.content, "Hello world")
+})
+
+test("额度花在推理上被截断算正常收尾，不算空响应", () => {
+  // hy4-preview 这类模型关不掉思考，max_tokens 小的时候推理会吃满额度、
+  // 正文一个字都没写出来，上游给 finish_reason=length。这是正常收尾，
+  // 报 failed 会让调用方把已经拿到的思考内容整段丢掉。
+  assert.equal(
+    chatStreamHasUsableOutput({
+      hasVisibleMessage: false,
+      hasToolCall: false,
+      reasoning: "让我想想这个问题……",
+      finishReason: "length",
+    }),
+    true,
+  )
+
+  // 正常结束却只有推理、没有正文：这一轮确实没产出可用答案，该报错。
+  assert.equal(
+    chatStreamHasUsableOutput({
+      hasVisibleMessage: false,
+      hasToolCall: false,
+      reasoning: "让我想想",
+      finishReason: "stop",
+    }),
+    false,
+  )
+
+  // 什么都没有，也不是截断：空响应。
+  assert.equal(
+    chatStreamHasUsableOutput({
+      hasVisibleMessage: false,
+      hasToolCall: false,
+      reasoning: "",
+      finishReason: "stop",
+    }),
+    false,
+  )
+
+  // 截断但连推理都没有，同样是空响应。
+  assert.equal(
+    chatStreamHasUsableOutput({
+      hasVisibleMessage: false,
+      hasToolCall: false,
+      reasoning: "",
+      finishReason: "length",
+    }),
+    false,
+  )
+
+  // 有正文或有工具调用就是正常产出，与 finish_reason 无关。
+  assert.equal(
+    chatStreamHasUsableOutput({
+      hasVisibleMessage: true,
+      hasToolCall: false,
+      reasoning: "",
+      finishReason: "stop",
+    }),
+    true,
+  )
+  assert.equal(
+    chatStreamHasUsableOutput({
+      hasVisibleMessage: false,
+      hasToolCall: true,
+      reasoning: "",
+      finishReason: "tool_calls",
+    }),
+    true,
+  )
 })

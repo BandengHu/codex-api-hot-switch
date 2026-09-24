@@ -30,7 +30,7 @@ import {
   canonicalToolArgumentsString,
 } from "./json-canonical"
 import { lastCompleteSseFrameBoundary } from "./sse-frame"
-import { chatToolDeltas, parseChatSseFrames } from "./chat-sse-fold"
+import { chatStreamHasUsableOutput, chatToolDeltas, parseChatSseFrames } from "./chat-sse-fold"
 import { isWorkbuddyProvider } from "@/lib/workbuddy-provider"
 import {
   enrichCodexChatRequest,
@@ -1715,7 +1715,14 @@ function finalizeChatSse(
   const hasToolCall = Array.from(state.toolCalls.values()).some((toolCall) =>
     toolCall.name.trim().length > 0,
   )
-  if (!hasVisibleMessage && !hasToolCall) {
+  if (
+    !chatStreamHasUsableOutput({
+      hasVisibleMessage,
+      hasToolCall,
+      reasoning: state.reasoning,
+      finishReason: state.finishReason,
+    })
+  ) {
     return out + failedChatSse(
       state,
       state.reasoning.trim()

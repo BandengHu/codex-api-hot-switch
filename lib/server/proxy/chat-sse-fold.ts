@@ -39,6 +39,29 @@ export function chatToolDeltaStartsCall(value: unknown) {
 }
 
 /**
+ * 上游这一轮到底有没有交出东西。
+ *
+ * 三种情况都算有产出，不能报成失败：
+ * - 有可见正文或工具调用（常规回答）；
+ * - 被 `finish_reason=length` 截断但已经给出推理——额度花在思考上、正文还没开写就被
+ *   掐掉，是上游的正常收尾，推理本身就是这一轮的产出，报失败会让调用方丢掉已经拿到的内容；
+ * - 除了上面两种以外，只要没有任何产出才是真的空响应。
+ *
+ * `reasoning` 只在截断时才算产出：上游正常结束时只给推理不给正文，说明这一轮确实没
+ * 生成出可用的答案，那时候报错是对的。
+ */
+export function chatStreamHasUsableOutput(params: {
+  hasVisibleMessage: boolean
+  hasToolCall: boolean
+  reasoning: string
+  finishReason: string
+}) {
+  if (params.hasVisibleMessage || params.hasToolCall) return true
+  if (params.finishReason.trim().toLowerCase() !== "length") return false
+  return Boolean(params.reasoning.trim())
+}
+
+/**
  * 取出这一帧要合并的工具调用增量，保留它在原数组里的下标作为兜底索引。
  * `function_call` 是单数形式的旧字段，统一包装成带 index 的形态。
  */
