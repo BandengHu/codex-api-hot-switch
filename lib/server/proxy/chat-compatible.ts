@@ -31,6 +31,7 @@ import {
 } from "./json-canonical"
 import { assertSseBufferWithinLimit, lastCompleteSseFrameBoundary } from "./sse-frame"
 import { normalizeChatToolPairing } from "./chat-tool-pairing"
+import { chatWireToolChoice } from "./chat-tool-choice"
 import { chatStreamHasUsableOutput, chatToolDeltas, parseChatSseFrames } from "./chat-sse-fold"
 import { isWorkbuddyProvider } from "@/lib/workbuddy-provider"
 import {
@@ -667,7 +668,11 @@ export function responsesToChatCompletions(body: AnyRecord, target: ProxyTarget)
   const tools = responsesToolsToChatTools([...responseTools, ...loadedTools], toolContext)
   if (tools.length > 0) {
     result.tools = tools
-    const toolChoice = responsesToolChoiceToChat(body.tool_choice, toolContext)
+    // 上游只认字符串 tool_choice，对象一律 400（见 chat-tool-choice.ts 的实测记录）。
+    const toolChoice = chatWireToolChoice(
+      responsesToolChoiceToChat(body.tool_choice, toolContext),
+      tools,
+    )
     if (toolChoice != null) result.tool_choice = toolChoice
     if (body.parallel_tool_calls != null) result.parallel_tool_calls = body.parallel_tool_calls
   }
