@@ -3,12 +3,22 @@ import "server-only"
 import { readFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import {
+  isEncryptedFieldWrapper,
+  openFieldString,
+  parseFieldEnvelope,
+  type WorkbuddyAtRestKey,
+} from "./at-rest"
+import { resolveWorkbuddyAtRestKey } from "./at-rest-key"
 
 /**
  * 读 WorkBuddy 桌面端写在本机的登录态。
  *
  * 这里不做缓存：文件 5KB 左右，每次请求读一次能保证换号/续期后立刻生效。
  * 过期不做刷新——上游没有给刷新接口，桌面端自己也是重新登录，所以直接报错让用户去登录。
+ *
+ * 5.6.2 起桌面端把 token 等敏感字段换成了 `$wbEncrypted` 静态钥信封，读到信封时
+ * 由 at-rest 模块解出明文；解密钥的来源与缓存见 `at-rest-key.ts`。
  */
 
 export interface WorkbuddyAccount {
@@ -60,7 +70,7 @@ export async function readWorkbuddyAccount(): Promise<WorkbuddyAccount> {
   return parseWorkbuddyAccount(raw, path)
 }
 
-export function parseWorkbuddyAccount(raw: string, path: string): WorkbuddyAccount {
+export async function parseWorkbuddyAccount(raw: string, path: string): Promise<WorkbuddyAccount> {
   let payload: unknown
   try {
     payload = JSON.parse(raw)
@@ -72,7 +82,41 @@ export function parseWorkbuddyAccount(raw: string, path: string): WorkbuddyAccou
   const record = asRecord(payload)
   const auth = asRecord(record.auth)
   const account = asRecord(record.account)
-  const accessToken = asString(auth.accessToken)
+
+  let atRestKey: WorkbuddyAtRestKey | undefined
+  const decode = async (value: unknown, label: string) => {
+    if (typeof value === "string") return value.trim()
+    if (!isEncryptedFieldWrapper(value)) return ""
+    if (!atRestKey) {
+      try {
+        const { keyId } = parseFieldEnvelope(value)
+        atRestKey = await resolveWorkbuddyAtRestKey(keyId)
+      } catch (error) {
+        throw new WorkbuddyAccountError(
+          `WorkBuddy 本机登录态里的 ${label} 是加密字段（${path}），但解不开：` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+    }
+    try {
+      return openFieldString(value, atRestKey).trim()
+    } catch (error) {
+      throw new WorkbuddyAccountError(
+        `WorkBuddy 本机登录态里的 ${label} 解密失败（${path}）：` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+  }
+  // 展示用字段：解不开不影响中转，不能连累 token。
+  const decodeOptional = async (value: unknown) => {
+    try {
+      return await decode(value, "展示字段")
+    } catch {
+      return ""
+    }
+  }
+
+  const accessToken = await decode(auth.accessToken, "auth.accessToken")
   if (!accessToken) {
     throw new WorkbuddyAccountError(
       `WorkBuddy 本机登录态里没有 accessToken（${path}），请在桌面端重新登录。`,
@@ -86,11 +130,11 @@ export function parseWorkbuddyAccount(raw: string, path: string): WorkbuddyAccou
   }
   return {
     accessToken,
-    refreshToken: asString(auth.refreshToken),
+    refreshToken: await decode(auth.refreshToken, "auth.refreshToken"),
     expiresAt,
     domain: asString(auth.domain),
     uid: asString(account.uid),
-    nickname: asString(account.nickname),
+    nickname: await decodeOptional(account.nickname),
     uin: asString(account.uin),
   }
 }

@@ -671,6 +671,10 @@ export function stateFilePath() {
   return STATE_PATH
 }
 
+export function hotSwitchDataDir() {
+  return DATA_DIR
+}
+
 export async function ensureParentDir(path: string) {
   await mkdir(dirname(path), { recursive: true })
 }

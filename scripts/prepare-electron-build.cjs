@@ -364,6 +364,7 @@ async function main() {
     "codex-desktop-plugins-runner.cjs",
     "codex-desktop-model-whitelist-runner.cjs",
     "switchgate-web-search-mcp.cjs",
+    "workbuddy-at-rest-key.ps1",
   ]) {
     await fs.copyFile(
       path.join(root, "scripts", runner),
