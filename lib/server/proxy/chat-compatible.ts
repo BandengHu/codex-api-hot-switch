@@ -29,7 +29,7 @@ import {
   canonicalToolArguments,
   canonicalToolArgumentsString,
 } from "./json-canonical"
-import { lastCompleteSseFrameBoundary } from "./sse-frame"
+import { assertSseBufferWithinLimit, lastCompleteSseFrameBoundary } from "./sse-frame"
 import { chatStreamHasUsableOutput, chatToolDeltas, parseChatSseFrames } from "./chat-sse-fold"
 import { isWorkbuddyProvider } from "@/lib/workbuddy-provider"
 import {
@@ -1055,10 +1055,15 @@ export function createChatToResponsesSseStream(
     transform(chunk, controller) {
       buffer += decoder.decode(chunk, { stream: true })
       const boundary = lastCompleteSseFrameBoundary(buffer)
-      if (!boundary) return
+      if (!boundary) {
+        // 还没成帧时先确认残留没超限：畸形上游会一直吐不带分隔符的长串。
+        assertSseBufferWithinLimit(buffer)
+        return
+      }
       const end = boundary.index + boundary.separatorLength
       const head = buffer.slice(0, end)
       buffer = buffer.slice(end)
+      assertSseBufferWithinLimit(buffer)
       const out = chatSseTextToResponsesSse(
         head,
         adapter.originalRequest,

@@ -11,6 +11,7 @@ import {
 } from "./responses-tool-search-compat"
 import { applyAssistantMessagePhase } from "./common"
 import { repairResponsesItemIdsInSsePayload } from "./responses-item-id-repair"
+import { assertSseBufferWithinLimit } from "./sse-frame"
 
 type AnyRecord = Record<string, any>
 
@@ -303,7 +304,10 @@ class ResponsesStreamRepairer {
     let out = ""
     while (true) {
       const boundary = splitSseFrame(this.buffer)
-      if (!boundary) break
+      if (!boundary) {
+        assertSseBufferWithinLimit(this.buffer)
+        break
+      }
       const frameText = this.buffer.slice(0, boundary.index)
       this.buffer = this.buffer.slice(boundary.index + boundary.separatorLength)
       out += this.processFrame(frameText)
@@ -1590,12 +1594,16 @@ export function createChatCompletionsSseStream(
       buffer += decoder.decode(chunk, { stream: true })
       while (true) {
         const boundary = splitSseFrame(buffer)
-        if (!boundary) break
+        if (!boundary) {
+          assertSseBufferWithinLimit(buffer)
+          break
+        }
         const frameText = buffer.slice(0, boundary.index)
         buffer = buffer.slice(boundary.index + boundary.separatorLength)
         const out = processFrame(frameText)
         if (out) controller.enqueue(textEncoder.encode(out))
       }
+      assertSseBufferWithinLimit(buffer)
     },
     flush(controller) {
       buffer += decoder.decode()

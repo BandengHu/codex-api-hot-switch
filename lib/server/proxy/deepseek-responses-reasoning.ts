@@ -1,4 +1,5 @@
 import type { ProxyTarget } from "./common"
+import { assertSseBufferWithinLimit } from "./sse-frame"
 
 type AnyRecord = Record<string, any>
 
@@ -207,11 +208,15 @@ export function createDeepSeekResponsesReasoningStream(target: ProxyTarget) {
       buffer += textDecoder.decode(chunk, { stream: true })
       while (true) {
         const boundary = splitSseFrame(buffer)
-        if (!boundary) break
+        if (!boundary) {
+          assertSseBufferWithinLimit(buffer)
+          break
+        }
         const frame = buffer.slice(0, boundary.index)
         buffer = buffer.slice(boundary.index + boundary.separator.length)
         controller.enqueue(textEncoder.encode(normalizeSseFrame(frame) + boundary.separator))
       }
+      assertSseBufferWithinLimit(buffer)
     },
     flush(controller) {
       buffer += textDecoder.decode()
