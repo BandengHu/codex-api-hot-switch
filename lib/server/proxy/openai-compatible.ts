@@ -70,7 +70,8 @@ function normalizeDashScopeQwenResponsesEffort(effort: unknown) {
   if (typeof effort !== "string") return undefined
   const normalized = effort.trim().toLowerCase()
   if (normalized === "off" || normalized === "disabled") return "none"
-  if (normalized === "xhigh" || normalized === "max" || normalized === "ultra") return "high"
+  // Qwen3.8 Responses 官方档位是 low/medium/xhigh；max/ultra 是桌面端超集档。
+  if (normalized === "xhigh" || normalized === "max" || normalized === "ultra") return "xhigh"
   if (["none", "minimal", "low", "medium", "high"].includes(normalized)) {
     return normalized
   }
