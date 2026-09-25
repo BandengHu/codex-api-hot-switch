@@ -354,7 +354,7 @@ function orphanToolOutputMessage(callId: string, output: unknown) {
 
 function appendReasoningToAssistant(message: AnyRecord, reasoning: string) {
   const existing = safeTrim(message.reasoning_content)
-  message.reasoning_content = existing ? `${existing}\n${reasoning}` : reasoning
+  message.reasoning_content = existing ? `${existing}\n\n${reasoning}` : reasoning
   if (message.content == null) message.content = ""
 }
 
@@ -367,6 +367,51 @@ function appendUniquePendingReasoning(pendingReasoning: string[], reasoning: str
   const text = reasoning.trim()
   if (!text || pendingReasoning.some((existing) => existing.includes(text))) return
   pendingReasoning.push(text)
+}
+
+function reasoningSegments(text: string) {
+  return text
+    .split("\n\n")
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0)
+}
+
+function attachPendingReasoningToAssistantUnique(
+  message: AnyRecord,
+  pendingReasoning: string[],
+) {
+  if (pendingReasoning.length === 0) return
+  const reasoning = pendingReasoning.splice(0).join("\n\n")
+  const existingSegments = reasoningSegments(safeTrim(message.reasoning_content))
+  const missingSegments = reasoningSegments(reasoning).filter(
+    (segment) => !existingSegments.includes(segment),
+  )
+  if (missingSegments.length === 0) return
+  message.reasoning_content = [...existingSegments, ...missingSegments].join("\n\n")
+}
+
+/**
+ * 把待发的工具调用并进紧邻的 assistant 消息（对齐 cc-switch #7280）。
+ *
+ * 同一个 Responses 模型回合可以包含一条 commentary 消息，紧跟它的就是 function_call
+ * 条目。若按两条 assistant 消息发出去，Chat 模型会模仿第一条纯文本消息、把它当成完整
+ * 回合，在工具调用之前就返回 finish_reason=stop —— 长任务于是在一句进度汇报后戛然而止。
+ *
+ * 只并「直接紧邻、且还没有 tool_calls」的 assistant 消息；其余边界形状（user/tool
+ * 边界、已有前一批 tool_calls、媒体）继续走新建 assistant 消息的老路。
+ */
+function mergePendingToolCallsIntoAdjacentAssistant(
+  messages: AnyRecord[],
+  pendingToolCalls: AnyRecord[],
+  pendingReasoning: string[],
+) {
+  const message = messages[messages.length - 1]
+  if (!message || message.role !== "assistant") return false
+  const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0
+  if (hasToolCalls) return false
+  message.tool_calls = pendingToolCalls.splice(0)
+  attachPendingReasoningToAssistantUnique(message, pendingReasoning)
+  return true
 }
 
 function appendResponsesInput(input: unknown, messages: AnyRecord[]) {
@@ -401,6 +446,12 @@ function appendResponsesInput(input: unknown, messages: AnyRecord[]) {
 
   const flushToolCalls = () => {
     if (pendingToolCalls.length === 0) return
+    if (
+      mergePendingToolCallsIntoAdjacentAssistant(messages, pendingToolCalls, pendingReasoning)
+    ) {
+      lastAssistantIndex = messages.length - 1
+      return
+    }
     const incoming = pendingToolCalls.splice(0)
     const message: AnyRecord = { role: "assistant", content: "", tool_calls: incoming }
     if (pendingReasoning.length > 0) {
@@ -435,8 +486,11 @@ function appendResponsesInput(input: unknown, messages: AnyRecord[]) {
         if (pendingReasoning.length > 0) {
           message.reasoning_content = pendingReasoning.splice(0).join("\n\n")
         }
-      } else if (pendingReasoning.length > 0) {
-        pendingReasoning.splice(0)
+      } else {
+        // 非 assistant 的回合边界消息（user 等）：pending reasoning 不能直接丢弃，
+        // 优先回溯附挂到上一条 assistant；reasoning 不允许跨 user 回合泄漏到之后的
+        // assistant 消息（对齐 cc-switch #5508）。
+        flushReasoning()
       }
       pushMessage(message)
       return
@@ -545,12 +599,12 @@ function appendResponsesInput(input: unknown, messages: AnyRecord[]) {
     }
 
     if (type === "reasoning") {
-      const reasoning = extractReasoningItemText(raw)
-      if (reasoning) {
-        const attachedToPrevious =
-          pendingToolCalls.length === 0 && attachReasoningToLastAssistant(reasoning)
-        if (!attachedToPrevious) appendPendingReasoning(pendingReasoning, reasoning)
-      }
+      // reasoning 一律先进入 pending，前向附挂到其后的 message / function_call（后者经
+      // flushToolCalls 消费）。此前在 pendingToolCalls 为空时直接回溯附挂到上一条
+      // assistant，会把新一轮的思考错拼进旧消息、紧跟的纯文本 assistant 反而丢掉
+      // reasoning_content —— 思考型模型（kimi 等）多轮对话因此中途"断片"
+      // （对齐 cc-switch #5508，修复 #5506）。
+      appendPendingReasoning(pendingReasoning, extractReasoningItemText(raw))
       return
     }
 
@@ -566,8 +620,9 @@ function appendResponsesInput(input: unknown, messages: AnyRecord[]) {
       if (pendingReasoning.length > 0) {
         message.reasoning_content = pendingReasoning.splice(0).join("\n\n")
       }
-    } else if (pendingReasoning.length > 0) {
-      pendingReasoning.splice(0)
+    } else {
+      // 同上：回合边界回溯附挂，不丢可归属的思考。
+      flushReasoning()
     }
     pushMessage(message)
   }
