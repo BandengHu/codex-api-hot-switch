@@ -3,14 +3,17 @@
 import { useCallback, useEffect, useState } from "react"
 import {
  Coins,
+ ExternalLink,
  Power,
  Plus,
  RefreshCw,
  Trash2,
  Users,
+ Zap,
 } from "lucide-react"
 import {
  Card,
+ CardAction,
  CardContent,
  CardDescription,
  CardHeader,
@@ -40,15 +43,19 @@ import {
 import {
  fetchPoolEntries,
  fetchPoolTasks,
+ fetchTaskActions,
  importPoolAccount,
  poolAccountAction,
+ poolAutomateAll,
  poolTaskAction,
 } from "@/lib/workbuddy-pool-api"
 import type {
  WorkbuddyPoolEntryView,
  WorkbuddyPoolGrowthTask,
+ WorkbuddyTaskAction,
 } from "@/lib/workbuddy-pool-types"
 import { toast } from "sonner"
+import { WorkbuddyPoolLoginDialog } from "./workbuddy-pool-login-dialog"
 
 type BusyAction =
  | "refresh"
@@ -58,13 +65,18 @@ type BusyAction =
 export function WorkbuddyPoolView() {
  const [entries, setEntries] = useState<WorkbuddyPoolEntryView[]>([])
  const [tasks, setTasks] = useState<Record<string, WorkbuddyPoolGrowthTask[]>>({})
+ const [actions, setActions] = useState<Record<string, WorkbuddyTaskAction>>({})
  const [busy, setBusy] = useState<BusyAction | null>("refresh")
  const [importOpen, setImportOpen] = useState(false)
+ const [loginOpen, setLoginOpen] = useState(false)
  const [credentials, setCredentials] = useState("")
 
  const refresh = useCallback(async () => {
  setBusy("refresh")
  try {
+ //动作表决定哪些任务能一键跑；拉不到时退化为「全部可点」，由后端再判一次。
+ const actionList = await fetchTaskActions().catch(() => [])
+ setActions(Object.fromEntries(actionList.map((action) => [action.taskCode, action])))
  const list = await fetchPoolEntries()
  setEntries(list)
  const taskMap: Record<string, WorkbuddyPoolGrowthTask[]> = {}
@@ -73,7 +85,7 @@ export function WorkbuddyPoolView() {
  try {
  taskMap[entry.uid] = await fetchPoolTasks(entry.uid)
  } catch {
- // 任务列表拉不到（token 过期/网络）不影响号池列表展示。
+ //任务列表拉不到（token过期/网络）不影响号池列表展示。
  }
  }
  setTasks(taskMap)
@@ -136,6 +148,29 @@ export function WorkbuddyPoolView() {
  }
  }
 
+ async function handleAutomateAll(uid: string) {
+ setBusy({ uid, action: "automate-all" })
+ try {
+ const { results } = await poolAutomateAll(uid)
+ const items = results ?? []
+ const done = items.filter((item) => item.status === "done").length
+ const claimed = items.filter((item) => item.claimed).length
+ toast.success(`已跑完 ${done}项可自动任务，本轮领奖 ${claimed}个`)
+ await refresh()
+ } catch (error) {
+ toast.error(error instanceof Error ? error.message : String(error))
+ } finally {
+ setBusy(null)
+ }
+ }
+
+ /**当前是否正在执行该账号的指定动作；taskCode省略时只按 uid+action匹配。 */
+ function isBusyFor(uid: string, action: string, taskCode?: string) {
+ if (busy === null || typeof busy !== "object") return false
+ if (busy.uid !== uid || busy.action !== action) return false
+ return taskCode === undefined || busy.taskCode === taskCode
+ }
+
  const totalCredit = entries.reduce(
  (sum, entry) => sum + (entry.balance?.remain ??0),
 0,
@@ -148,7 +183,7 @@ export function WorkbuddyPoolView() {
  <div>
  <h1 className="flex items-center gap-2 text-lg font-semibold">
  <Users className="size-5" />
- WorkBuddy 号池
+ WorkBuddy号池
  </h1>
  <p className="text-sm text-muted-foreground">
 管理本机账号与导入账号的任务/积分，支持一键完成与领奖
@@ -159,9 +194,13 @@ export function WorkbuddyPoolView() {
  {busy === "refresh" ? <Spinner className="size-4" /> : <RefreshCw className="size-4" />}
 刷新
  </Button>
+ <Button variant="outline" onClick={() => setLoginOpen(true)} disabled={busy !== null}>
+ <ExternalLink className="size-4" />
+授权登录
+ </Button>
  <Button onClick={() => setImportOpen(true)} disabled={busy !== null}>
  <Plus className="size-4" />
- 导入账号
+导入账号
  </Button>
  </div>
  </div>
@@ -230,7 +269,7 @@ export function WorkbuddyPoolView() {
  ) : entry.balanceError ? (
  <Badge variant="destructive">凭据异常</Badge>
  ) : claimable.length ? (
- <Badge>{claimable.length} 个可领</Badge>
+ <Badge>{claimable.length}个可领</Badge>
  ) : (
  <Badge variant="secondary">正常</Badge>
  )}
@@ -262,7 +301,7 @@ export function WorkbuddyPoolView() {
  {!entries.length && !busy ? (
  <TableRow>
  <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
- 号池为空，点右上角「导入账号」添加
+号池为空，点右上角「授权登录」或「导入账号」添加
  </TableCell>
  </TableRow>
  ) : null}
@@ -271,16 +310,37 @@ export function WorkbuddyPoolView() {
  </CardContent>
  </Card>
 
- {entries.filter((entry) => !entry.disabled && (tasks[entry.uid]?.length ??0) >0).map((entry) => (
+ {entries.filter((entry) => !entry.disabled && (tasks[entry.uid]?.length ??0) >0).map((entry) => {
+ const taskList = tasks[entry.uid] ?? []
+ const claimable = taskList.filter((task) => task.claimable)
+ const autoable = taskList.filter(
+ (task) => !task.claimed && !task.locked && Boolean(actions[task.taskCode]),
+ )
+ return (
  <Card key={`tasks-${entry.uid}`}>
  <CardHeader>
  <CardTitle className="text-base">
- {entry.nickname || entry.uid} 的成长任务
+ {entry.nickname || entry.uid}的成长任务
  </CardTitle>
+ <CardDescription>
+ {autoable.length}个可自动完成 · {claimable.length}个待领奖
+ </CardDescription>
+ <CardAction>
+ <Button
+ size="sm"
+ onClick={() => void handleAutomateAll(entry.uid)}
+ disabled={busy !== null || !autoable.length}
+ >
+ {isBusyFor(entry.uid, "automate-all") ? <Spinner className="size-4" /> : <Zap className="size-4" />}
+一键全部
+ </Button>
+ </CardAction>
  </CardHeader>
  <CardContent>
  <div className="flex flex-col gap-2">
- {(tasks[entry.uid] ?? []).map((task) => (
+ {taskList.map((task) => {
+ const action = actions[task.taskCode]
+ return (
  <div key={task.taskCode} className="flex items-center justify-between gap-2 rounded-md border p-2">
  <div className="min-w-0 flex-1">
  <div className="flex items-center gap-2">
@@ -292,9 +352,16 @@ export function WorkbuddyPoolView() {
  ) : task.locked ? (
  <Badge variant="outline">未解锁</Badge>
  ) : null}
+ {action ? (
+ <Badge variant={action.attempt ? "outline" : "secondary"}>
+ {action.attempt ? "可尝试" : "可自动"}
+ </Badge>
+ ) : (
+ <Badge variant="outline">需手动</Badge>
+ )}
  </div>
  <div className="text-xs text-muted-foreground">
- {task.taskDesc || task.description || task.taskCode}
+ {action?.desc || task.taskDesc || task.description || task.taskCode}
  {task.target >0 ? ` · ${task.current}/${task.target}` : ""}
  {task.rewardCredit >0 ? ` · +${task.rewardCredit}分` : ""}
  </div>
@@ -304,37 +371,38 @@ export function WorkbuddyPoolView() {
  size="sm"
  variant="outline"
  onClick={() => void handleTaskAction(entry.uid, "automate", task.taskCode)}
- disabled={busy !== null || task.claimed || task.locked}
+ disabled={busy !== null || task.claimed || task.locked || !action}
  >
- 自动完成
+ {isBusyFor(entry.uid, "automate", task.taskCode) ? <Spinner className="size-4" /> : null}
+自动完成
  </Button>
  <Button
  size="sm"
  onClick={() => void handleTaskAction(entry.uid, "claim", task.taskCode)}
  disabled={busy !== null || !task.claimable}
  >
+ {isBusyFor(entry.uid, "claim", task.taskCode) ? <Spinner className="size-4" /> : null}
 领奖
  </Button>
  </div>
  </div>
- ))}
+ )
+ })}
  </div>
  </CardContent>
  </Card>
- ))}
+ )
+ })}
 
  <Dialog open={importOpen} onOpenChange={setImportOpen}>
  <DialogContent className="sm:max-w-lg">
  <DialogHeader>
  <DialogTitle>导入 WorkBuddy账号</DialogTitle>
  <DialogDescription>
-粘贴从桌面端导出的凭据 JSON（与 workbuddy-desktop.info 同格式）
+粘贴从桌面端导出的凭据 JSON（与 workbuddy-desktop.info同格式）
  </DialogDescription>
  </DialogHeader>
- <Input
- placeholder="自定义文件名（可选，默认按 uid）"
- disabled
- />
+ <Input placeholder="自定义文件名（可选，默认按 uid）" disabled />
  <Textarea
  placeholder='{"auth": {...}, "account": {...}}'
  value={credentials}
@@ -343,15 +411,25 @@ export function WorkbuddyPoolView() {
  />
  <DialogFooter>
  <Button variant="outline" onClick={() => setImportOpen(false)} disabled={busy === "import"}>
- 取消
+取消
  </Button>
  <Button onClick={() => void handleImport()} disabled={busy === "import" || !credentials.trim()}>
  {busy === "import" ? <Spinner className="size-4" /> : null}
- 导入
+导入
  </Button>
  </DialogFooter>
  </DialogContent>
  </Dialog>
+
+ <WorkbuddyPoolLoginDialog
+ open={loginOpen}
+ onOpenChange={setLoginOpen}
+ onLoggedIn={(message) => {
+ toast.success(message)
+ void refresh()
+ }}
+ />
  </div>
  )
 }
+

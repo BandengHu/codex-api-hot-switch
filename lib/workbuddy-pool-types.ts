@@ -31,10 +31,36 @@ export interface WorkbuddyPoolGrowthTask {
 }
 
 export interface WorkbuddyAutomationResult {
- taskCode: string
- status: "done" | "error" | "skipped"
- message: string
- credit?: number
- energy?: number
- claimed?: boolean
+taskCode: string
+status: "done" | "error" | "skipped"
+message: string
+credit?: number
+energy?: number
+claimed?: boolean
+ progressBefore?: string
+ progressAfter?: string
+ attempt?: boolean
 }
+
+export interface WorkbuddyTaskAction {
+ taskCode: string
+ desc: string
+ attempt: boolean
+}
+
+export interface WorkbuddyLoginStart {
+ state: string
+ url: string
+ expiresInMs: number
+}
+
+export type WorkbuddyLoginPoll =
+ | { done: false; message: string }
+ | {
+ done: true
+ uid: string
+ nickname: string
+ credits: number
+ creditsTotal: number
+ checkinMessage: string
+ }
