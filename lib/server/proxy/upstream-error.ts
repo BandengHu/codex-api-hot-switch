@@ -67,6 +67,7 @@ function messageFromError(error: unknown, status: number) {
   if (!isObject(error)) return ""
   const direct =
     safeTrim(error.message) ||
+    safeTrim(error.msg) ||
     safeTrim(error.detail) ||
     safeTrim(error.error_description) ||
     safeTrim(error.error) ||

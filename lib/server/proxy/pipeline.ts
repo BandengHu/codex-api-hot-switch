@@ -281,6 +281,15 @@ function appendLogDetached(log: RequestLog) {
   void appendLog(log).catch(() => undefined)
 }
 
+function upstreamErrorLogMessage(transformed: unknown, fallback: string) {
+  const error = transformed && typeof transformed === "object"
+    ? (transformed as { error?: { message?: unknown } }).error
+    : undefined
+  return typeof error?.message === "string" && error.message.trim()
+    ? error.message.trim()
+    : fallback
+}
+
 function appendLogAfterStreamSettles(
   stream: ReadableStream<Uint8Array>,
   params: Parameters<typeof makeLog>[0],
@@ -2004,7 +2013,10 @@ export async function handleProxyPost(parts: string[], request: Request) {
     const error =
       upstream.ok
         ? undefined
-        : `上游返回 HTTP ${upstream.status} ${upstream.statusText}`
+        : upstreamErrorLogMessage(
+            transformed,
+            `上游返回 HTTP ${upstream.status} ${upstream.statusText}`,
+          )
     appendLogDetached(
       makeLog({
         startedAt,

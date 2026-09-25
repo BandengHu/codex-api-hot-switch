@@ -45,6 +45,7 @@ import {
   tokenStatsSince,
 } from "@/lib/token-stats"
 import { cn } from "@/lib/utils"
+import { latestRateLimitHint } from "@/lib/rate-limit-log"
 import { toast } from "sonner"
 
 const RECENT_WINDOW_MS = 15 * 60 * 1000
@@ -96,6 +97,14 @@ export function DashboardView() {
   const resetLabel = Number.isFinite(resetTime.getTime())
     ? resetTime.toLocaleString("zh-CN", { hour12: false })
     : "未重置"
+  const rateLimitHint = latestRateLimitHint(logs)
+  const resetAtTime = rateLimitHint?.resetAt ? Date.parse(rateLimitHint.resetAt) : Number.NaN
+  const showRateLimitHint = Boolean(
+    rateLimitHint &&
+      (Number.isFinite(resetAtTime)
+        ? resetAtTime > Date.now()
+        : Date.now() - Date.parse(rateLimitHint.timestamp) < 24 * 60 * 60 * 1000),
+  )
 
   async function handleTest() {
     if (!provider) {
@@ -166,6 +175,21 @@ export function DashboardView() {
           <AlertTriangle />
           <AlertTitle>控制台状态异常</AlertTitle>
           <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      {showRateLimitHint && rateLimitHint ? (
+        <Alert variant="destructive">
+          <AlertTriangle />
+          <AlertTitle>模型频率限制</AlertTitle>
+          <AlertDescription>
+            {rateLimitHint.modelId ? (
+              <span className="font-medium">{rateLimitHint.modelId}：</span>
+            ) : null}
+            {rateLimitHint.resetAt
+              ? `使用量已超出频率限制，将在 ${rateLimitHint.resetAt} 重置后使用。可先切换至其他模型。`
+              : rateLimitHint.message}
+          </AlertDescription>
         </Alert>
       ) : null}
 
