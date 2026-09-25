@@ -24,6 +24,12 @@ import {
 import { reportChatActivity } from "./report"
 import { isGlobalAccount } from "./task-api"
 import { REPORT_GAP_MS, sleep } from "./task-query"
+import {
+  claimSchoolShare,
+  completeSchoolShare,
+  fetchSchoolShareState,
+  pollSchoolShareProgress,
+} from "./school-share"
 
 /**
  * 「每日领积分」一键编排。
@@ -88,6 +94,7 @@ export async function runDailyRewards(account: WorkbuddyAccount): Promise<DailyR
  await stepActivity(account, push, fail)
  await stepMakeup(account, push, fail)
  await stepCheckin(account, push, fail)
+ await stepSchoolShare(account, push, fail)
  await stepGift(account, push, fail)
  await stepCompensation(account, push, fail)
  const streakDays = await stepStreak(account, push, fail)
@@ -96,6 +103,55 @@ export async function runDailyRewards(account: WorkbuddyAccount): Promise<DailyR
 
  const creditTotal = steps.reduce((sum, step) => sum + (step.credit ??0),0)
  return { steps, creditTotal, ...(streakDays === undefined ? {} : { streakDays }) }
+}
+
+/**
+ * 开学季分享任务：活动在期时，完成“分享”上报并领取每日 +100 积分 +1 抽奖。
+ *
+ * 已领过/不在期/任务不存在都按幂等跳过，不阻塞后续每日流程。
+ */
+async function stepSchoolShare(
+  account: WorkbuddyAccount,
+  push: (step: DailyStepResult) => DailyStepResult,
+  fail: (key: string, label: string, error: unknown) => DailyStepResult,
+) {
+  const label = "开学季分享"
+  try {
+    const state = await fetchSchoolShareState(account)
+    if (!state.inPeriod) {
+      push({ key: "school_share", label, status: "skipped", message: "活动不在期" })
+      return
+    }
+    if (!state.shareTask) {
+      push({ key: "school_share", label, status: "skipped", message: "活动在期但任务未下发" })
+      return
+    }
+    if (state.shareTask.status === "claimed") {
+      push({ key: "school_share", label, status: "skipped", message: "今天已领取" })
+      return
+    }
+    await completeSchoolShare(account)
+    const progressed = await pollSchoolShareProgress(account, 3)
+    if (!progressed || (progressed.targetCount > 0 && progressed.progress < progressed.targetCount && progressed.status !== "completed" && progressed.status !== "claimed")) {
+      push({
+        key: "school_share",
+        label,
+        status: "skipped",
+        message: "分享已上报，但进度未点亮（下次自动重试）",
+      })
+      return
+    }
+    const result = await claimSchoolShare(account)
+    push({
+      key: "school_share",
+      label,
+      status: "done",
+      message: `已领取 +${result.credit}分${result.chanceGranted ? `，抽奖 +${result.chanceGranted}次` : ""}`,
+      ...(result.credit > 0 ? { credit: result.credit } : {}),
+    })
+  } catch (error) {
+    fail("school_share", label, error)
+  }
 }
 
 /**
