@@ -1,7 +1,7 @@
 import "server-only"
 
 import type { WorkbuddyAccount } from "./account"
-import { isGlobalAccount } from "./task-api"
+import { uniqueId } from "./api-client"
 import {
  adoptFirstBuddy,
  agreeBuddyTerms,
@@ -21,12 +21,16 @@ import {
  useMakeupCard,
  yesterdayDay,
 } from "./daily-api"
+import { reportChatActivity } from "./report"
+import { isGlobalAccount } from "./task-api"
+import { REPORT_GAP_MS, sleep } from "./task-query"
 
 /**
  * 「每日领积分」一键编排。
  *
  * 顺序照搬 `workbuddy2api-panel`（GitHub开源项目）的签到排程：
- * 补签保连登 → 签到 → 礼包/补偿 → 连登兑换 → 抽奖 → 猫猫旅行。
+ * 活跃上报（点亮连登 + 解锁领养） → 补签保连登 → 签到 → 礼包/补偿 → 连登兑换 →
+ * 抽奖 → 猫猫旅行。
  *
  * 每一步都幂等：上游对「已领过」返回业务错误，这里按 `isAlreadyDoneError` 记成
  * 「今天已领」而不是失败；未解锁档位（403）直接跳过。
@@ -81,6 +85,7 @@ export async function runDailyRewards(account: WorkbuddyAccount): Promise<DailyR
  }
  }
 
+ await stepActivity(account, push, fail)
  await stepMakeup(account, push, fail)
  await stepCheckin(account, push, fail)
  await stepGift(account, push, fail)
@@ -91,6 +96,46 @@ export async function runDailyRewards(account: WorkbuddyAccount): Promise<DailyR
 
  const creditTotal = steps.reduce((sum, step) => sum + (step.credit ??0),0)
  return { steps, creditTotal, ...(streakDays === undefined ? {} : { streakDays }) }
+}
+
+/**
+ * 活跃上报：一条 `chat_request_send`同时点亮连登并解锁 `first_buddy`（猫猫领养前置）。
+ *
+ * 这一步是「连登兑换能不能解锁」与「猫猫能不能领养」的真正开关：参考项目把活跃上报
+ * 与签到分成两个排程（activity_hours / checkin_hours），一键领取把它们并成一次——
+ * 少了它，连登天数永远不涨，`buddy/first`也会一直返回 400
+ * `first_buddy task not completed yet`（本机实测踩到过）。
+ *
+ * 上报后静默等 `REPORT_GAP_MS`：给上游事件处理留时间，后续步骤才拿得到计分结果。
+ * 回读连登天数做**只读 oracle**——上报 200 ≠计分，天数为 0 时把异常如实写进结果，
+ * 不假装成功。
+ */
+async function stepActivity(
+ account: WorkbuddyAccount,
+ push: (step: DailyStepResult) => DailyStepResult,
+ fail: (key: string, label: string, error: unknown) => DailyStepResult,
+) {
+ const label = "活跃上报"
+ try {
+ await reportChatActivity(account, uniqueId("wb2api-daily"), "")
+ await sleep(REPORT_GAP_MS)
+ const days = await fetchStreakState(account)
+ .then((state) => state.days)
+ .catch(() => undefined)
+ push({
+ key: "activity",
+ label,
+ status: days ===0 ? "error" : "done",
+ message:
+ days === undefined
+ ? "已上报（连登天数回读失败，不影响后续步骤）"
+ : days ===0
+ ? "已上报，但回读连登天数仍为0：上游可能静默丢弃了这次上报"
+ : `已上报，连登 ${days}天`,
+ })
+ } catch (error) {
+ fail("activity", label, error)
+ }
 }
 
 /**补签保连登：昨日漏签且有补签卡就补上（连登一断要重攒 7 天）。 */
