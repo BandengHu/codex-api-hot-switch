@@ -8,6 +8,10 @@ import {
  syncPoolFromDisk,
 } from "@/lib/server/workbuddy/task-pool-store"
 import { fetchBalance } from "@/lib/server/workbuddy/task-api"
+import {
+  formatScheduleDay,
+  readDailyScheduleState,
+} from "@/lib/server/workbuddy/daily-scheduler"
 import { readPoolAccount } from "@/lib/server/workbuddy/task-pool-store"
 
 export const runtime = "nodejs"
@@ -20,12 +24,19 @@ interface PoolEntryWithBalance {
  disabled: boolean
  balance?: { remain: number; used: number; size: number; packs: number }
  balanceError?: string
+ dailyStatus?: {
+   lastRunDate: string
+   lastResult?: string
+   needsRun: boolean
+ }
 }
 
 export async function GET() {
  try {
  await syncPoolFromDisk()
  const entries = await listPoolEntries()
+ const schedule = await readDailyScheduleState()
+ const today = formatScheduleDay(new Date())
  const enriched: PoolEntryWithBalance[] = []
  for (const entry of entries) {
  const item: PoolEntryWithBalance = {
@@ -43,6 +54,14 @@ export async function GET() {
  } catch (error) {
  item.balanceError = errorMessage(error)
  }
+ }
+ const lastRunDate = schedule.lastRunByUid[entry.uid]
+ if (lastRunDate) {
+   item.dailyStatus = {
+     lastRunDate,
+     lastResult: schedule.lastResultByUid?.[entry.uid],
+     needsRun: lastRunDate !== today,
+   }
  }
  enriched.push(item)
  }

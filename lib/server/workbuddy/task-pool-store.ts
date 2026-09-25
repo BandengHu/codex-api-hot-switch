@@ -200,7 +200,12 @@ export async function readPoolAccount(uid: string): Promise<WorkbuddyAccount> {
 /**扫号池目录下还没登记进 pool.json 的凭据文件（手工拷贝进来的场景）。 */
 export async function syncPoolFromDisk(): Promise<number> {
  await ensurePoolDir()
- const files = (await readdir(poolDir())).filter((name) => name.endsWith(".json") && name !== "pool.json")
+ const files = (await readdir(poolDir())).filter(
+   (name) =>
+     name.endsWith(".json") &&
+     name !== "pool.json" &&
+     name !== "daily-schedule.json",
+ )
  if (!files.length) return 0
  const state = await readPoolState()
  const known = new Set(state.entries.map((entry) => entry.uid))

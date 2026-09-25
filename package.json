@@ -13,7 +13,7 @@
     "desktop:build": "npm exec --yes pnpm@10.21.0 -- build && node scripts/prepare-electron-build.cjs && node scripts/generate-windows-icon.cjs && npm exec --yes pnpm@10.21.0 -- exec electron-builder --win nsis",
     "desktop:dir": "npm exec --yes pnpm@10.21.0 -- build && node scripts/prepare-electron-build.cjs && node scripts/generate-windows-icon.cjs && npm exec --yes pnpm@10.21.0 -- exec electron-builder --dir",
     "start": "node scripts/start-standalone.cjs",
-    "test": "node --conditions=react-server --import tsx --test lib/provider-clone.test.ts lib/workbuddy-provider.test.ts lib/server/codex-config.test.ts lib/rate-limit-log.test.ts lib/server/proxy/upstream-error.test.ts lib/server/proxy/chat-compaction.test.ts lib/server/proxy/chat-sse-fold.test.ts lib/server/proxy/chat-stream-truth.test.ts lib/server/proxy/chat-tool-pairing.test.ts lib/server/proxy/chat-tool-choice.test.ts lib/server/proxy/context-checkpoint-recovery.test.ts lib/server/workbuddy/at-rest.test.ts lib/server/workbuddy/pool-logic.test.ts",
+    "test": "node --conditions=react-server --import tsx --test lib/provider-clone.test.ts lib/workbuddy-provider.test.ts lib/server/codex-config.test.ts lib/rate-limit-log.test.ts lib/server/proxy/upstream-error.test.ts lib/server/proxy/chat-compaction.test.ts lib/server/proxy/chat-sse-fold.test.ts lib/server/proxy/chat-stream-truth.test.ts lib/server/proxy/chat-tool-pairing.test.ts lib/server/proxy/chat-tool-choice.test.ts lib/server/proxy/context-checkpoint-recovery.test.ts lib/server/workbuddy/at-rest.test.ts lib/server/workbuddy/daily-scheduler.test.ts lib/server/workbuddy/pool-logic.test.ts",
     "lint": "eslint ."
   },
   "dependencies": {

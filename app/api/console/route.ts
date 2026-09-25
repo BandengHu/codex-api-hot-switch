@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError, readJsonBody } from "@/lib/server/http"
 import { getSnapshot, saveSnapshot } from "@/lib/server/state-store"
+import { startDailyScheduler } from "@/lib/server/workbuddy/daily-scheduler"
 import { autostartWecomBridgeServeIfEnabled } from "@/lib/server/wecom-bridge"
 import type { ConsoleSnapshot } from "@/lib/types"
 
@@ -8,6 +9,7 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function GET() {
+  startDailyScheduler()
   try {
     await autostartWecomBridgeServeIfEnabled()
     return NextResponse.json(await getSnapshot())

@@ -12,6 +12,11 @@ export interface WorkbuddyPoolEntryView {
  disabled: boolean
  balance?: WorkbuddyPoolBalance
  balanceError?: string
+ dailyStatus?: {
+   lastRunDate: string
+   lastResult?: string
+   needsRun: boolean
+ }
 }
 
 /**号池整体视图：条目列表 + 当前生效的转发账号。 */

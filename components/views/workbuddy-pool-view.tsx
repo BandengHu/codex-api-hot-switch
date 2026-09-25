@@ -323,6 +323,7 @@ export function WorkbuddyPoolView() {
  <TableHead>来源</TableHead>
  <TableHead className="text-right">剩余积分</TableHead>
  <TableHead>状态</TableHead>
+ <TableHead>每日领取</TableHead>
  <TableHead>转发出口</TableHead>
  <TableHead className="text-right">操作</TableHead>
  </TableRow>
@@ -336,25 +337,41 @@ export function WorkbuddyPoolView() {
  <div className="font-medium">{entry.nickname || "(未命名)"}</div>
  <div className="font-mono text-xs text-muted-foreground">{entry.uid}</div>
  </TableCell>
- <TableCell>
- <Badge variant={entry.source === "local" ? "default" : "secondary"}>
- {entry.source === "local" ? "本机" : "导入"}
- </Badge>
- </TableCell>
- <TableCell className="text-right font-mono">
- {entry.balance ? entry.balance.remain.toLocaleString() : "—"}
- </TableCell>
- <TableCell>
- {entry.disabled ? (
- <Badge variant="outline">已禁用</Badge>
- ) : entry.balanceError ? (
- <Badge variant="destructive">凭据异常</Badge>
- ) : (
- <Badge variant="secondary">正常</Badge>
- )}
- </TableCell>
- <TableCell>
- {isActive ? (
+<TableCell>
+<Badge variant={entry.source === "local" ? "default" : "secondary"}>
+{entry.source === "local" ? "本机" : "导入"}
+</Badge>
+</TableCell>
+<TableCell className="text-right font-mono">
+{entry.balance ? entry.balance.remain.toLocaleString() : "—"}
+</TableCell>
+<TableCell>
+{entry.disabled ? (
+<Badge variant="outline">已禁用</Badge>
+) : entry.balanceError ? (
+<Badge variant="destructive">凭据异常</Badge>
+) : (
+<Badge variant="secondary">正常</Badge>
+)}
+</TableCell>
+<TableCell>
+<div className="flex flex-col gap-1">
+{entry.dailyStatus?.lastRunDate ? (
+<Badge variant={entry.dailyStatus.needsRun ? "outline" : "secondary"}>
+{entry.dailyStatus.needsRun ? "待运行" : "已运行"}
+</Badge>
+) : (
+<Badge variant="outline">待运行</Badge>
+)}
+{entry.dailyStatus?.lastResult ? (
+<span className="max-w-72 text-xs text-muted-foreground" title={entry.dailyStatus.lastResult}>
+{entry.dailyStatus.lastResult}
+</span>
+) : null}
+</div>
+</TableCell>
+<TableCell>
+{isActive ? (
  <Badge>当前使用</Badge>
  ) : (
  <Button
@@ -394,7 +411,7 @@ export function WorkbuddyPoolView() {
  })}
  {!entries.length && !busy ? (
  <TableRow>
- <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
+ <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
 号池为空，点右上角「授权登录」或「导入账号」添加
  </TableCell>
  </TableRow>

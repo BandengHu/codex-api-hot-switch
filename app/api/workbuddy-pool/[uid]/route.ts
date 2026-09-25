@@ -8,6 +8,7 @@ import {
 import { claimGrowthReward, listAllGrowthTasks } from "@/lib/server/workbuddy/task-api"
 import { runAllAutomations, runTaskAutomation } from "@/lib/server/workbuddy/task-automation"
 import { runDailyRewards } from "@/lib/server/workbuddy/daily-automation"
+import { recordDailyRun } from "@/lib/server/workbuddy/daily-scheduler"
 import { tryLockTaskAccount, unlockTaskAccount } from "@/lib/server/workbuddy/task-lock"
 
 export const runtime = "nodejs"
@@ -64,9 +65,11 @@ export async function POST(request: Request, context: RouteContext) {
  if (!tryLockTaskAccount(uid)) {
  return jsonError("该账号有动作正在执行中，请等本轮结束后再试",409)
  }
- try {
- const result = await runDailyRewards(account)
- return NextResponse.json({ ok: true, result })
+  try {
+  const result = await runDailyRewards(account)
+  //手动跑过也算今天已处理，避免 2 小时后调度器重复打上游。
+  await recordDailyRun(uid, result).catch(() => undefined)
+  return NextResponse.json({ ok: true, result })
  } finally {
  unlockTaskAccount(uid)
  }
