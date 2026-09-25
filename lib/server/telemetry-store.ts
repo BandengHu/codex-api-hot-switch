@@ -6,6 +6,7 @@ import { dirname, join } from "node:path"
 import { compactTokenStats } from "@/lib/server/token-stat-retention"
 import { tokenStatFromLog } from "@/lib/token-stats"
 import type {
+  ChatStreamTruth,
   RequestLog,
   Settings,
   TokenStatAggregation,
@@ -65,6 +66,14 @@ function enqueueTelemetry<T>(task: () => Promise<T>): Promise<T> {
     () => undefined,
   )
   return run
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value))
+}
+
+function safeString(value: unknown) {
+  return typeof value === "string" ? value.trim() : ""
 }
 
 function truncateField(value: unknown, maxChars: number) {
@@ -165,6 +174,45 @@ async function readJsonl<T>(path: string, normalize: (value: unknown) => T | nul
   }
 }
 
+function normalizeChatStreamTruth(
+  value: unknown,
+): Pick<RequestLog, "chatStreamTruth"> {
+  if (!isObject(value)) return {}
+  const truth = value as Partial<ChatStreamTruth>
+  return {
+    chatStreamTruth: {
+      upstreamFinishReason: safeString(truth.upstreamFinishReason),
+      finalFinishReason: safeString(truth.finalFinishReason),
+      finishReasonSource:
+        truth.finishReasonSource === "upstream" ||
+        truth.finishReasonSource === "synthesized"
+          ? truth.finishReasonSource
+          : "none",
+      sawChoice: truth.sawChoice === true,
+      sawDoneFrame: truth.sawDoneFrame === true,
+      toolCallCount:
+        Number.isFinite(truth.toolCallCount) && Number(truth.toolCallCount) >= 0
+          ? Number(truth.toolCallCount)
+          : 0,
+      lastInputItemType: safeString(truth.lastInputItemType),
+      visibleChars:
+        Number.isFinite(truth.visibleChars) && Number(truth.visibleChars) >= 0
+          ? Number(truth.visibleChars)
+          : 0,
+      reasoningChars:
+        Number.isFinite(truth.reasoningChars) && Number(truth.reasoningChars) >= 0
+          ? Number(truth.reasoningChars)
+          : 0,
+      settledAs:
+        truth.settledAs === "incomplete" ||
+        truth.settledAs === "failed" ||
+        truth.settledAs === "aborted"
+          ? truth.settledAs
+          : "completed",
+    },
+  }
+}
+
 function normalizeLogValue(value: unknown): RequestLog | null {
   if (!value || typeof value !== "object") return null
   const log = value as Partial<RequestLog>
@@ -181,6 +229,7 @@ function normalizeLogValue(value: unknown): RequestLog | null {
     return null
   }
   return normalizeStoredLog({
+    ...(log.chatStreamTruth ? normalizeChatStreamTruth(log.chatStreamTruth) : {}),
     id: log.id,
     timestamp: log.timestamp,
     codexModel: log.codexModel,

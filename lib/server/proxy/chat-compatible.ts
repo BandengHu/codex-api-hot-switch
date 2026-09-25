@@ -41,6 +41,7 @@ import {
   findRemoteCompactionTrigger,
 } from "./chat-compaction"
 import { chatUsageToResponsesUsage } from "./chat-usage"
+import { chatStreamTruthFromSource, type ChatStreamTruthSnapshot as ChatStreamTruth } from "./chat-stream-truth"
 import { isWorkbuddyProvider } from "@/lib/workbuddy-provider"
 import {
   enrichCodexChatRequest,
@@ -1034,17 +1035,22 @@ export function chatSseToResponsesSse(
     adapter.toolContext,
     state,
   )
-  return { text: out, responseId: "", usage: null }
+  return {
+    text: out,
+    responseId: "",
+    usage: null,
+    chatStreamTruth: chatStreamTruthFromSource(state, adapter.originalRequest),
+  }
 }
 
 export function createChatToResponsesSseStream(
   adapter: Extract<ChatCompatibleAdapter, { type: "chat_compatible" }>,
-) {
+): { stream: TransformStream<Uint8Array, Uint8Array>; readTruth: () => ChatStreamTruth } {
   const decoder = new TextDecoder()
   const encoder = new TextEncoder()
   let buffer = ""
   const state = createChatSseAccumulator()
-  return new TransformStream<Uint8Array, Uint8Array>({
+  const stream = new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       buffer += decoder.decode(chunk, { stream: true })
       const boundary = lastCompleteSseFrameBoundary(buffer)
@@ -1078,6 +1084,11 @@ export function createChatToResponsesSseStream(
       if (out) controller.enqueue(encoder.encode(out))
     },
   })
+  return {
+    stream,
+    readTruth: (options: { aborted?: boolean } = {}) =>
+      chatStreamTruthFromSource(state, adapter.originalRequest, options),
+  }
 }
 
 function sseErrorMessage(value: unknown) {
@@ -1856,3 +1867,4 @@ export {
   responsesSseToChatCompletionsSse,
   transformResponsesSseText,
 }
+

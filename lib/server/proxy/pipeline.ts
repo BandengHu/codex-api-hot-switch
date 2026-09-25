@@ -10,7 +10,7 @@ import {
   buildCodexClientModelsResponse,
   buildOpenAIModelsResponse,
 } from "@/lib/server/codex-model-catalog"
-import type { RequestLog, TokenUsage, WebSearchMode } from "@/lib/types"
+import type { ChatStreamTruth, RequestLog, TokenUsage, WebSearchMode } from "@/lib/types"
 import {
   applyAssistantMessagePhase,
   compactJson,
@@ -186,6 +186,7 @@ function makeLog(params: {
   tokenUsage?: TokenUsage
   error?: string
   errorStack?: string
+  chatStreamTruth?: ChatStreamTruth
 }): RequestLog {
   const log: RequestLog = {
     id: `log-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
@@ -211,6 +212,7 @@ function makeLog(params: {
       : "请求尚未改写",
     responseSummary: params.responseSummary,
     errorStack: params.errorStack,
+    ...(params.chatStreamTruth ? { chatStreamTruth: params.chatStreamTruth } : {}),
   }
   registerLanguagePolicyDiagnosticSource(log, {
     rawBody: params.body,
@@ -692,7 +694,8 @@ async function maybeAdaptChatCompatibleStream(
     })
   }
 
-  const stream = source.pipeThrough(createChatToResponsesSseStream(adapter))
+  const adapted = createChatToResponsesSseStream(adapter)
+  const stream = source.pipeThrough(adapted.stream)
   const loggedStream = appendLogAfterStreamSettles(stream, {
     startedAt,
     body,
@@ -700,6 +703,7 @@ async function maybeAdaptChatCompatibleStream(
     statusCode: upstream.status,
     rewrittenBody: built.rewrittenBody,
     responseSummary: "chat streaming response adapted",
+    chatStreamTruth: adapted.readTruth(),
   })
   return new Response(loggedStream, {
     status: upstream.status,

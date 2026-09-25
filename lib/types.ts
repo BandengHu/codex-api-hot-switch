@@ -168,6 +168,38 @@ export interface TokenStatEntry {
   resetAt?: string
 }
 
+/**
+ * 上游 Chat Completions 流的收尾事实快照。
+ *
+ * 只做记录：不参与任何转发判定，也不改变响应内容。之所以需要它，是因为
+ * `chat_compatible` 路径下中转会自己补 `response.completed`，光看转发出去的流
+ * 分辨不出「上游正常收尾」和「上游安静断开、中转代为收尾」；把上游给出的
+ * finish_reason、是否真的收到终止帧、本轮是否停在进行中的 agentic 回合等原始
+ * 事实落到日志里，事后才能复盘截断与半途收尾。
+ */
+export interface ChatStreamTruth {
+  /** 上游流里显式给出的 finish_reason 原文；上游没给时为空串。 */
+  upstreamFinishReason: string
+  /** 中转最终采用的 finish_reason（含默认 stop 与中转补写的 length）。 */
+  finalFinishReason: string
+  /** finalFinishReason 的来源。 */
+  finishReasonSource: "upstream" | "synthesized" | "none"
+  /** 上游是否发出过带 choices 的帧。 */
+  sawChoice: boolean
+  /** 是否收到 [DONE] 终止帧。 */
+  sawDoneFrame: boolean
+  /** 本轮累积的具名工具调用数。 */
+  toolCallCount: number
+  /** 请求上下文末项的类型，function_call_output 表示这轮在接着工具结果续跑。 */
+  lastInputItemType: string
+  /** 流内累积的可见正文字符数。 */
+  visibleChars: number
+  /** 流内累积的推理字符数（含内联 think 内容）。 */
+  reasoningChars: number
+  /** 中转最终给出的响应状态。 */
+  settledAs: "completed" | "incomplete" | "failed" | "aborted"
+}
+
 export interface RequestLog {
   id: string
   timestamp: string
@@ -190,6 +222,8 @@ export interface RequestLog {
   rewrittenRequest: string
   responseSummary: string
   errorStack?: string
+  /** 仅 chat_compatible 流式路径有值：上游收尾事实快照。 */
+  chatStreamTruth?: ChatStreamTruth
 }
 
 export interface RequestLogDetail {

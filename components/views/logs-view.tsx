@@ -653,6 +653,54 @@ export function LogsView() {
                 ) : null}
               </div>
 
+              {selected.chatStreamTruth ? (
+                <div className="flex flex-col gap-1.5">
+                  <h3 className="text-sm font-medium">上游收尾真相</h3>
+                  <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-3">
+                    <TextMetric
+                      label="上游 finish_reason"
+                      value={selected.chatStreamTruth.upstreamFinishReason || "未返回"}
+                    />
+                    <TextMetric
+                      label="最终 finish_reason"
+                      value={selected.chatStreamTruth.finalFinishReason || "未返回"}
+                    />
+                    <TextMetric
+                      label="finish_reason 来源"
+                      value={selected.chatStreamTruth.finishReasonSource}
+                    />
+                    <TextMetric
+                      label="上游 [DONE]"
+                      value={selected.chatStreamTruth.sawDoneFrame ? "已收到" : "未收到"}
+                    />
+                    <TextMetric
+                      label="上游 choices"
+                      value={selected.chatStreamTruth.sawChoice ? "已收到" : "未收到"}
+                    />
+                    <TextMetric
+                      label="工具调用数"
+                      value={String(selected.chatStreamTruth.toolCallCount)}
+                    />
+                    <TextMetric
+                      label="上下文末项"
+                      value={selected.chatStreamTruth.lastInputItemType || "未知"}
+                    />
+                    <TextMetric
+                      label="可见字符"
+                      value={String(selected.chatStreamTruth.visibleChars)}
+                    />
+                    <TextMetric
+                      label="推理字符"
+                      value={String(selected.chatStreamTruth.reasoningChars)}
+                    />
+                    <TextMetric
+                      label="最终状态"
+                      value={selected.chatStreamTruth.settledAs}
+                    />
+                  </div>
+                </div>
+              ) : null}
+
               <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
                 <TokenMetric label="输入 tokens" value={selected.tokenUsage?.inputTokens} />
                 <TokenMetric label="输出 tokens" value={selected.tokenUsage?.outputTokens} />
