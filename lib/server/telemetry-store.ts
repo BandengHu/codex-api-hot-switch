@@ -4,6 +4,7 @@ import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { compactTokenStats } from "@/lib/server/token-stat-retention"
+import { pruneRequestLogDetails } from "@/lib/server/request-log-details"
 import { tokenStatFromLog } from "@/lib/token-stats"
 import type {
   ChatStreamTruth,
@@ -303,6 +304,13 @@ async function compactTelemetryFiles(settings: Settings) {
   ])
   recentLogsCache = logs.slice(0, RECENT_LOG_CACHE).map(toListLog)
   recentTokenStatsCache = tokenStats.slice(0, RECENT_TOKEN_STATS_CACHE)
+
+  // 全量请求日志的明细目录不归 jsonl 管，必须跟 pruneLogs 用同一份保留集合
+  // 一起清；先落盘日志再清目录，崩溃时最坏留一批孤儿目录，不会出现“日志还在、
+  // 明细没了”。
+  await pruneRequestLogDetails({
+    keepIds: new Set(logs.map((log) => log.id)),
+  })
 }
 
 export async function appendTelemetryLog(log: RequestLog, settings: Settings) {
