@@ -2,12 +2,13 @@ import "server-only"
 
 import { createHash } from "node:crypto"
 import {
-  APPLY_PATCH_FUNCTION_DESCRIPTION,
-  APPLY_PATCH_PARAMETERS,
-  buildApplyPatchFunctionToolDescription,
   reconstructApplyPatchInput,
   type PatchAction,
 } from "./apply-patch-format"
+import {
+  CHAT_APPLY_PATCH_TOOL_DESCRIPTION,
+  CHAT_APPLY_PATCH_TOOL_PARAMETERS,
+} from "./chat-apply-patch-tool"
 import {
   isHostedWebSearchToolType,
   relayWebSearchChatTools,
@@ -282,21 +283,12 @@ function toolSearchProxyTool() {
 
 
 
-function applyPatchProxyTool(
-  name: string,
-  description: string,
-  metadata = "",
-) {
-  const parts = [
-    description.trim(),
-    APPLY_PATCH_FUNCTION_DESCRIPTION,
-    metadata ? `Original Codex custom tool metadata: ${metadata}` : "",
-  ].filter(Boolean)
-  return functionTool(name, parts.join("\n\n"), {
-    type: "object",
-    additionalProperties: false,
-    properties: { ...(APPLY_PATCH_PARAMETERS.properties as AnyRecord) },
-  })
+function applyPatchProxyTool(name: string) {
+  return functionTool(
+    name,
+    CHAT_APPLY_PATCH_TOOL_DESCRIPTION,
+    CHAT_APPLY_PATCH_TOOL_PARAMETERS,
+  )
 }
 function customProxyDescription(description: string, metadata = "") {
   return [
@@ -403,11 +395,11 @@ export function responsesToolsToChatTools(
       pushTool(responsesFunctionToolToChat(tool))
     } else if (type === "custom" || type === "local_shell" || type === "computer_use") {
       const name = safeTrim(tool.name) || type
-      const description = safeTrim(tool.description)
-      const metadata = customToolMetadata(tool)
       if (detectCustomToolKind(tool, name) === "apply_patch") {
-        pushTool(applyPatchProxyTool(name, description, metadata))
+        pushTool(applyPatchProxyTool(name))
       } else {
+        const description = safeTrim(tool.description)
+        const metadata = customToolMetadata(tool)
         pushTool(genericCustomProxyTool(name, customProxyDescription(description, metadata)))
       }
     } else if (type === "namespace") {
