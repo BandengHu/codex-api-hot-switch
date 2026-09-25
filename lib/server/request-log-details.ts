@@ -124,10 +124,6 @@ export async function readRequestLogDetail(log: RequestLog): Promise<RequestLogD
   }
 }
 
-export function requestLogDetailsRootPath() {
-  return requestDetailsRoot()
-}
-
 export interface RequestLogDetailPruneResult {
   scanned: number
   removed: number
