@@ -2,10 +2,12 @@
 
 import type {
  WorkbuddyAutomationResult,
+ WorkbuddyDailyResult,
  WorkbuddyLoginPoll,
  WorkbuddyLoginStart,
  WorkbuddyPoolEntryView,
  WorkbuddyPoolGrowthTask,
+ WorkbuddyPoolSnapshot,
  WorkbuddyTaskAction,
 } from "./workbuddy-pool-types"
 
@@ -20,11 +22,21 @@ function parseResponse<T>(response: Response): Promise<T> {
  })
 }
 
-export async function fetchPoolEntries(): Promise<WorkbuddyPoolEntryView[]> {
- const body = await parseResponse<{ entries: WorkbuddyPoolEntryView[] }>(
+export async function fetchPoolEntries(): Promise<WorkbuddyPoolSnapshot> {
+ return parseResponse<WorkbuddyPoolSnapshot>(
  await fetch("/api/workbuddy-pool", { cache: "no-store" }),
  )
- return body.entries
+}
+
+/**切换代理转发的生效账号（`local` = 本机桌面端登录态）。 */
+export async function setActivePoolAccount(uid: string): Promise<{ ok: boolean; activeUid: string }> {
+ return parseResponse(
+ await fetch("/api/workbuddy-pool", {
+ method: "POST",
+ headers: { "content-type": "application/json" },
+ body: JSON.stringify({ activeUid: uid }),
+ }),
+ )
 }
 
 export async function importPoolAccount(credentials: string) {
@@ -69,6 +81,19 @@ headers: { "content-type": "application/json" },
 body: JSON.stringify({ action, taskCode }),
 }),
 )
+}
+
+/**一键领当日积分：签到 /连登兑换 /抽奖 /礼包 /补签。 */
+export async function poolDailyRewards(
+ uid: string,
+): Promise<{ ok: boolean; result?: WorkbuddyDailyResult }> {
+ return parseResponse(
+ await fetch(`/api/workbuddy-pool/${encodeURIComponent(uid)}`, {
+ method: "POST",
+ headers: { "content-type": "application/json" },
+ body: JSON.stringify({ action: "daily" }),
+ }),
+ )
 }
 
 /**一键完成该账号全部可自动任务（耗时较长，含真实对话）。 */

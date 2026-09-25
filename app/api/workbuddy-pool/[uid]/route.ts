@@ -7,6 +7,7 @@ import {
 } from "@/lib/server/workbuddy/task-pool-store"
 import { claimGrowthReward, listAllGrowthTasks } from "@/lib/server/workbuddy/task-api"
 import { runAllAutomations, runTaskAutomation } from "@/lib/server/workbuddy/task-automation"
+import { runDailyRewards } from "@/lib/server/workbuddy/daily-automation"
 import { tryLockTaskAccount, unlockTaskAccount } from "@/lib/server/workbuddy/task-lock"
 
 export const runtime = "nodejs"
@@ -56,6 +57,19 @@ export async function POST(request: Request, context: RouteContext) {
  if (!taskCode) return jsonError("缺少 taskCode",400)
  const result = await claimGrowthReward(account, taskCode)
  return NextResponse.json({ ok: true, result })
+ }
+ if (action === "daily") {
+ //每日领积分（签到/连登兑换/抽奖/礼包/补签）走同一把账号锁：与任务自动化
+ //共用配额，不能并发跑。
+ if (!tryLockTaskAccount(uid)) {
+ return jsonError("该账号有动作正在执行中，请等本轮结束后再试",409)
+ }
+ try {
+ const result = await runDailyRewards(account)
+ return NextResponse.json({ ok: true, result })
+ } finally {
+ unlockTaskAccount(uid)
+ }
  }
  if (action !== "automate" && action !== "automate-all") {
  return jsonError(`未知 action：${action}`,400)

@@ -4,10 +4,19 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { WorkbuddyAccount } from "./account"
-import { buildHeaders, MP_CLIENT_PRODUCT, realmBase, stableId, truncateStr } from "./api-client"
+import {
+ buildHeaders,
+ MP_CLIENT_PRODUCT,
+ realmBase,
+ stableId,
+ truncateStr,
+ WorkbuddyTaskApiError,
+} from "./api-client"
 import { buildCredentialFile, isValidUid } from "./oauth"
 import { isMpTaskCode } from "./task-api"
 import { busyTaskAccounts, tryLockTaskAccount, unlockTaskAccount } from "./task-lock"
+import { activeUidOf, LOCAL_POOL_UID, type WorkbuddyPoolState } from "./task-pool-store"
+import { isAlreadyDoneError } from "./daily-api"
 
 const CN_ACCOUNT: WorkbuddyAccount = {
  accessToken: "token-cn",
@@ -137,4 +146,81 @@ test("账号任务锁：同账号重复占用被拒，不同账号互不影响",
  //释放后可以重新占用（不会因为一次失败把账号永久锁死）。
  assert.equal(tryLockTaskAccount(uidA), true)
  unlockTaskAccount(uidA)
+})
+
+function poolState(active?: string, entries: Array<Partial<WorkbuddyPoolState["entries"][number]>> = []) {
+ return {
+ version:1 as const,
+ entries: entries.map((entry) => ({
+ uid: entry.uid ?? "u",
+ nickname: entry.nickname ?? "",
+ source: entry.source ?? ("file" as const),
+ ...(entry.filePath ? { filePath: entry.filePath } : {}),
+ disabled: entry.disabled ?? false,
+ })),
+ ...(active === undefined ? {} : { activeUid: active }),
+ }
+}
+
+test("转发账号：没选过 / 选了本机 → 一律回落到 local", () => {
+ assert.equal(activeUidOf(poolState()), LOCAL_POOL_UID)
+ assert.equal(activeUidOf(poolState("")), LOCAL_POOL_UID)
+ assert.equal(activeUidOf(poolState("  ")), LOCAL_POOL_UID)
+ assert.equal(activeUidOf(poolState(LOCAL_POOL_UID)), LOCAL_POOL_UID)
+})
+
+test("转发账号：选中池内可用账号时生效（这是唯一的换号入口）", () => {
+ const state = poolState("acc-2", [{ uid: "acc-1" }, { uid: "acc-2" }])
+ assert.equal(activeUidOf(state), "acc-2")
+})
+
+test("转发账号：选中已被移除的账号时回落 local，不会卡在失效状态", () => {
+ assert.equal(activeUidOf(poolState("gone", [{ uid: "acc-1" }])), LOCAL_POOL_UID)
+})
+
+test("转发账号：选中的账号被禁用后回落 local", () => {
+ const state = poolState("acc-1", [{ uid: "acc-1", disabled: true }])
+ assert.equal(activeUidOf(state), LOCAL_POOL_UID)
+})
+
+test("「已领过」幂等判定：只认上游分类错误，网络层错误不冒充成功", () => {
+ // 实测原文：签到 / 礼包 / 补偿。
+ assert.equal(
+ isAlreadyDoneError(
+ new WorkbuddyTaskApiError(
+ '每日签到：HTTP 400 {"code":10001,"msg":"今天已签到，请明天再来"}',
+ "",
+ 400,
+ ),
+ ),
+ true,
+ )
+ assert.equal(
+ isAlreadyDoneError(
+ new WorkbuddyTaskApiError(
+ '领取新手礼包：HTTP 400 {"code":10001,"msg":"每人限领一次，您已领取过无法重复领取"}',
+ "",
+ 400,
+ ),
+ ),
+ true,
+ )
+ assert.equal(
+ isAlreadyDoneError(
+ new WorkbuddyTaskApiError(
+ '领取活动补偿：HTTP 400 {"code":10001,"msg":"补偿领取活动未开启或已过期"}',
+ "",
+ 400,
+ ),
+ ),
+ true,
+ )
+
+ // 网络层 / 解析层错误不得当成「已领」，否则当天实际没签到却被记成正常。
+ assert.equal(isAlreadyDoneError(new Error("fetch failed")), false)
+ assert.equal(isAlreadyDoneError(new WorkbuddyTaskApiError("查询余额：请求超时", undefined)), false)
+ assert.equal(
+ isAlreadyDoneError(new WorkbuddyTaskApiError("获取任务列表：响应不是 JSON对象", {})),
+ false,
+ )
 })

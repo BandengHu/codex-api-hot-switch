@@ -30,6 +30,13 @@ export interface WorkbuddyPoolEntry {
 export interface WorkbuddyPoolState {
  version:1
  entries: WorkbuddyPoolEntry[]
+ /**
+ * 当前生效账号（uid）：代理转发出站时用它的登录态。
+ *
+ * 号池**不做自动轮转**，切号完全由用户在界面上手动决定，这里只记「选了谁」。
+ * 缺失、或指向已从池里移除的账号时，一律回落本机账号 `local`。
+ */
+ activeUid?: string
 }
 
 function poolDir() {
@@ -76,6 +83,47 @@ export async function listPoolEntries(): Promise<WorkbuddyPoolEntry[]> {
  return [local, ...state.entries]
 }
 
+/**本机账号的固定 uid（池里永远存在，代表桌面端登录态）。 */
+export const LOCAL_POOL_UID = "local"
+
+/**
+ * 从池状态里解出**真正可用**的激活 uid。
+ *
+ * 只有三种情况算有效：显式选中且账号存在、账号未被禁用；其余（没选过、选中的账号
+ * 已删除、已禁用）一律回落本机账号。代理链路每次请求都会调用，不能抛错。
+ */
+export function activeUidOf(state: WorkbuddyPoolState) {
+ const uid = state.activeUid?.trim()
+ if (!uid || uid === LOCAL_POOL_UID) return LOCAL_POOL_UID
+ const entry = state.entries.find((candidate) => candidate.uid === uid)
+ if (!entry || entry.disabled) return LOCAL_POOL_UID
+ return uid
+}
+
+/**读取当前生效账号的 uid（无效时回落 `local`）。 */
+export async function readActiveUid(): Promise<string> {
+ return activeUidOf(await readPoolState())
+}
+
+/**
+ * 切换当前转发账号。
+ *
+ * 传 `local` 表示切回本机桌面端登录态。号池**不做自动轮转**：切号只由这里发生，
+ * 即用户在界面上的手动选择。
+ */
+export async function setActivePoolAccount(uid: string) {
+ const state = await readPoolState()
+ const target = uid.trim() || LOCAL_POOL_UID
+ if (target !== LOCAL_POOL_UID) {
+ const entry = state.entries.find((candidate) => candidate.uid === target)
+ if (!entry) throw new Error(`号池里没有 uid=${target} 的账号`)
+ if (entry.disabled) throw new Error(`账号 ${entry.nickname || target} 已禁用，请先启用再切换`)
+ }
+ state.activeUid = target
+ await writePoolState(state)
+ return target
+}
+
 /**
  * 把一段凭据 JSON 文本导入号池。
  *
@@ -114,6 +162,8 @@ export async function removePoolAccount(uid: string) {
  const before = state.entries.length
  state.entries = state.entries.filter((entry) => entry.uid !== uid)
  if (state.entries.length === before) return
+ // 删掉的正是当前转发账号时清掉标记，回落本机账号。
+ if (state.activeUid === uid) delete state.activeUid
  await writePoolState(state)
  const filePath = join(poolDir(), `${uid}.json`)
  try {
@@ -128,6 +178,8 @@ export async function setPoolAccountDisabled(uid: string, disabled: boolean) {
  const entry = state.entries.find((candidate) => candidate.uid === uid)
  if (!entry) throw new Error(`号池里没有 uid=${uid} 的账号`)
  entry.disabled = disabled
+ // 禁用的账号不能继续当转发出口：清掉激活标记，自动回落本机账号。
+ if (disabled && state.activeUid === uid) delete state.activeUid
  await writePoolState(state)
 }
 

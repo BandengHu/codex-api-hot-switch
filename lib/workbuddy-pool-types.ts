@@ -14,6 +14,13 @@ export interface WorkbuddyPoolEntryView {
  balanceError?: string
 }
 
+/**号池整体视图：条目列表 + 当前生效的转发账号。 */
+export interface WorkbuddyPoolSnapshot {
+ entries: WorkbuddyPoolEntryView[]
+ /**当前转发用的账号 uid（`local` = 本机桌面端登录态）。 */
+ activeUid: string
+}
+
 export interface WorkbuddyPoolGrowthTask {
  taskCode: string
  title: string
@@ -46,6 +53,21 @@ export interface WorkbuddyTaskAction {
  taskCode: string
  desc: string
  attempt: boolean
+}
+
+/**「每日领积分」单步结果。 */
+export interface WorkbuddyDailyStep {
+ key: string
+ label: string
+ status: "done" | "skipped" | "error"
+ message: string
+ credit?: number
+}
+
+export interface WorkbuddyDailyResult {
+ steps: WorkbuddyDailyStep[]
+ creditTotal: number
+ streakDays?: number
 }
 
 export interface WorkbuddyLoginStart {

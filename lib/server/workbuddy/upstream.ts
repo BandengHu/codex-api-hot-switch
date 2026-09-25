@@ -13,27 +13,31 @@ import {
   workbuddySiteUrl,
 } from "@/lib/workbuddy-provider"
 import { getSystemProxyDispatcher } from "@/lib/server/proxy/system-proxy"
-import { readWorkbuddyAccount, type WorkbuddyAccount } from "./account"
+import type { WorkbuddyAccount } from "./account"
+import { readActivePoolAccount } from "./pool-account"
 
 const MAX_CATALOG_BYTES = 2 * 1024 * 1024
 const CATALOG_TIMEOUT_MS = 15_000
 
 /**
- * 把本机登录态写进供应商：token 落到每个端点，账号相关的头补齐。
+ * 把当前生效账号的登录态写进供应商：token 落到每个端点，账号相关的头补齐。
+ *
+ * 生效账号 = 号池里被手动选中的那个（默认本机桌面端登录态）。号池**不做自动轮转**，
+ * 换号只发生在用户点「切换」时，所以这里每次请求现读一次，切完立刻生效。
  *
  * 非 WorkBuddy 供应商原样返回——这批头只有它认。
  */
 export async function withWorkbuddyCredentials(provider: Provider): Promise<Provider> {
-  if (!isWorkbuddyProvider(provider)) return provider
-  const account = await readWorkbuddyAccount()
-  return {
-    ...provider,
-    endpoints: provider.endpoints.map((endpoint) => ({
-      ...endpoint,
-      apiKey: account.accessToken,
-    })),
-    headers: withAccountHeaders(provider.headers, account, provider),
-  }
+ if (!isWorkbuddyProvider(provider)) return provider
+ const account = await readActivePoolAccount()
+ return {
+ ...provider,
+ endpoints: provider.endpoints.map((endpoint) => ({
+ ...endpoint,
+ apiKey: account.accessToken,
+ })),
+ headers: withAccountHeaders(provider.headers, account, provider),
+}
 }
 
 export async function withWorkbuddyTargetCredentials<T extends { provider: ResolvedProvider }>(

@@ -10,7 +10,8 @@ pollOauthTokens,
 startOauth,
 } from "./oauth"
 import { importPoolAccount, readPoolAccount } from "./task-pool-store"
-import { dailyCheckin, fetchBalance } from "./task-api"
+import { fetchBalance } from "./task-api"
+import { dailyCheckin, isAlreadyDoneError } from "./daily-api"
 
 /**
  *号池「浏览器授权登录」会话管理（进程内）。
@@ -104,7 +105,12 @@ domain: tokens.domain || account.domain,
  try {
  const saved = await readPoolAccount(entry.uid)
  await dailyCheckin(saved).catch((error: unknown) => {
- checkinMessage = error instanceof Error ? error.message : String(error)
+ // 今天已签到属幂等，不算异常，提示文案原样带出去。
+ checkinMessage = isAlreadyDoneError(error)
+ ? "今天已签到"
+ : error instanceof Error
+ ? error.message
+ : String(error)
  })
  const balance = await fetchBalance(saved).catch(() => undefined)
  if (balance) {

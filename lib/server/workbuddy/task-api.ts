@@ -294,14 +294,6 @@ const base = realmBase(account)
  return { remain, used, size, packs: accounts.length }
 }
 
-export async function dailyCheckin(account: WorkbuddyAccount) {
- const base = realmBase(account)
- const path = isGlobalAccount(account)
- ? "/billing/meter/daily-checkin"
- : "/v2/billing/meter/daily-checkin"
- await taskFetch(account, `${base.billing}${path}`, { method: "POST", body: {} }, "每日签到")
-}
-
 export function isGlobalAccount(account: WorkbuddyAccount) {
  return account.domain.includes("workbuddy.ai")
 }

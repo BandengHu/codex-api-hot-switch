@@ -3,6 +3,8 @@ import { errorMessage, jsonError, readJsonBody } from "@/lib/server/http"
 import {
  importPoolAccount,
  listPoolEntries,
+  readActiveUid,
+  setActivePoolAccount,
  syncPoolFromDisk,
 } from "@/lib/server/workbuddy/task-pool-store"
 import { fetchBalance } from "@/lib/server/workbuddy/task-api"
@@ -44,7 +46,8 @@ export async function GET() {
  }
  enriched.push(item)
  }
- return NextResponse.json({ entries: enriched })
+ // activeUid由池状态解出（失效自动回落 local），界面据此标注当前转发账号。
+ return NextResponse.json({ entries: enriched, activeUid: await readActiveUid() })
  } catch (error) {
  return jsonError(`读取号池失败：${errorMessage(error)}`)
  }
@@ -52,7 +55,11 @@ export async function GET() {
 
 export async function POST(request: Request) {
  try {
- const body = await readJsonBody<{ credentials?: string }>(request)
+ const body = await readJsonBody<{ credentials?: string; activeUid?: string }>(request)
+ if (body.activeUid !== undefined) {
+ const activeUid = await setActivePoolAccount(body.activeUid)
+ return NextResponse.json({ ok: true, activeUid })
+ }
  if (!body.credentials?.trim()) {
  return jsonError("缺少凭据内容",400)
  }
