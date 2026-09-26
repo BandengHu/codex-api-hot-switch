@@ -324,11 +324,14 @@ function responsesFunctionToolToChat(tool: AnyRecord) {
     if (tool.strict != null && fn.strict == null) fn.strict = tool.strict
     return { type: "function", function: fn }
   }
+  const description = safeTrim(tool.description)
   return {
     type: "function",
     function: {
       name: safeTrim(tool.name),
-      description: tool.description || "",
+      // 对齐 cc-switch #7378：缺失的 description 省略而不是序列化成空串，
+      // 严格上游会对 null/空值 description 整个拒绝请求。
+      ...(description ? { description } : {}),
       parameters: normalizeChatToolParameters(tool.parameters),
       ...(tool.strict != null ? { strict: tool.strict } : {}),
     },
@@ -419,6 +422,25 @@ export function collectToolSearchOutputTools(value: unknown, out: unknown[] = []
     out.push(...value.tools)
   }
   for (const child of Object.values(value)) collectToolSearchOutputTools(child, out)
+  return out
+}
+
+/**
+ * 对齐 cc-switch #7454：Codex 0.154+ 会把额外工具放进 `additional_tools`
+ * input 载体里，这些工具必须被提升出来，参与 Chat/Anthropic 转换。
+ *
+ * 载体本身不是消息，不能让它落到消息转换里。
+ */
+export function collectAdditionalTools(value: unknown, out: unknown[] = []) {
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectAdditionalTools(item, out))
+    return out
+  }
+  if (!isObject(value)) return out
+  if (value.type === "additional_tools" && Array.isArray(value.tools)) {
+    out.push(...value.tools)
+  }
+  for (const child of Object.values(value)) collectAdditionalTools(child, out)
   return out
 }
 

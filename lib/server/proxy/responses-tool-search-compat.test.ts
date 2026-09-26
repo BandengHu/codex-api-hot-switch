@@ -439,3 +439,27 @@ test("non-streaming compatible Responses restores proxied tool calls", () => {
   assert.equal(restored.output[1].name, "web_search")
   assert.equal(restored.output[1].namespace, "mcp__switchgate_web_search")
 })
+
+test("non-passthrough Responses lifts additional_tools carriers into top-level tools", () => {
+  const prepared = prepare({
+    model: "upstream-model",
+    input: [
+      {
+        type: "additional_tools",
+        role: "developer",
+        tools: [
+          {
+            type: "function",
+            name: "carried_tool",
+            description: "A carried tool.",
+            parameters: { type: "object", properties: {} },
+          },
+        ],
+      },
+      { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+    ],
+  })
+
+  const names = (prepared.body.tools || []).map((tool: any) => tool.name)
+  assert.ok(names.includes("carried_tool"), names.join(","))
+})

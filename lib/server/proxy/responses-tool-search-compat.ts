@@ -1,6 +1,7 @@
 import "server-only"
 
 import {
+  collectAdditionalTools,
   collectToolSearchOutputTools,
   flattenNamespaceToolName,
   rememberResponseTool,
@@ -204,7 +205,11 @@ export function adaptToolSearchForCompatibleResponses(
 ) {
   const declaredTools = Array.isArray(body.tools) ? body.tools : []
   const loadedTools = collectToolSearchOutputTools(body.input)
-  body.tools = compatibleResponsesTools([...declaredTools, ...loadedTools], context)
+  const additionalTools = collectAdditionalTools(body.input)
+  body.tools = compatibleResponsesTools(
+    [...declaredTools, ...loadedTools, ...additionalTools],
+    context,
+  )
   if (Array.isArray(body.input)) {
     body.input = body.input.map((item: unknown) =>
       isObject(item) ? compatibleToolSearchHistoryItem(item) || item : item,

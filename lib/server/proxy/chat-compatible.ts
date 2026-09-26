@@ -34,6 +34,11 @@ import { normalizeChatToolPairing } from "./chat-tool-pairing"
 import { chatWireToolChoice } from "./chat-tool-choice"
 import { chatStreamHasUsableOutput, chatToolDeltas, parseChatSseFrames } from "./chat-sse-fold"
 import { normalizeContextCheckpointRecoveryMessages } from "./context-checkpoint-recovery"
+import {
+  upstreamRequiresRefSiblingAllOf,
+  wrapRefSiblingsInChatTools,
+} from "./moonshot-schema"
+import { planChatToolOutputMedia } from "./chat-tool-media"
 import { normalizeErrorCode, normalizeErrorType } from "./upstream-error"
 import {
   buildRemoteCompactionChatBody,
@@ -56,6 +61,7 @@ import {
 import {
   buildCustomToolCallHistory,
   buildToolContext,
+  collectAdditionalTools,
   collectToolSearchOutputTools,
   deserializeToolContext,
   flattenNamespaceToolName,
@@ -418,6 +424,7 @@ function mergePendingToolCallsIntoAdjacentAssistant(
 function appendResponsesInput(input: unknown, messages: AnyRecord[]) {
   const pendingToolCalls: AnyRecord[] = []
   const pendingReasoning: string[] = []
+  const pendingMedia: AnyRecord[] = []
   const seenToolCallIds = new Set<string>()
   let lastAssistantIndex: number | null = null
 
@@ -445,6 +452,20 @@ function appendResponsesInput(input: unknown, messages: AnyRecord[]) {
     attachReasoningToLastAssistant(reasoning)
   }
 
+  const flushPendingMedia = () => {
+    if (pendingMedia.length === 0) return
+    messages.push({ role: "user", content: pendingMedia.splice(0) })
+  }
+
+  const queueChatToolOutputMedia = (callId: string, mediaParts: AnyRecord[]) => {
+    if (mediaParts.length === 0) return
+    pendingMedia.push({
+      type: "text",
+      text: `[cc-switch: media output of tool call ${callId}]`,
+    })
+    pendingMedia.push(...mediaParts)
+  }
+
   const flushToolCalls = () => {
     if (pendingToolCalls.length === 0) return
     if (
@@ -453,6 +474,7 @@ function appendResponsesInput(input: unknown, messages: AnyRecord[]) {
       lastAssistantIndex = messages.length - 1
       return
     }
+    flushPendingMedia()
     const incoming = pendingToolCalls.splice(0)
     const message: AnyRecord = { role: "assistant", content: "", tool_calls: incoming }
     if (pendingReasoning.length > 0) {
@@ -467,6 +489,7 @@ function appendResponsesInput(input: unknown, messages: AnyRecord[]) {
 
     if (type === "compaction") {
       flushToolCalls()
+      flushPendingMedia()
       flushReasoning()
       const message = compactionItemToChatMessage(raw)
       if (message) pushMessage(message)
@@ -475,8 +498,19 @@ function appendResponsesInput(input: unknown, messages: AnyRecord[]) {
 
     if (type === "compaction_trigger") return
 
+    if (type === "additional_tools") {
+      // 对齐 cc-switch #7454：additional_tools 是工具载体，不是消息。
+      // 它的 tools 已经在 responsesToChatCompletions 里被收集并提升，
+      // 这里不能让它落到通用 message 分支，否则会产生 content:null 的 system 消息。
+      // 但它仍然是一个回合边界，必须先把待发的 reasoning / tool call 收掉。
+      flushToolCalls()
+      flushReasoning()
+      return
+    }
+
     if (type === "input_text" || type === "input_image" || type === "input_file" || type === "input_audio") {
       flushToolCalls()
+      flushPendingMedia()
       const role = responseRoleToChat(raw.role)
       const message: AnyRecord = {
         role,
@@ -557,6 +591,25 @@ function appendResponsesInput(input: unknown, messages: AnyRecord[]) {
         pushMessage(orphanToolOutputMessage(callId, raw.output ?? raw.content ?? ""))
         return
       }
+      // 对齐 cc-switch #6495/#7458：从工具输出里剥离媒体块，避免 base64 文本
+      // 直接塞进 tool 文本导致 token 膨胀和严格网关 400。
+      const mediaSource =
+        type === "function_call_output"
+          ? raw.output ?? raw.content
+          : raw.output
+      const mediaPlan = planChatToolOutputMedia(mediaSource)
+      if (mediaPlan) {
+        queueChatToolOutputMedia(callId, mediaPlan.mediaParts)
+        messages.push({
+          role: "tool",
+          tool_call_id: callId,
+          content:
+            type === "function_call_output"
+              ? mediaPlan.toolContent
+              : canonicalJson({ ...raw, output: mediaPlan.outputValue }),
+        })
+        return
+      }
       messages.push({
         role: "tool",
         tool_call_id: callId,
@@ -611,6 +664,7 @@ function appendResponsesInput(input: unknown, messages: AnyRecord[]) {
 
     flushToolCalls()
     if (!Object.hasOwn(raw, "role") && !Object.hasOwn(raw, "content")) return
+    flushPendingMedia()
     const role = responseRoleToChat(raw.role)
     const message: AnyRecord = {
       role,
@@ -635,6 +689,7 @@ function appendResponsesInput(input: unknown, messages: AnyRecord[]) {
   } else if (isObject(input)) {
     appendItem(input)
   }
+  flushPendingMedia()
   flushToolCalls()
   flushReasoning()
 }
@@ -753,8 +808,12 @@ export function responsesToChatCompletions(
 
   const responseTools = Array.isArray(body.tools) ? body.tools : []
   const loadedTools = collectToolSearchOutputTools(body.input)
-  for (const tool of loadedTools) rememberResponseTool(toolContext, tool)
-  const tools = responsesToolsToChatTools([...responseTools, ...loadedTools], toolContext)
+  const additionalTools = collectAdditionalTools(body.input)
+  for (const tool of [...loadedTools, ...additionalTools]) rememberResponseTool(toolContext, tool)
+  const tools = responsesToolsToChatTools(
+    [...responseTools, ...loadedTools, ...additionalTools],
+    toolContext,
+  )
   if (tools.length > 0) {
     result.tools = tools
     // 上游只认字符串 tool_choice，对象一律 400（见 chat-tool-choice.ts 的实测记录）。
@@ -1008,6 +1067,11 @@ export function buildChatCompatibleRequest(
   const converted = responsesToChatCompletions(request, target, {
     applyLanguagePolicy: !compactionTrigger,
   })
+  // 对齐 cc-switch #6863：Moonshot / Kimi 的 Chat 校验器拒绝带兄弟关键字的 $ref，
+  // 只在命中的上游改写，其他供应商保持字节级不变。
+  if (upstreamRequiresRefSiblingAllOf(target.provider.baseUrl)) {
+    wrapRefSiblingsInChatTools(converted.body)
+  }
   const requestedStream = Boolean(converted.body.stream)
   if (compactionTrigger) {
     const compactionBody = buildRemoteCompactionChatBody(converted.body, compactionTrigger)
@@ -1923,4 +1987,3 @@ export {
   responsesSseToChatCompletionsSse,
   transformResponsesSseText,
 }
-

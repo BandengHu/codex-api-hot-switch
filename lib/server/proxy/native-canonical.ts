@@ -17,6 +17,7 @@ import {
 import {
   buildCustomToolCallHistory,
   buildToolContext,
+  collectAdditionalTools,
   collectToolSearchOutputTools,
   rememberResponseTool,
   responsesToolChoiceToChat,
@@ -393,9 +394,10 @@ function nativeToolsAndContext(body: AnyRecord) {
   const responseTools = Array.isArray(body.tools) ? body.tools : []
   const toolContext = buildToolContext(responseTools)
   const loadedTools = collectToolSearchOutputTools(body.input)
-  for (const tool of loadedTools) rememberResponseTool(toolContext, tool)
+  const additionalTools = collectAdditionalTools(body.input)
+  for (const tool of [...loadedTools, ...additionalTools]) rememberResponseTool(toolContext, tool)
   const nativeCompatibleTools = responsesToolsToChatTools(
-    [...responseTools, ...loadedTools],
+    [...responseTools, ...loadedTools, ...additionalTools],
     toolContext
   )
   return {
@@ -522,6 +524,12 @@ function normalizeInputItems(
       throw new Error(`input[${index}] 不是对象，无法转换到原生协议`)
     }
     const type = safeTrim(rawItem.type || (rawItem.role ? "message" : ""))
+    if (type === "additional_tools") {
+      // 对齐 cc-switch #7454：additional_tools 是工具载体，不是消息。
+      // 里面的工具已经在 nativeToolsAndContext 里被收集并提升，
+      // 这里直接跳过，避免落到「不支持的 input type」错误。
+      return
+    }
     if (type === "message") {
       const role = safeTrim(rawItem.role || "user").toLowerCase()
       if (role === "system" || role === "developer") {

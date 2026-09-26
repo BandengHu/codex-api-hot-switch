@@ -282,7 +282,12 @@ function normalizeBuiltinToolValue(value: unknown, options: { mode?: "choice" } 
     return {
       type: "function",
       name: fn.name || value.name,
-      description: fn.description || value.description || "",
+      // 对齐 cc-switch #7378：缺失的 description 省略而不是序列化成空串。
+      ...(typeof fn.description === "string" && fn.description.trim()
+        ? { description: fn.description }
+        : typeof value.description === "string" && value.description.trim()
+          ? { description: value.description }
+          : {}),
       parameters: fn.parameters || value.parameters || { type: "object", properties: {} },
       ...(fn.strict != null ? { strict: fn.strict } : {}),
     }
@@ -432,7 +437,11 @@ function normalizeChatTool(tool: unknown, shortNameMap: Map<string, string>) {
   return {
     type: "function",
     name: shortNameMap.get(name) || name,
-    description: fn.description || "",
+    // 对齐 cc-switch #7378：缺失的 description 省略而不是序列化成空串，
+    // 严格上游会对空值 description 整个拒绝请求。
+    ...(typeof fn.description === "string" && fn.description.trim()
+      ? { description: fn.description }
+      : {}),
     parameters: fn.parameters || { type: "object", properties: {} },
     ...(fn.strict != null ? { strict: fn.strict } : {}),
   }
