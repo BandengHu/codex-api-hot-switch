@@ -21,16 +21,18 @@ export function chatUsageToResponsesUsage(usage: unknown) {
   const outputTokens = Number(
     usage.completion_tokens ?? usage.output_tokens ?? usage.candidatesTokenCount ?? 0,
   )
-  const cacheReadTokens = Number(usage.cache_read_input_tokens ?? 0)
+  const cacheReadValue = usage.cache_read_input_tokens
+  const cacheReadTokens = Number(cacheReadValue ?? 0)
   const cacheCreationTokens =
     Number(usage.cache_creation_input_tokens ?? 0) +
     Number(usage.cache_creation_5m_input_tokens ?? 0) +
     Number(usage.cache_creation_1h_input_tokens ?? 0)
   const cachedTokens = Number(
-    usage.prompt_tokens_details?.cached_tokens ??
+      usage.prompt_tokens_details?.cached_tokens ??
       usage.input_tokens_details?.cached_tokens ??
       usage.cachedContentTokenCount ??
-      cacheReadTokens ??
+      cacheReadValue ??
+      usage.prompt_cache_hit_tokens ??
       0,
   )
   const hasAnthropicCacheFields =
@@ -42,7 +44,8 @@ export function chatUsageToResponsesUsage(usage: unknown) {
     hasAnthropicCacheFields ||
     usage.prompt_tokens_details?.cached_tokens != null ||
     usage.input_tokens_details?.cached_tokens != null ||
-    usage.cachedContentTokenCount != null
+    usage.cachedContentTokenCount != null ||
+    usage.prompt_cache_hit_tokens != null
   const inputTokens = hasAnthropicCacheFields
     ? (Number.isFinite(baseInputTokens) ? baseInputTokens : 0) +
       (Number.isFinite(cacheReadTokens) ? cacheReadTokens : 0) +

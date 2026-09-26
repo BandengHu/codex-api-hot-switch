@@ -98,6 +98,7 @@ export function normalizeTokenUsage(value: unknown): TokenUsage | undefined {
     value.prompt_tokens_details?.cached_tokens,
     value.cachedContentTokenCount,
     value.cache_read_input_tokens,
+    value.prompt_cache_hit_tokens,
   )
   const cacheCreationInputTokens = sumTokens(
     value.cache_creation_input_tokens,
@@ -109,6 +110,7 @@ export function normalizeTokenUsage(value: unknown): TokenUsage | undefined {
       value.prompt_tokens_details?.cached_tokens != null ||
       value.cachedContentTokenCount != null ||
       value.cache_read_input_tokens != null ||
+      value.prompt_cache_hit_tokens != null ||
       value.cache_creation_input_tokens != null ||
       value.cache_creation_5m_input_tokens != null ||
       value.cache_creation_1h_input_tokens != null,

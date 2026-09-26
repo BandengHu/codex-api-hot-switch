@@ -36,6 +36,15 @@ function isDeepSeekV4Model(model: string) {
   return /(?:^|[/-])deepseek-v4(?:[/-]|$)/i.test(model)
 }
 
+function supportsGrokReasoningEffort(model: string) {
+  const normalized = model.toLowerCase()
+  if (normalized.startsWith("grok-build-")) return true
+  const match = normalized.match(/^grok-4\.(\d+)(?:\D|$)/)
+  if (!match) return false
+  const minor = Number(match[1])
+  return Number.isFinite(minor) && minor >= 5
+}
+
 function inferChatReasoningDialect(target: ProxyTarget): ReasoningDialect {
   // WorkBuddy 上游只认它自己的 reasoning_effort 阶梯，模型名（hy/glm/kimi…）落不到
   // 原生厂商的方言上，先按供应商定死。
@@ -70,7 +79,11 @@ function inferChatReasoningDialect(target: ProxyTarget): ReasoningDialect {
     return "stepfun-low-high"
   }
   if (lower.includes("hunyuan") || lower.startsWith("hy")) return "tencent-tokenhub-thinking"
-  if (isOpenAIOModel(lower) || /^gpt-[5-9]/.test(lower)) {
+  if (
+    isOpenAIOModel(lower) ||
+    /^gpt-[5-9]/.test(lower) ||
+    supportsGrokReasoningEffort(lower)
+  ) {
     return "openai-reasoning-effort"
   }
 
@@ -138,7 +151,12 @@ function mapReasoningEffort(effort: string, dialect: ReasoningDialect) {
       ? normalized
       : undefined
   }
-  if (dialect === "openai-reasoning-effort" || dialect === "volcengine-thinking") {
+  if (dialect === "openai-reasoning-effort") {
+    return ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(normalized)
+      ? normalized
+      : undefined
+  }
+  if (dialect === "volcengine-thinking") {
     if (normalized === "ultra" || normalized === "xhigh") return "max"
     return ["minimal", "low", "medium", "high", "max"].includes(normalized)
       ? normalized

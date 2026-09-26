@@ -168,6 +168,63 @@ test("additional_tools carrier dedupes against top-level tools", () => {
   assert.equal(tools[0].function.description, "Top-level wait.")
 })
 
+test("additional_tools carrier does not split pending reasoning or tool calls", () => {
+  const body = convert({
+    model: "glm-5.3-flash",
+    input: [
+      {
+        type: "reasoning",
+        summary: [{ type: "summary_text", text: "inspect both files together" }],
+      },
+      {
+        type: "function_call",
+        call_id: "call_first",
+        name: "read_file",
+        arguments: '{"path":"a.ts"}',
+      },
+      {
+        type: "additional_tools",
+        role: "developer",
+        tools: [
+          {
+            type: "function",
+            name: "wait",
+            parameters: { type: "object", properties: {} },
+          },
+        ],
+      },
+      {
+        type: "function_call",
+        call_id: "call_second",
+        name: "read_file",
+        arguments: '{"path":"b.ts"}',
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_first",
+        output: "a",
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_second",
+        output: "b",
+      },
+    ],
+  })
+  const messages = body.messages as any[]
+
+  assert.deepEqual(messages.map((message: any) => message.role), [
+    "assistant",
+    "tool",
+    "tool",
+  ])
+  assert.deepEqual(
+    messages[0].tool_calls.map((call: any) => call.id),
+    ["call_first", "call_second"],
+  )
+  assert.equal(messages[0].reasoning_content, "inspect both files together")
+})
+
 test("plain developer messages still convert without additional_tools carrier", () => {
   const body = convert({
     model: "glm-5.3-flash",

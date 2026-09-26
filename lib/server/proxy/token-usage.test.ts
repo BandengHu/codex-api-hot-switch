@@ -65,6 +65,27 @@ test("treats Anthropic cache creation fields as an explicit zero cache hit", () 
   assert.equal(usage?.cacheUsageReported, true)
 })
 
+test("uses DeepSeek documented cache hits as the last-resort cache field", () => {
+  const deepSeekOnly = normalizeTokenUsage({
+    prompt_tokens: 1000,
+    completion_tokens: 100,
+    total_tokens: 1100,
+    prompt_cache_hit_tokens: 600,
+    prompt_cache_miss_tokens: 400,
+  })
+  const standardZeroWins = normalizeTokenUsage({
+    prompt_tokens: 1000,
+    completion_tokens: 100,
+    prompt_tokens_details: { cached_tokens: 0 },
+    prompt_cache_hit_tokens: 600,
+  })
+
+  assert.equal(deepSeekOnly?.inputTokens, 1000)
+  assert.equal(deepSeekOnly?.cachedInputTokens, 600)
+  assert.equal(deepSeekOnly?.cacheUsageReported, true)
+  assert.equal(standardZeroWins?.cachedInputTokens, 0)
+})
+
 test("records first meaningful Responses output time", () => {
   const collector = new TokenUsageSseCollector()
   collector.push(

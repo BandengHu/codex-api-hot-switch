@@ -502,9 +502,6 @@ function appendResponsesInput(input: unknown, messages: AnyRecord[]) {
       // 对齐 cc-switch #7454：additional_tools 是工具载体，不是消息。
       // 它的 tools 已经在 responsesToChatCompletions 里被收集并提升，
       // 这里不能让它落到通用 message 分支，否则会产生 content:null 的 system 消息。
-      // 但它仍然是一个回合边界，必须先把待发的 reasoning / tool call 收掉。
-      flushToolCalls()
-      flushReasoning()
       return
     }
 
