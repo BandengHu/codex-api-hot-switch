@@ -12,6 +12,7 @@ import {
 import { applyAssistantMessagePhase } from "./common"
 import { repairResponsesItemIdsInSsePayload } from "./responses-item-id-repair"
 import { assertSseBufferWithinLimit } from "./sse-frame"
+import { normalizeErrorCode, normalizeResponsesErrorFields } from "./upstream-error"
 
 type AnyRecord = Record<string, any>
 
@@ -87,6 +88,19 @@ function sse(event: string, payload: unknown) {
 
 function rawSseFrame(frameText: string) {
   return `${frameText}\n\n`
+}
+
+// Codex 的 response.failed 解析器把 error.code / error.type 都声明成字符串，
+// 上游给数字（业务码如 6004）会让整条 error 反序列化失败，真实 message 被丢掉，
+// 只剩 "response.failed event received"。返回 true 表示改过、必须重新序列化。
+function normalizeFailedFrameError(data: AnyRecord) {
+  if (!isObject(data.response)) return false
+  const error = data.response.error
+  if (!isObject(error)) return false
+  const normalized = normalizeResponsesErrorFields(error)
+  if (JSON.stringify(normalized) === JSON.stringify(error)) return false
+  data.response.error = normalized
+  return true
 }
 
 function splitSseFrame(text: string) {
@@ -454,7 +468,12 @@ class ResponsesStreamRepairer {
     if (type === "response.failed") {
       this.failedSeen = true
       this.pendingDone = false
-      return modelChanged || itemIdChanged
+      // 这条分支会把上游的 response.failed 原样转发给 Codex。上游常见数字 code
+      // （业务码如 6004），而 Codex 把 error.code / error.type 都声明成字符串，
+      // 数字会让整条 error 反序列化失败、消息只剩 "response.failed event received"。
+      // 转发前就地规范成字符串，避免上游形状把真实原因吃掉。
+      const errorNormalized = normalizeFailedFrameError(data)
+      return modelChanged || itemIdChanged || errorNormalized
         ? sse(event, data)
         : rawSseFrame(frameText)
     }
@@ -470,10 +489,11 @@ class ResponsesStreamRepairer {
       String(data.message || data.detail || data.error_description || data.error || "").trim() ||
       "Upstream SSE error event received"
     const response = this.syntheticResponseBase("failed")
+    const code = normalizeErrorCode(data.code)
     response.error = {
       message,
       type: String(data.type || "upstream_error"),
-      ...(data.code != null ? { code: data.code } : {}),
+      ...(code != null ? { code } : {}),
       ...(data.param != null ? { param: data.param } : {}),
       ...(data.request_id != null ? { request_id: data.request_id } : {}),
     }

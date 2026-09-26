@@ -34,6 +34,7 @@ import { normalizeChatToolPairing } from "./chat-tool-pairing"
 import { chatWireToolChoice } from "./chat-tool-choice"
 import { chatStreamHasUsableOutput, chatToolDeltas, parseChatSseFrames } from "./chat-sse-fold"
 import { normalizeContextCheckpointRecoveryMessages } from "./context-checkpoint-recovery"
+import { normalizeErrorCode, normalizeErrorType } from "./upstream-error"
 import {
   buildRemoteCompactionChatBody,
   chatCompletionToRemoteCompactionResponse,
@@ -1714,7 +1715,7 @@ function chatSseTextToResponsesSse(
       out += failedChatSse(
         state,
         explicitErrorMessage,
-        error.type || error.code || "server_error",
+        normalizeErrorType(error.type) ?? normalizeErrorCode(error.code) ?? "server_error",
         serializedContext,
       )
       return out

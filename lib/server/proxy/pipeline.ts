@@ -47,7 +47,7 @@ import {
   isImagesGenerationsPath,
 } from "./image-api"
 import { sanitizeImagesForTargetModel } from "./media-sanitizer"
-import { normalizeUpstreamErrorPayload } from "./upstream-error"
+import { normalizeErrorCode, normalizeUpstreamErrorPayload } from "./upstream-error"
 import {
   ProxyRequestBodyError,
   readDecodedFormDataRequest,
@@ -1516,10 +1516,11 @@ function errorResponseSse(params: {
   model: string
   message: string
   type?: string
-  code?: string | number
+  code?: unknown
 }) {
   const id = responseId("resp")
   const createdAt = Math.floor(Date.now() / 1000)
+  const code = normalizeErrorCode(params.code)
   const failed = {
     id,
     object: "response",
@@ -1530,7 +1531,7 @@ function errorResponseSse(params: {
     error: {
       message: params.message,
       type: params.type || "server_error",
-      ...(params.code != null ? { code: params.code } : {}),
+      ...(code != null ? { code } : {}),
     },
   }
   return [
@@ -1616,7 +1617,7 @@ function relayErrorResponse(params: {
   statusCode: number
   message: string
   type?: string
-  code?: string | number
+  code?: unknown
 }) {
   if (params.stream) {
     return new Response(
@@ -1639,12 +1640,13 @@ function relayErrorResponse(params: {
       },
     )
   }
+  const code = normalizeErrorCode(params.code)
   return Response.json(
     {
       error: {
         message: params.message,
         type: params.type || "server_error",
-        ...(params.code != null ? { code: params.code } : {}),
+        ...(code != null ? { code } : {}),
       },
     },
     {

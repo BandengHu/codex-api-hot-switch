@@ -21,9 +21,36 @@ function truncatePreview(value: string) {
   return Array.from(value).slice(0, ERROR_BODY_PREVIEW_LIMIT).join("")
 }
 
-function numberOrString(value: unknown) {
+// Codex 客户端把 response.failed 的 error.code 声明成字符串
+// （codex-rs/codex-api/src/sse/responses_error.rs 的 `code: Option<String>`）。
+// 数字 code 会让整条 error 对象反序列化失败并被客户端整体丢弃，只剩
+// "stream disconnected before completion: response.failed event received"，
+// 上游的真实 message 一并消失。这里统一规范成字符串：数字业务码按十进制字符串
+// 保留，语义与可读性都不变。
+export function normalizeErrorCode(value: unknown): string | undefined {
   if (typeof value === "string" && value.trim()) return value.trim()
-  if (typeof value === "number" && Number.isFinite(value)) return value
+  if (typeof value === "number" && Number.isFinite(value)) return String(value)
+  return undefined
+}
+
+// 同一个结构体里 `type` 也是 Option<String>：type 非字符串会与数字 code 一样
+// 让整条 error 反序列化失败。所有要交给 Codex 的 Responses 形状 error 都过这里。
+export function normalizeResponsesErrorFields(error: AnyRecord): AnyRecord {
+  const normalized: AnyRecord = { ...error }
+  const code = normalizeErrorCode(error.code)
+  if (code != null) normalized.code = code
+  else delete normalized.code
+  const type = normalizeErrorType(error.type)
+  if (type != null) normalized.type = type
+  else delete normalized.type
+  return normalized
+}
+
+export function normalizeErrorType(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) return value.trim()
+  // 上游把业务码塞进 type 时同样是数字（如 6004）；Codex 的 type 是 Option<String>，
+  // 数字会让整条 error 反序列化失败，所以这里也统一字符串化。
+  if (typeof value === "number" && Number.isFinite(value)) return String(value)
   return undefined
 }
 
@@ -90,7 +117,7 @@ export function normalizeUpstreamErrorPayload(
     ? safeTrim(error.type) || safeTrim(error.error_type) || "upstream_error"
     : "upstream_error"
   const code = isObject(error)
-    ? numberOrString(error.code ?? error.status_code ?? error.statusCode)
+    ? normalizeErrorCode(error.code ?? error.status_code ?? error.statusCode)
     : undefined
   const param = isObject(error) ? safeTrim(error.param) || undefined : undefined
 

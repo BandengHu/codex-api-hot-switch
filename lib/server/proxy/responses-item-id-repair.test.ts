@@ -12,6 +12,53 @@ function sse(event: string, data: unknown) {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
 }
 
+// 上游 response.failed 会被原样转发给 Codex。Codex 把 error.code / error.type
+// 都声明成字符串，数字会让整条 error 反序列化失败、只剩
+// "stream disconnected before completion: response.failed event received"，
+// 上游的真实原因（例如 WorkBuddy 的频率限制提示）在桌面端完全看不到。
+test("forwards upstream response.failed with numeric code normalized to string", () => {
+  const message =
+    "您的使用量已超出频率限制，将在 2026-09-26 13:10:37 UTC+8 重置，您也可以切换其他模型继续使用。"
+  const upstream = sse("response.failed", {
+    type: "response.failed",
+    response: {
+      id: "resp_upstream",
+      object: "response",
+      status: "failed",
+      output: [],
+      error: { message, type: "upstream_error", code: 6004 },
+    },
+  })
+
+  const forwarded = parseSseFrames(
+    transformResponsesSseText(upstream, { synthesizeFinalOnStreamEnd: false }).text,
+  ).find((frame) => frame.data?.type === "response.failed")
+
+  assert.ok(forwarded, "upstream failure must still be forwarded as response.failed")
+  assert.equal(forwarded.data.response.error.message, message)
+  assert.equal(forwarded.data.response.error.code, "6004")
+  assert.equal(typeof forwarded.data.response.error.code, "string")
+})
+
+test("keeps semantic string codes and string error types untouched", () => {
+  const upstream = sse("response.failed", {
+    type: "response.failed",
+    response: {
+      id: "resp_upstream",
+      status: "failed",
+      error: { message: "quota exceeded", type: "rate_limit_error", code: "rate_limit_exceeded" },
+    },
+  })
+
+  const forwarded = parseSseFrames(
+    transformResponsesSseText(upstream, { synthesizeFinalOnStreamEnd: false }).text,
+  ).find((frame) => frame.data?.type === "response.failed")
+
+  assert.ok(forwarded)
+  assert.equal(forwarded.data.response.error.code, "rate_limit_exceeded")
+  assert.equal(forwarded.data.response.error.type, "rate_limit_error")
+})
+
 test("normalizes known Responses item types to stable protocol prefixes", () => {
   assert.equal(normalizeResponsesItemId("message", "item_message"), "msg_message")
   assert.equal(normalizeResponsesItemId("reasoning", "item_reasoning"), "rs_reasoning")
