@@ -1,7 +1,18 @@
 import "server-only"
 
-import { brotliDecompressSync, gunzipSync, inflateRawSync, inflateSync } from "node:zlib"
-import { decompress as decompressZstd } from "fzstd"
+import {
+  brotliDecompressSync,
+  gunzipSync,
+  inflateRawSync,
+  inflateSync,
+  zstdDecompressSync,
+} from "node:zlib"
+import {
+  MAX_PROXY_BODY_BYTES,
+  ProxyBodyTooLargeError,
+  readRequestBytesWithLimit,
+  readResponseBytesWithLimit,
+} from "./body-size-limit"
 
 const JSON_TEXT_DECODER = new TextDecoder("utf-8", { fatal: true })
 const ENTITY_HEADERS = ["content-encoding", "content-length", "transfer-encoding"]
@@ -45,35 +56,89 @@ export function isSupportedContentEncoding(contentEncoding: string) {
   return codings.length > 0 && codings.every(isSingleSupportedCoding)
 }
 
-function decompressSingle(coding: string, body: Uint8Array) {
+function isOutputLimitError(error: unknown) {
+  if (!error || typeof error !== "object") return false
+  const record = error as { code?: unknown; message?: unknown }
+  return (
+    record.code === "ERR_BUFFER_TOO_LARGE" ||
+    (typeof record.message === "string" &&
+      record.message.toLowerCase().includes("maxoutputlength"))
+  )
+}
+
+function decompressWithLimit(
+  coding: string,
+  maxOutputBytes: number,
+  decompress: () => Uint8Array,
+) {
+  try {
+    const output = decompress()
+    if (output.byteLength > maxOutputBytes) {
+      throw new ProxyBodyTooLargeError(
+        `${coding} 解压输出`,
+        maxOutputBytes,
+        output.byteLength,
+      )
+    }
+    return output
+  } catch (error) {
+    if (error instanceof ProxyBodyTooLargeError) throw error
+    if (isOutputLimitError(error)) {
+      throw new ProxyBodyTooLargeError(`${coding} 解压输出`, maxOutputBytes)
+    }
+    throw error
+  }
+}
+
+function decompressSingle(
+  coding: string,
+  body: Uint8Array,
+  maxOutputBytes: number,
+) {
+  const options = { maxOutputLength: maxOutputBytes }
   switch (coding) {
     case "gzip":
     case "x-gzip":
-      return gunzipSync(body)
+      return decompressWithLimit(coding, maxOutputBytes, () =>
+        gunzipSync(body, options),
+      )
     case "deflate":
       try {
-        return inflateSync(body)
-      } catch {
-        return inflateRawSync(body)
+        return decompressWithLimit(coding, maxOutputBytes, () =>
+          inflateSync(body, options),
+        )
+      } catch (error) {
+        if (error instanceof ProxyBodyTooLargeError) throw error
+        return decompressWithLimit(coding, maxOutputBytes, () =>
+          inflateRawSync(body, options),
+        )
       }
     case "br":
-      return brotliDecompressSync(body)
+      return decompressWithLimit(coding, maxOutputBytes, () =>
+        brotliDecompressSync(body, options),
+      )
     case "zstd":
     case "zst":
-      return Buffer.from(decompressZstd(body))
+      return decompressWithLimit(coding, maxOutputBytes, () =>
+        zstdDecompressSync(body, options),
+      )
     default:
       return null
   }
 }
 
-export function decompressRequestBody(contentEncoding: string, body: Uint8Array) {
+export function decompressRequestBody(
+  contentEncoding: string,
+  body: Uint8Array,
+  maxOutputBytes = MAX_PROXY_BODY_BYTES,
+) {
   const codings = splitCodings(contentEncoding)
   if (codings.length === 0) return null
   if (!codings.every(isSingleSupportedCoding)) return null
 
   let current = body
   for (const coding of codings.toReversed()) {
-    const decompressed = decompressSingle(coding, current)
+    const decompressed = decompressSingle(coding, current, maxOutputBytes)
     if (!decompressed) return null
     current = decompressed
   }
@@ -81,24 +146,35 @@ export function decompressRequestBody(contentEncoding: string, body: Uint8Array)
 }
 
 export async function readDecodedRequestBytes(request: Request) {
-  const raw = new Uint8Array(await request.arrayBuffer())
-  const encoding = getContentEncoding(request.headers)
-  if (!encoding) return raw
-
-  if (!isSupportedContentEncoding(encoding)) {
-    throw new ProxyRequestBodyError(`不支持的请求 content-encoding：${encoding}`, 415)
-  }
-
   try {
-    const decoded = decompressRequestBody(encoding, raw)
+    const raw = await readRequestBytesWithLimit(request)
+    const encoding = getContentEncoding(request.headers)
+    if (!encoding) return raw
+
+    if (!isSupportedContentEncoding(encoding)) {
+      throw new ProxyRequestBodyError(`不支持的请求 content-encoding：${encoding}`, 415)
+    }
+
+    const decoded = decompressRequestBody(
+      encoding,
+      raw,
+      MAX_PROXY_BODY_BYTES,
+    )
     if (!decoded) {
       throw new ProxyRequestBodyError(`不支持的请求 content-encoding：${encoding}`, 415)
     }
     return decoded
   } catch (error) {
     if (error instanceof ProxyRequestBodyError) throw error
+    if (error instanceof ProxyBodyTooLargeError) {
+      throw new ProxyRequestBodyError(error.message, 413)
+    }
+    const encoding = getContentEncoding(request.headers)
     const message = error instanceof Error ? error.message : String(error)
-    throw new ProxyRequestBodyError(`请求体解压失败（${encoding}）：${message}`, 400)
+    throw new ProxyRequestBodyError(
+      encoding ? `请求体解压失败（${encoding}）：${message}` : message,
+      400,
+    )
   }
 }
 
@@ -117,12 +193,16 @@ function startsWithZstdFrame(body: Uint8Array) {
 }
 
 export async function readDecodedResponseText(response: Response) {
-  const raw = new Uint8Array(await response.arrayBuffer())
+  const raw = await readResponseBytesWithLimit(response)
   if (raw.length === 0) return ""
 
   const encoding = getContentEncoding(response.headers)
   if (encoding && includesZstdCoding(encoding) && startsWithZstdFrame(raw)) {
-    const decoded = decompressRequestBody(encoding, raw)
+    const decoded = decompressRequestBody(
+      encoding,
+      raw,
+      MAX_PROXY_BODY_BYTES,
+    )
     if (decoded) return JSON_TEXT_DECODER.decode(decoded)
   }
 
@@ -130,7 +210,11 @@ export async function readDecodedResponseText(response: Response) {
     return JSON_TEXT_DECODER.decode(raw)
   } catch (error) {
     if (!encoding || !isSupportedContentEncoding(encoding)) throw error
-    const decoded = decompressRequestBody(encoding, raw)
+    const decoded = decompressRequestBody(
+      encoding,
+      raw,
+      MAX_PROXY_BODY_BYTES,
+    )
     if (!decoded) throw error
     return JSON_TEXT_DECODER.decode(decoded)
   }

@@ -75,6 +75,11 @@ function targetBaseUrl(settings: Settings) {
   return `http://${host}:${settings.port}/v1`
 }
 
+function webSearchApiUrl(settings: Settings) {
+  const host = settings.listenAddress === "0.0.0.0" ? "127.0.0.1" : settings.listenAddress
+  return `http://${host}:${settings.port}/api/dsh-search`
+}
+
 function normalizePathname(pathname: string) {
   const normalized = pathname.replace(/\/+$/, "")
   return normalized || "/"
@@ -253,9 +258,10 @@ function selectedNodeCommand() {
   return candidates[0]
 }
 
-function webSearchMcpEnvBlock(command: string) {
+function webSearchMcpEnvBlock(command: string, settings: Settings) {
   const env: Record<string, string> = {
     CODEX_HOME: codexHome(),
+    SWITCHGATE_WEB_API_URL: webSearchApiUrl(settings),
   }
   if (process.execPath === command && process.versions.electron) {
     env.ELECTRON_RUN_AS_NODE = "1"
@@ -269,7 +275,7 @@ function webSearchMcpEnvBlock(command: string) {
   ].join("\n")
 }
 
-function webSearchMcpBlock() {
+function webSearchMcpBlock(settings: Settings) {
   const command = selectedNodeCommand()
   const scriptPath = webSearchMcpScriptPath()
   return [
@@ -279,7 +285,7 @@ function webSearchMcpBlock() {
     `startup_timeout_sec = 30`,
     `enabled = true`,
     "",
-    webSearchMcpEnvBlock(command),
+    webSearchMcpEnvBlock(command, settings),
   ].filter(Boolean).join("\n")
 }
 
@@ -289,9 +295,9 @@ function removeWebSearchMcpConfigText(current: string) {
   return `${next.trimEnd()}\n`
 }
 
-function installWebSearchMcpConfigText(current: string) {
+function installWebSearchMcpConfigText(current: string, settings: Settings) {
   const next = removeWebSearchMcpConfigText(current).trimEnd()
-  return `${next ? `${next}\n\n` : ""}${webSearchMcpBlock()}\n`
+  return `${next ? `${next}\n\n` : ""}${webSearchMcpBlock(settings)}\n`
 }
 
 function webSearchMcpStatus(text: string) {
@@ -410,6 +416,9 @@ export async function getCodexConfigStatus(settings: Settings): Promise<CodexCon
     targetModelCatalogPath: expectedCatalogPath,
     subagentRoles: await getCodexSubagentRolesStatus(codexHome(), settings),
     webSearchMcp: webSearchMcpStatus(text),
+    dshWebSearch: {
+      endpoint: webSearchApiUrl(settings),
+    },
     codegraphMcp: await getCodegraphMcpStatus({ codexHome: home, configText: text }),
   }
 }
@@ -434,6 +443,7 @@ export async function installCodexConfig(settings: Settings): Promise<CodexConfi
   const nextConfig = installCodegraphMcpConfigText(
     installWebSearchMcpConfigText(
       installConfigText(current, targetBaseUrl(settings), modelCatalogPath()),
+      settings,
     ),
     cli.command,
   )
@@ -524,7 +534,7 @@ export async function installCodexWebSearchMcp(settings: Settings): Promise<Code
       note: "配置 web_search MCP 前自动备份",
     })
   }
-  await writeFile(config, installWebSearchMcpConfigText(current), "utf8")
+  await writeFile(config, installWebSearchMcpConfigText(current, settings), "utf8")
   return {
     status: await getCodexConfigStatus(settings),
     message: "已写入 SwitchGate web_search MCP 配置，重启 Codex 后生效",

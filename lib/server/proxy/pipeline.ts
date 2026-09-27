@@ -120,13 +120,20 @@ import {
   relayInputFromCall,
   relaySessionIdFromBody,
 } from "./web-search-relay-state"
+import {
+  executeLocalAlphaSearch,
+  isAlphaSearchPath,
+  shouldUseLocalAlphaSearch,
+} from "./alpha-search"
 
 const SUPPORTED_POST_PATHS = new Set([
+  "v1/alpha/search",
   "v1/chat/completions",
   "v1/images/edits",
   "v1/images/generations",
   "v1/responses",
   "v1/responses/compact",
+  "alpha/search",
   "chat/completions",
   "images/edits",
   "images/generations",
@@ -1831,19 +1838,23 @@ async function handleRelayWebSearchResponses(params: {
 }
 
 export async function handleProxyPost(parts: string[], request: Request) {
-  const path = normalizePath(parts)
-  if (!SUPPORTED_POST_PATHS.has(path)) {
+  const routePath = normalizePath(parts)
+  if (!SUPPORTED_POST_PATHS.has(routePath)) {
     return Response.json(
-      { error: `暂不支持的中转路径：/${path}` },
+      { error: `暂不支持的中转路径：/${routePath}` },
       { status: 404 },
     )
   }
+  const path = isAlphaSearchPath(routePath)
+    ? `${routePath}${new URL(request.url).search}`
+    : routePath
 
   const startedAt = Date.now()
   let body: unknown
   let rawBody: unknown
   let target: ProxyTarget | undefined
   let built: BuiltRequest | undefined
+  let parsedUpstreamPayload: unknown
 
   try {
     const imageApiRequest = isImagesApiPath(path)
@@ -1874,6 +1885,31 @@ export async function handleProxyPost(parts: string[], request: Request) {
     target = await withWorkbuddyTargetCredentials(target)
     body = sanitizeImagesForTargetModel(body, target.model, target.modelId).body
     const effectivePath = isImagesApiPath(path) ? "v1/responses" : path
+    if (
+      isAlphaSearchPath(effectivePath) &&
+      shouldUseLocalAlphaSearch(target, snapshot.settings.alphaSearchMode)
+    ) {
+      const alphaResponse = await executeLocalAlphaSearch(body, request.signal)
+      appendLogDetached(
+        makeLog({
+          startedAt,
+          body: rawBody ?? body,
+          target,
+          statusCode: 200,
+          rewrittenBody: body,
+          responseSummary: compactJson(alphaResponse),
+        }),
+      )
+      return Response.json(alphaResponse, {
+        status: 200,
+        headers: {
+          "cache-control": "no-store",
+          "x-codex-hot-switch-provider": target.provider.id,
+          "x-codex-hot-switch-model": target.modelId,
+          "x-codex-hot-switch-alpha-search": "local",
+        },
+      })
+    }
     if (shouldStripHostedWebSearch(target, effectivePath, body, snapshot.settings.webSearchMode)) {
       body = stripHostedWebSearchTools(body)
     }
@@ -1961,6 +1997,7 @@ export async function handleProxyPost(parts: string[], request: Request) {
     // 有的上游只肯流式回答（WorkBuddy 会直接 400 拒掉 stream:false），客户端要 JSON 时
     // 把整段 SSE 折成一条 chat completion，后面照常走 chat → Responses 转换。
     let payload = foldChatSsePayload(await parseJsonSafe(upstream))
+    parsedUpstreamPayload = payload
     const attemptedRectifiers = new Set<RectifierKind>()
     while (!upstream.ok) {
       const rectified = maybeRectifyUpstreamError({
@@ -1988,6 +2025,7 @@ export async function handleProxyPost(parts: string[], request: Request) {
       })
       if (rectifiedSuccessResponse) return rectifiedSuccessResponse
       payload = await parseJsonSafe(upstream)
+      parsedUpstreamPayload = payload
     }
 
     const rawResponsesPassthrough =
@@ -2120,6 +2158,7 @@ export async function handleProxyPost(parts: string[], request: Request) {
           statusCode: status,
           rewrittenBody: built?.rewrittenBody,
           responseSummary: status === 502 ? "502 Bad Gateway" : message,
+          tokenUsage: extractTokenUsage(parsedUpstreamPayload),
           error: message,
           errorStack,
         }),

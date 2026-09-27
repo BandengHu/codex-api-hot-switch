@@ -49,6 +49,9 @@ export interface CodexConfigStatus {
     args: string[]
     scriptPath: string
   }
+  dshWebSearch: {
+    endpoint: string
+  }
   codegraphMcp: {
     serverName: string
     installed: boolean

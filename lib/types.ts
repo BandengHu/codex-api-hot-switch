@@ -20,6 +20,8 @@ export type ReasoningEffort =
 export type TakeoverStatus = "active" | "paused"
 
 export type WebSearchMode = "builtin" | "mcp" | "disabled"
+export type AlphaSearchMode = "auto" | "local" | "upstream"
+export type PromptCacheRouting = "auto" | "enabled" | "disabled"
 
 export type ReasoningDialect =
   | "auto"
@@ -79,6 +81,7 @@ export interface Provider {
   bodyOverride: string
   timeoutMs: number
   reasoningDialect: ReasoningDialect
+  promptCacheRouting?: PromptCacheRouting
   rawResponsesPassthrough: boolean
   enabled: boolean
   isDefault: boolean
@@ -264,6 +267,7 @@ export interface Settings {
   logRetentionDays: number
   fullRequestLoggingEnabled: boolean
   webSearchMode: WebSearchMode
+  alphaSearchMode: AlphaSearchMode
   keyStorage: string
   floatingBallEnabled: boolean
   floatingBallPosition?: FloatingBallPosition

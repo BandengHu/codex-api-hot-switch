@@ -14,72 +14,63 @@ const {
   validatePublicUrl,
 } = require("./web-search-mcp/page-reader.cjs")
 const {
-  normalizeSearchResults,
-  parseWebSearchMcpResponse,
-  selectedProvider,
+  executeWebSearch,
+  normalizeWebSearchInput,
 } = require("./web-search-mcp/search.cjs")
 const { handleRequest } = require("./web-search-mcp/server.cjs")
 
-test("normalizes Exa labeled results into stable fields", () => {
-  const text = [
-    "Title: Example story",
-    "URL: https://www.example.com/news/story",
-    "Published: 2026-07-20T01:02:03.000Z",
-    "Author: Example",
-    "Highlights:",
-    "Example story",
-    "...",
-    "A useful summary with current details.",
-    "",
-    "---",
-    "",
-    "Title: Undated source",
-    "URL: https://docs.example.org/item",
-    "Highlights:",
-    "Primary documentation.",
-  ].join("\n")
-  assert.deepEqual(normalizeSearchResults(text), [
-    {
-      title: "Example story",
-      url: "https://www.example.com/news/story",
-      domain: "example.com",
-      publishedAt: "2026-07-20T01:02:03.000Z",
-      summary: "A useful summary with current details.",
-    },
-    {
-      title: "Undated source",
-      url: "https://docs.example.org/item",
-      domain: "docs.example.org",
-      publishedAt: null,
-      summary: "Primary documentation.",
-    },
-  ])
+test("normalizes one or several web queries for the local API", () => {
+  assert.deepEqual(normalizeWebSearchInput({
+    queries: [
+      { query: "SwitchGate", domains: ["example.com"], language: "zh" },
+      { query: "Codex", recencyDays: 7 },
+    ],
+    limit: 5,
+    answer: true,
+    includeContent: true,
+  }), {
+    queries: [
+      { query: "SwitchGate", domains: ["example.com"], language: "zh" },
+      { query: "Codex", recencyDays: 7 },
+    ],
+    limit: 5,
+    answer: true,
+    includeContent: true,
+  })
 })
 
-test("normalizes structured JSON search results without inventing dates", () => {
-  const results = normalizeSearchResults(
-    JSON.stringify({
-      results: [
-        {
-          title: "Official docs",
-          url: "https://example.com/docs",
-          snippet: "Reference content",
-        },
-      ],
-    }),
-  )
-  assert.equal(results.length, 1)
-  assert.equal(results[0].publishedAt, null)
-  assert.equal(results[0].summary, "Reference content")
-})
-
-test("extracts text and metadata from an MCP SSE payload", () => {
-  const body = [
-    "event: message",
-    'data: {"result":{"content":[{"type":"text","text":"Title: A\\nURL: https://example.com"}]}}',
-    "",
-  ].join("\n")
-  assert.equal(parseWebSearchMcpResponse(body), "Title: A\nURL: https://example.com")
+test("MCP 搜索只转发本地 Web API 并保留结构化结果", async () => {
+  const originalFetch = global.fetch
+  let request
+  try {
+    global.fetch = async (url, options) => {
+      request = { url, options }
+      return new Response(JSON.stringify({
+        groups: [{ query: "SwitchGate", total: 0, limit: 8, hasMore: false, provider: "switchgate", capabilities: {}, results: [] }],
+        errors: [],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    }
+    const result = await executeWebSearch(normalizeWebSearchInput({
+      query: "SwitchGate",
+      limit: 2,
+      answer: true,
+      includeContent: true,
+    }))
+    assert.equal(result.groups[0].query, "SwitchGate")
+    assert.match(request.url, /api\/web-search$/)
+    assert.deepEqual(JSON.parse(request.options.body), {
+      operation: "search",
+      queries: [{ query: "SwitchGate" }],
+      limit: 2,
+      answer: true,
+      includeContent: true,
+    })
+  } finally {
+    global.fetch = originalFetch
+  }
 })
 
 test("HTML parser prefers article text and ignores navigation and scripts", () => {
@@ -176,22 +167,6 @@ test("browse_page extracts markdown links and supports html output", () => {
   assert.match(rawHtml.content, /<h1>Official page<\/h1>/)
 })
 
-test("search provider choice is stable for a session", () => {
-  const keys = ["PARALLEL_API_KEY", "OPENCODE_WEBSEARCH_PROVIDER", "SWITCHGATE_WEB_SEARCH_PROVIDER"]
-  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
-  try {
-    delete process.env.OPENCODE_WEBSEARCH_PROVIDER
-    delete process.env.SWITCHGATE_WEB_SEARCH_PROVIDER
-    process.env.PARALLEL_API_KEY = "test-key"
-    assert.equal(selectedProvider("", "stable-session"), selectedProvider("", "stable-session"))
-  } finally {
-    for (const key of keys) {
-      if (previous[key] == null) delete process.env[key]
-      else process.env[key] = previous[key]
-    }
-  }
-})
-
 test("browse_page decompresses gzip responses with a bounded output", () => {
   const source = Buffer.from("<html><body>compressed page</body></html>")
   assert.deepEqual(decodeContentEncoding(zlib.gzipSync(source), "gzip"), source)
@@ -204,6 +179,8 @@ test("MCP tools/list exposes search and page reading", async () => {
     ["web_search", "browse_page"],
   )
   assert.equal(response.result.tools[0].inputSchema.properties.provider, undefined)
+  assert.equal(response.result.tools[0].inputSchema.properties.answer.type, "boolean")
+  assert.equal(response.result.tools[0].inputSchema.properties.includeContent.type, "boolean")
   assert.deepEqual(response.result.tools[1].inputSchema.properties.format.enum, [
     "markdown",
     "text",

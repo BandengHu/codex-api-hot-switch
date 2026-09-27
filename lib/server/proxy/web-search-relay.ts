@@ -1,13 +1,7 @@
 import "server-only"
 
-import {
-  executeBrowsePage,
-  normalizeBrowsePageInput,
-} from "../../../scripts/web-search-mcp/page-reader.cjs"
-import {
-  executeWebSearch,
-  normalizeWebSearchInput,
-} from "../../../scripts/web-search-mcp/search.cjs"
+import { browseWebPages, searchWeb } from "../web"
+import type { BrowsePageResponse, WebSearchResponse } from "../web"
 
 export const RELAY_WEB_SEARCH_TOOL_NAME = "web_search"
 export const RELAY_BROWSE_PAGE_TOOL_NAME = "browse_page"
@@ -19,38 +13,6 @@ const HOSTED_WEB_SEARCH_TOOL_TYPES = new Set([
 ])
 
 type AnyRecord = Record<string, any>
-
-interface StructuredSearchResult {
-  title?: string
-  url?: string
-  domain?: string | null
-  publishedAt?: string | null
-  summary?: string
-}
-
-interface StructuredSearchResponse {
-  query: string
-  provider: "exa" | "parallel"
-  resultCount: number
-  results: StructuredSearchResult[]
-  unparsedSummary?: string
-}
-
-interface BrowsePageResult {
-  url?: string
-  domain?: string | null
-  title?: string
-  publishedAt?: string | null
-  contentType?: string
-  content?: string
-  truncated?: boolean
-  error?: string
-}
-
-interface BrowsePageResponse {
-  pageCount: number
-  pages: BrowsePageResult[]
-}
 
 export type RelayWebToolName =
   | typeof RELAY_WEB_SEARCH_TOOL_NAME
@@ -66,57 +28,55 @@ export interface RelayWebToolInput {
 export interface RelayWebToolResult {
   toolName: RelayWebToolName
   text: string
-  search?: StructuredSearchResponse
+  search?: WebSearchResponse
   browse?: BrowsePageResponse
 }
 
 const WEB_SEARCH_DESCRIPTION =
-  "Search the public web for current information. Returns structured results with title, URL, publication date, source domain, and summary. Use browse_page on primary or independent sources before making important factual claims."
+  "Search the public web for current information. It supports one query or grouped queries, returns title, URL, publication date, source domain, summary, score, total, and provider errors. Use browse_page on official or independent sources before important factual claims."
 
 const BROWSE_PAGE_DESCRIPTION =
-  "Open one or several public web pages and extract readable content with title, publication date, final URL, and source domain. Use this after web_search to inspect and cross-check sources."
+  "Open one or several public web pages and extract readable content with title, publication date, final URL, source domain, and bounded content. Use this after web_search to inspect and cross-check sources."
 
 const WEB_SEARCH_PARAMETERS = {
   type: "object",
   additionalProperties: false,
   properties: {
-    query: {
-      type: "string",
-      description: "Web search query.",
+    query: { type: "string", description: "One web search query." },
+    queries: {
+      type: "array",
+      minItems: 1,
+      maxItems: 10,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          query: { type: "string" },
+          recencyDays: { type: "integer", minimum: 1, maximum: 3650 },
+          domains: { type: "array", items: { type: "string" }, maxItems: 20 },
+          language: { type: "string" },
+        },
+        required: ["query"],
+      },
+      description: "Optional grouped queries. Each query is returned in its own group.",
     },
-    numResults: {
-      type: "integer",
-      minimum: 1,
-      maximum: 20,
-      description: "Number of search results to return. Defaults to 8.",
-    },
-    livecrawl: {
-      type: "string",
-      enum: ["fallback", "preferred"],
-      description: "Whether live crawling is a fallback or preferred.",
-    },
-    type: {
-      type: "string",
-      enum: ["auto", "fast", "deep"],
-      description: "Search depth: auto, fast, or deep.",
-    },
-    contextMaxCharacters: {
-      type: "integer",
-      minimum: 1,
-      maximum: 200_000,
-      description: "Maximum Exa context characters.",
-    },
+    limit: { type: "integer", minimum: 1, maximum: 20, description: "Results per query. Defaults to 8." },
+    numResults: { type: "integer", minimum: 1, maximum: 20, description: "Alias for limit." },
   },
-  required: ["query"],
+  anyOf: [{ required: ["query"] }, { required: ["queries"] }],
 }
 
 const BROWSE_PAGE_PARAMETERS = {
   type: "object",
   additionalProperties: false,
   properties: {
-    url: {
-      type: "string",
-      description: "One public HTTP or HTTPS URL to open.",
+    url: { type: "string", description: "One public HTTP or HTTPS URL to open." },
+    urls: {
+      type: "array",
+      minItems: 1,
+      maxItems: 5,
+      items: { type: "string" },
+      description: "Up to five public URLs to open and compare in one call.",
     },
     format: {
       type: "string",
@@ -136,7 +96,7 @@ const BROWSE_PAGE_PARAMETERS = {
       description: "Maximum content characters per page. Defaults to 20000.",
     },
   },
-  required: ["url"],
+  anyOf: [{ required: ["url"] }, { required: ["urls"] }],
 }
 
 function responseFunctionTool(
@@ -193,30 +153,58 @@ function text(value: unknown) {
   return typeof value === "string" ? value.trim() : ""
 }
 
-function displayDate(value: unknown) {
-  return text(value) || "unknown"
+function number(value: unknown, fallback: number, min: number, max: number) {
+  const parsed = typeof value === "number" ? value : Number.parseInt(String(value ?? ""), 10)
+  return Number.isFinite(parsed) ? Math.max(min, Math.min(max, Math.trunc(parsed))) : fallback
 }
 
-export function formatSearchToolOutput(result: StructuredSearchResponse) {
-  const lines = [
-    `Search query: ${result.query}`,
-    `Provider: ${result.provider}`,
-    `Results: ${result.resultCount}`,
-  ]
-  result.results.forEach((item, index) => {
-    lines.push(
-      "",
-      `### ${index + 1}. ${text(item.title) || text(item.domain) || "Untitled source"}`,
-      `URL: ${text(item.url)}`,
-      `Source: ${text(item.domain) || "unknown"}`,
-      `Published: ${displayDate(item.publishedAt)}`,
-    )
-    if (text(item.summary)) lines.push(`Summary: ${text(item.summary)}`)
-  })
-  if (!result.results.length) {
-    lines.push("", result.unparsedSummary || "No search results found. Try a different query.")
+function normalizeSearchRequest(value: unknown) {
+  const record = value && typeof value === "object" ? value as AnyRecord : {}
+  const rawQueries = Array.isArray(record.queries)
+    ? record.queries.filter((item) => item && typeof item === "object") as AnyRecord[]
+    : [{ query: record.query || record.q || record.search_query || record.input }]
+  const queries = rawQueries.map((item) => ({
+    query: text(item.query),
+    ...(Number.isFinite(Number(item.recencyDays))
+      ? { recencyDays: number(item.recencyDays, 1, 1, 3650) }
+      : {}),
+    ...(Array.isArray(item.domains)
+      ? { domains: item.domains.map(text).filter(Boolean).slice(0, 20) }
+      : {}),
+    ...(text(item.language) ? { language: text(item.language) } : {}),
+  })).filter((item) => item.query)
+  if (!queries.length) throw new Error("web_search requires query or queries")
+  return {
+    queries,
+    limit: number(record.limit ?? record.numResults, 8, 1, 20),
   }
-  return lines.join("\n")
+}
+
+export function formatSearchToolOutput(result: WebSearchResponse) {
+  const lines: string[] = []
+  for (const group of result.groups) {
+    lines.push(
+      `Search query: ${group.query}`,
+      `Provider: ${group.provider}`,
+      `Total: ${group.total}`,
+      `Limit: ${group.limit}`,
+      `Has more: ${group.hasMore}`,
+    )
+    group.results.forEach((item, index) => {
+      lines.push(
+        "",
+        `### ${index + 1}. ${item.title}`,
+        `URL: ${item.url}`,
+        `Source: ${item.domain || "unknown"}`,
+        `Published: ${item.publishedAt ?? "null"}`,
+        `Score: ${item.score}`,
+        `Summary: ${item.summary}`,
+      )
+    })
+    if (group.error) lines.push("", `Error: ${JSON.stringify(group.error)}`)
+  }
+  for (const error of result.errors) lines.push("", `Search error: ${JSON.stringify(error)}`)
+  return lines.join("\n") || "No search results found."
 }
 
 export function formatBrowseToolOutput(result: BrowsePageResponse) {
@@ -225,7 +213,7 @@ export function formatBrowseToolOutput(result: BrowsePageResponse) {
     lines.push(
       "",
       `## Page ${index + 1}: ${text(page.title) || text(page.domain) || "Unreadable page"}`,
-      `URL: ${text(page.url)}`,
+      `URL: ${text(page.finalUrl || page.url)}`,
     )
     if (page.error) {
       lines.push(`Error: ${page.error}`)
@@ -233,7 +221,7 @@ export function formatBrowseToolOutput(result: BrowsePageResponse) {
     }
     lines.push(
       `Source: ${text(page.domain) || "unknown"}`,
-      `Published: ${displayDate(page.publishedAt)}`,
+      `Published: ${page.publishedAt ?? "null"}`,
       `Content-Type: ${text(page.contentType) || "unknown"}`,
       `Truncated: ${page.truncated === true ? "yes" : "no"}`,
       "",
@@ -248,17 +236,7 @@ export async function executeRelayWebTool(
   signal?: AbortSignal,
 ): Promise<RelayWebToolResult> {
   if (input.toolName === RELAY_WEB_SEARCH_TOOL_NAME) {
-    const argumentsValue = {
-      ...(input.argumentsValue && typeof input.argumentsValue === "object"
-        ? input.argumentsValue as AnyRecord
-        : {}),
-      sessionId: input.sessionId,
-      modelName: input.modelName,
-    }
-    const search = await executeWebSearch(
-      normalizeWebSearchInput(argumentsValue),
-      signal,
-    ) as StructuredSearchResponse
+    const search = await searchWeb(normalizeSearchRequest(input.argumentsValue), signal)
     return {
       toolName: input.toolName,
       search,
@@ -266,10 +244,7 @@ export async function executeRelayWebTool(
     }
   }
 
-  const browse = await executeBrowsePage(
-    normalizeBrowsePageInput(input.argumentsValue),
-    signal,
-  )
+  const browse = await browseWebPages(input.argumentsValue, signal)
   return {
     toolName: input.toolName,
     browse,

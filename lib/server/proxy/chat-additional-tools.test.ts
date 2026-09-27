@@ -6,7 +6,10 @@ import {
   emptyToolContext,
   responsesToolsToChatTools,
 } from "./codex-tool-proxy"
-import { responsesToChatCompletions } from "./chat-compatible"
+import {
+  buildChatCompatibleRequest,
+  responsesToChatCompletions,
+} from "./chat-compatible"
 
 const anthropicTarget = {
   provider: {
@@ -132,6 +135,64 @@ test("additional_tools carrier is not converted to a null-content message and it
   const names = tools.map((t) => t.function.name)
   assert.ok(names.includes("functions__exec_command"), names.join(","))
   assert.ok(names.includes("wait"), names.join(","))
+})
+
+test("Responses 转 Chat 只向已知兼容上游发送显式 prompt_cache_key", () => {
+  const body = {
+    model: "client-model",
+    prompt_cache_key: "thread-stable-key",
+    input: [{
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "hello" }],
+    }],
+  }
+  const build = (
+    baseUrl: string,
+    promptCacheRouting: "auto" | "enabled" | "disabled" = "auto",
+    requestBody: any = body,
+  ) =>
+    buildChatCompatibleRequest(
+      {
+        ...chatTarget,
+        provider: {
+          ...chatTarget.provider,
+          baseUrl,
+          promptCacheRouting,
+        },
+      },
+      "v1/responses",
+      requestBody,
+    ).rewrittenBody as any
+
+  assert.equal(
+    build("https://api.openai.com/v1").prompt_cache_key,
+    "thread-stable-key",
+  )
+  assert.equal(
+    build("https://api.kimi.com/coding/v1").prompt_cache_key,
+    "thread-stable-key",
+  )
+  assert.equal(
+    build("https://strict.example.com/v1").prompt_cache_key,
+    undefined,
+  )
+  assert.equal(
+    build("https://strict.example.com/v1", "enabled").prompt_cache_key,
+    "thread-stable-key",
+  )
+  assert.equal(
+    build("https://api.openai.com/v1", "disabled").prompt_cache_key,
+    undefined,
+  )
+  assert.equal(
+    build(
+      "https://api.openai.com/v1",
+      "auto",
+      { ...body, prompt_cache_key: "   " },
+    ).prompt_cache_key,
+    undefined,
+  )
 })
 
 test("additional_tools carrier dedupes against top-level tools", () => {

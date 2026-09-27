@@ -231,6 +231,7 @@ export function relayDisplayItem(call: RelayWebToolCall, result: RelayWebToolRes
       },
     }
   }
+  const firstGroup = result.search?.groups[0]
   return {
     id: `ws_${call.callId}`,
     type: "web_search_call",
@@ -239,8 +240,11 @@ export function relayDisplayItem(call: RelayWebToolCall, result: RelayWebToolRes
     arguments: call.argumentsText,
     action: {
       type: "search",
-      query: result.search?.query || "",
-      provider: result.search?.provider,
+      query: firstGroup?.query || "",
+      provider: firstGroup?.provider,
+      ...(result.search && result.search.groups.length > 1
+        ? { queries: result.search.groups.map((group) => group.query) }
+        : {}),
     },
   }
 }

@@ -134,8 +134,15 @@ function flushContent(contents: AnyRecord[], role: "user" | "model", parts: AnyR
   }
 }
 
-function canonicalInputToGeminiContents(input: CanonicalInputItem[]) {
+function isGemini3Series(modelId: string) {
+  const normalized = modelId.trim().toLowerCase()
+  const tail = normalized.split("/").at(-1) || normalized
+  return tail.startsWith("gemini-3")
+}
+
+function canonicalInputToGeminiContents(input: CanonicalInputItem[], modelId: string) {
   const contents: AnyRecord[] = []
+  const supportsMultimodalFunctionResponse = isGemini3Series(modelId)
   const callNameById = new Map(
     input
       .filter((item) => item.type === "function_call")
@@ -188,13 +195,24 @@ function canonicalInputToGeminiContents(input: CanonicalInputItem[]) {
         `Unable to resolve Gemini functionResponse.name for call_id \`${item.callId}\``,
       )
     }
-    currentParts.push({
-      functionResponse: {
-        name,
-        response: responseObject(item.output),
-        ...(id ? { id } : {}),
-      },
-    })
+    const functionResponse: AnyRecord = {
+      name,
+      response: responseObject(item.output),
+      ...(id ? { id } : {}),
+    }
+    const mediaParts = (item.outputContent || [])
+      .filter((part) => part.type !== "text")
+      .map(contentPartToGemini)
+    if (supportsMultimodalFunctionResponse && mediaParts.length > 0) {
+      functionResponse.parts = mediaParts
+    }
+    currentParts.push({ functionResponse })
+    if (!supportsMultimodalFunctionResponse && mediaParts.length > 0) {
+      currentParts.push({
+        text: `[cc-switch: media output of tool call ${item.callId}]`,
+      })
+      currentParts.push(...mediaParts)
+    }
   }
 
   flush()
@@ -238,7 +256,7 @@ function buildGeminiBody(canonical: NativeCanonicalRequest) {
   applyGeminiResponseFormat(generationConfig, canonical.responseFormat)
 
   const body: AnyRecord = {
-    contents: canonicalInputToGeminiContents(canonical.input),
+    contents: canonicalInputToGeminiContents(canonical.input, canonical.modelId),
   }
 
   if (canonical.instructions) {

@@ -38,7 +38,12 @@ import {
   importConsoleConfig,
   updateFloatingBallSettings,
 } from "@/lib/console-api"
-import { REASONING_LABELS, type ReasoningEffort, type WebSearchMode } from "@/lib/types"
+import {
+  REASONING_LABELS,
+  type AlphaSearchMode,
+  type ReasoningEffort,
+  type WebSearchMode,
+} from "@/lib/types"
 import { toast } from "sonner"
 
 const REASONING_OPTIONS: ReasoningEffort[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "auto"]
@@ -309,6 +314,30 @@ export function SettingsView() {
               </Select>
               <FieldDescription>
                 内置 relay 由 SwitchGate 代执行搜索；MCP 模式下中转不再接管 hosted web_search，请先在 Codex 接入页启用 MCP。
+              </FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="s-alpha-search">Alpha Search 接入策略</FieldLabel>
+              <Select
+                value={draft.alphaSearchMode}
+                onValueChange={(value) => {
+                  if (!value) return
+                  setDraft((d) => ({ ...d, alphaSearchMode: value as AlphaSearchMode }))
+                }}
+              >
+                <SelectTrigger id="s-alpha-search" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="auto">自动</SelectItem>
+                    <SelectItem value="local">本地执行</SelectItem>
+                    <SelectItem value="upstream">上游执行</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <FieldDescription>
+                自动模式仅对原样 Responses 保留上游 Alpha Search；其他协议由 SwitchGate 本地执行。
               </FieldDescription>
             </Field>
           </FieldGroup>

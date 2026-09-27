@@ -32,6 +32,33 @@ test('responses request conversion is available from the package boundary', () =
   assert.equal(chat.response_format.type, 'json_schema');
 });
 
+test('responses request conversion preserves mid-conversation system messages', () => {
+  const chat = responsesRequestToChatCompletions({
+    model: 'gpt-5.4',
+    instructions: 'You are Codex.',
+    input: [
+      { type: 'message', role: 'user', content: 'Start' },
+      { type: 'message', role: 'assistant', content: 'Working' },
+      {
+        type: 'message',
+        role: 'developer',
+        content: '<total_tokens>14963538 tokens left</total_tokens>',
+      },
+      { type: 'message', role: 'user', content: 'Continue' },
+    ],
+  });
+
+  assert.deepEqual(
+    chat.messages.map((message: any) => message.role),
+    ['system', 'user', 'assistant', 'system', 'user'],
+  );
+  assert.equal(chat.messages[0].content, 'You are Codex.');
+  assert.equal(
+    chat.messages[3].content,
+    '<total_tokens>14963538 tokens left</total_tokens>',
+  );
+});
+
 test('responses conversion exposes relay-emulated web_search as a Chat function tool', () => {
   const chat = responsesRequestToChatCompletions({
     model: 'example-model',

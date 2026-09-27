@@ -50,6 +50,7 @@ function fakeSettings(): Settings {
     logRetentionDays: 14,
     fullRequestLoggingEnabled: true,
     webSearchMode: "builtin",
+    alphaSearchMode: "auto",
     keyStorage: "file",
     floatingBallEnabled: false,
     tokenStatsResetAt: "",

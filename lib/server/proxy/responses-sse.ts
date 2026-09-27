@@ -13,6 +13,7 @@ import { applyAssistantMessagePhase } from "./common"
 import { repairResponsesItemIdsInSsePayload } from "./responses-item-id-repair"
 import { assertSseBufferWithinLimit } from "./sse-frame"
 import { normalizeErrorCode, normalizeResponsesErrorFields } from "./upstream-error"
+import { repairFunctionCallArguments } from "./tool-call-arguments"
 
 type AnyRecord = Record<string, any>
 
@@ -211,25 +212,6 @@ function sanitizeCollabToolArguments(name: unknown, raw: unknown) {
   else delete args.reasoning_effort
 
   return JSON.stringify(args)
-}
-
-function repairFunctionCallArguments(raw: unknown) {
-  if (typeof raw !== "string" || !raw.trim()) return raw
-  try {
-    JSON.parse(raw)
-    return raw
-  } catch {
-    // Some shims prepend "{}" before the real function arguments.
-  }
-  const match = raw.match(/^\s*\{\s*\}\s*([\s\S]+)$/)
-  if (!match) return raw
-  const suffix = match[1].trimStart()
-  try {
-    JSON.parse(suffix)
-    return suffix
-  } catch {
-    return raw
-  }
 }
 
 function stableFunctionCallId(item: AnyRecord) {

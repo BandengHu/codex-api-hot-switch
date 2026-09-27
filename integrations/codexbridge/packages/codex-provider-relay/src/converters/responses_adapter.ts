@@ -194,7 +194,6 @@ export function responsesRequestToChatCompletions(
   flushPendingToolCalls(chat.messages, inputState);
   flushPendingReasoning(chat.messages, inputState);
   normalizeChatMessages(chat.messages);
-  chat.messages = collapseSystemMessagesToHead(chat.messages);
 
   const tools = toolsSupported
     ? responsesToolsToChatTools(request?.tools, toolContext, {
@@ -655,28 +654,6 @@ function normalizeChatMessages(messages: JsonRecord[]): void {
       message.content = '';
     }
   }
-}
-
-function collapseSystemMessagesToHead(messages: JsonRecord[]): JsonRecord[] {
-  const systemChunks: string[] = [];
-  const rest: JsonRecord[] = [];
-  for (const message of messages) {
-    if (message?.role === 'system' && typeof message.content === 'string') {
-      const content = message.content.trim();
-      if (content) {
-        systemChunks.push(content);
-      }
-      continue;
-    }
-    rest.push(message);
-  }
-  if (systemChunks.length === 0) {
-    return rest;
-  }
-  return [{
-    role: 'system',
-    content: systemChunks.join('\n\n'),
-  }, ...rest];
 }
 
 function supportsToolCalling(providerCapabilities: OpenAICompatibleProviderCapabilities | null | undefined): boolean {

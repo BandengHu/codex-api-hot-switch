@@ -25,6 +25,7 @@ export interface ProviderPreset {
   baseUrl: string
   timeoutMs: number
   reasoningDialect: ReasoningDialect
+  promptCacheRouting?: "auto" | "enabled" | "disabled"
   rawResponsesPassthrough?: boolean
   headers?: Array<{ key: string; value: string }>
   apiKeyPlaceholder: string
@@ -561,6 +562,14 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
         supportsVision: false,
       },
       {
+        displayName: "GLM-5.3-Flash",
+        modelId: "glm-5.3-flash",
+        capabilities: ["chat", "reasoning", "vision", "tools"],
+        contextLength: 1048576,
+        supportsReasoning: true,
+        supportsVision: true,
+      },
+      {
         displayName: "GLM-5-Turbo",
         modelId: "glm-5-turbo",
         capabilities: ["chat", "reasoning", "tools"],
@@ -947,6 +956,7 @@ export function createProviderPresetDraft(
     bodyOverride: "",
     timeoutMs: preset.timeoutMs,
     reasoningDialect: "auto",
+    promptCacheRouting: preset.promptCacheRouting || "auto",
     rawResponsesPassthrough: preset.rawResponsesPassthrough === true,
     enabled: true,
     isDefault: existingProvider?.isDefault || false,

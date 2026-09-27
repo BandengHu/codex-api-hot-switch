@@ -13,6 +13,7 @@ const TEXT_ONLY_MODEL_TAILS = new Set([
   "deepseek-v4-flash",
   "deepseek-v4-pro",
   "glm-5.1",
+  "glm-5.2",
   "kat-coder",
   "kat-coder-pro",
   "kat-coder-pro v1",
@@ -20,6 +21,7 @@ const TEXT_ONLY_MODEL_TAILS = new Set([
   "kat-coder-pro-v1",
   "kat-coder-pro-v2",
   "ling-2.5-1t",
+  "longcat-2.0",
   "longcat-flash-chat",
   "mimo-v2.5-pro",
   "us.deepseek.r1-v1",
@@ -36,7 +38,13 @@ function isObject(value: unknown): value is AnyRecord {
 }
 
 function normalizeModelId(value: string) {
-  return value.trim().replace(/^models\//i, "").trim().toLowerCase()
+  return value
+    .trim()
+    .replace(/^models\//i, "")
+    .trim()
+    .replace(/\[\s*1m\s*\]$/i, "")
+    .trim()
+    .toLowerCase()
 }
 
 function modelTail(modelId: string) {

@@ -13,6 +13,8 @@ type AnyRecord = Record<string, any>
 
 export const TOOL_RESULT_MEDIA_MOVED_MARKER =
   "[cc-switch: tool result media moved to the following user message]"
+export const TOOL_RESULT_MEDIA_ATTACHED_MARKER =
+  "[cc-switch: tool result media attached as native media]"
 
 const WHOLE_DATA_URL_MIN_BYTES = 8 * 1024
 const BASE64ISH_MIN_BYTES = 16 * 1024
@@ -314,15 +316,18 @@ export interface ChatToolOutputMediaPlan {
   outputValue: unknown
 }
 
-export function planChatToolOutputMedia(output: unknown): ChatToolOutputMediaPlan | undefined {
+export function planChatToolOutputMedia(
+  output: unknown,
+  replacementText = TOOL_RESULT_MEDIA_MOVED_MARKER,
+): ChatToolOutputMediaPlan | undefined {
   const outputWasString = typeof output === "string"
-  const replacementBlock = { type: "text", text: TOOL_RESULT_MEDIA_MOVED_MARKER }
+  const replacementBlock = { type: "text", text: replacementText }
   const mediaParts: AnyRecord[] = []
   const result = stripMediaFromToolValueAtDepth(
     output,
     mediaParts,
     replacementBlock,
-    TOOL_RESULT_MEDIA_MOVED_MARKER,
+    replacementText,
     0,
   )
   if (result.replaced === 0) return undefined

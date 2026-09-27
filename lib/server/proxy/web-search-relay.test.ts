@@ -27,11 +27,13 @@ test("hosted web search becomes search plus page-reading tools for Chat upstream
   )
   assert.equal(context.webSearchTools.has("web_search"), true)
   assert.equal(context.functionTools.has("browse_page"), true)
-  assert.equal(
-    tools.find((tool) => tool.function.name === "browse_page")
-      ?.function.parameters.required[0],
-    "url",
-  )
+  const browseParameters = tools.find(
+    (tool) => tool.function.name === "browse_page",
+  )?.function.parameters
+  assert.deepEqual(browseParameters.anyOf, [
+    { required: ["url"] },
+    { required: ["urls"] },
+  ])
 })
 
 test("search calls use native display items while page reads remain internal functions", () => {
@@ -54,18 +56,31 @@ test("search calls use native display items while page reads remain internal fun
 
 test("relay output keeps structured sources and readable page content", () => {
   const search = formatSearchToolOutput({
-    query: "current release",
-    provider: "exa",
-    resultCount: 1,
-    results: [
-      {
+    groups: [{
+      query: "current release",
+      provider: "exa",
+      total: 1,
+      limit: 8,
+      hasMore: false,
+        capabilities: {
+          site: "query",
+          exactPhrase: "query",
+          timeRange: "query",
+          language: "query",
+        },
+        results: [{
+        query: "current release",
         title: "Official release",
         url: "https://example.com/releases/1",
         domain: "example.com",
         publishedAt: "2026-07-26",
         summary: "Release details.",
-      },
-    ],
+        score: 0.9,
+          provider: "exa",
+        }],
+        scoreBasis: "relative",
+      }],
+    errors: [],
   })
   assert.match(search, /URL: https:\/\/example\.com\/releases\/1/)
   assert.match(search, /Published: 2026-07-26/)

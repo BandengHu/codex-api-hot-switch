@@ -476,6 +476,17 @@ function chatResponseFormatToResponsesTextFormat(format: unknown) {
   return undefined
 }
 
+const RESPONSES_MIN_MAX_OUTPUT_TOKENS = 16
+
+function responsesMaxOutputTokens(value: unknown) {
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value < RESPONSES_MIN_MAX_OUTPUT_TOKENS
+    ? RESPONSES_MIN_MAX_OUTPUT_TOKENS
+    : value
+}
+
 export function buildResponsesBodyFromChatCompletions(body: unknown) {
   if (!isObject(body)) throw new Error("chat/completions 请求体必须是 JSON 对象")
   const model = safeTrim(body.model)
@@ -515,11 +526,11 @@ export function buildResponsesBodyFromChatCompletions(body: unknown) {
     "user",
   ])
   if (body.max_output_tokens != null) {
-    responsesBody.max_output_tokens = body.max_output_tokens
+    responsesBody.max_output_tokens = responsesMaxOutputTokens(body.max_output_tokens)
   } else if (body.max_completion_tokens != null) {
-    responsesBody.max_output_tokens = body.max_completion_tokens
+    responsesBody.max_output_tokens = responsesMaxOutputTokens(body.max_completion_tokens)
   } else if (body.max_tokens != null) {
-    responsesBody.max_output_tokens = body.max_tokens
+    responsesBody.max_output_tokens = responsesMaxOutputTokens(body.max_tokens)
   }
   if (body.stop != null) responsesBody.stop = body.stop
 

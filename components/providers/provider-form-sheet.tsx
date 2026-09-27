@@ -40,6 +40,7 @@ import {
   type ProtocolType,
   type HeaderEntry,
   type Model,
+  type PromptCacheRouting,
   type ReasoningDialect,
 } from "@/lib/types"
 import {
@@ -81,6 +82,7 @@ function emptyProvider(): Provider {
     bodyOverride: "",
     timeoutMs: 60000,
     reasoningDialect: "auto",
+    promptCacheRouting: "auto",
     rawResponsesPassthrough: false,
     enabled: true,
     isDefault: false,
@@ -359,6 +361,38 @@ export function ProviderFormSheet({
                 控制 reasoning 在 OpenAI-compatible 上游里的字段名，例如 DeepSeek 官方、OpenRouter 或 Qwen。
               </FieldDescription>
             </Field>
+
+            {form.protocol === "openai-chat" ? (
+              <Field>
+                <FieldLabel htmlFor="p-prompt-cache-routing">
+                  Prompt Cache 会话路由
+                </FieldLabel>
+                <Select
+                  value={form.promptCacheRouting || "auto"}
+                  onValueChange={(value) => {
+                    if (!value) return
+                    setForm((current) => ({
+                      ...current,
+                      promptCacheRouting: value as PromptCacheRouting,
+                    }))
+                  }}
+                >
+                  <SelectTrigger id="p-prompt-cache-routing" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="auto">自动</SelectItem>
+                      <SelectItem value="enabled">开启</SelectItem>
+                      <SelectItem value="disabled">关闭</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  自动模式仅对 OpenAI 官方和 Kimi Coding 发送客户端提供的 prompt_cache_key；严格网关可保持关闭。
+                </FieldDescription>
+              </Field>
+            ) : null}
 
             <Field orientation="horizontal">
               <div className="flex flex-col gap-0.5">

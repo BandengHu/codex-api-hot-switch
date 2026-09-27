@@ -21,6 +21,10 @@ import { buildGeminiRequest } from "./gemini"
 import { applyProviderBodyOverride } from "./request-overrides"
 import { readDecodedResponseText } from "./content-encoding"
 import { getSystemProxyDispatcher } from "./system-proxy"
+import {
+  buildAlphaSearchRequest,
+  isAlphaSearchPath,
+} from "./alpha-search"
 
 export interface BuiltProxyRequest {
   url: string
@@ -80,6 +84,9 @@ export function buildProxyRequest(
   body: unknown,
 ): BuiltProxyRequest {
   const built = (() => {
+    if (isAlphaSearchPath(path)) {
+      return buildAlphaSearchRequest(target, path, body)
+    }
     if (isOpenAIResponsesProtocol(target.provider.protocol)) {
       return buildOpenAICompatibleRequest(target, path, body)
     }

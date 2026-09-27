@@ -134,6 +134,12 @@ function shouldRectifyAnthropicThinkingBudget(errorText: string) {
 function isUnsupportedImageError(status: number, errorText: string) {
   if (![400, 415, 422, 501].includes(status)) return false
   const lower = errorText.toLowerCase()
+  if (
+    lower.includes("only support text") ||
+    lower.includes("only supports text")
+  ) {
+    return true
+  }
   const mentionsImage =
     lower.includes("image") ||
     lower.includes("vision") ||
@@ -152,7 +158,6 @@ function isUnsupportedImageError(status: number, errorText: string) {
     "doesn't support",
     "do not support",
     "don't support",
-    "only supports text",
     "text only",
     "text-only",
     "invalid content type",

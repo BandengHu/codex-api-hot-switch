@@ -37,6 +37,7 @@ import type {
   RoutingSnapshot,
   RuntimeConfig,
   Settings,
+  AlphaSearchMode,
   WebSearchMode,
 } from "@/lib/types"
 
@@ -185,6 +186,11 @@ function normalizeProvider(rawProvider: Provider | Record<string, unknown>): Pro
     protocol,
     bodyOverride:
       typeof provider.bodyOverride === "string" ? provider.bodyOverride : "",
+    promptCacheRouting:
+      provider.promptCacheRouting === "enabled" ||
+      provider.promptCacheRouting === "disabled"
+        ? provider.promptCacheRouting
+        : "auto",
     rawResponsesPassthrough:
       protocol === "openai-responses" &&
       typeof provider.rawResponsesPassthrough === "boolean"
@@ -235,6 +241,12 @@ function normalizeFloatingBallPosition(value: unknown): FloatingBallPosition | u
 
 function normalizeWebSearchMode(value: unknown, fallback: WebSearchMode): WebSearchMode {
   return value === "builtin" || value === "mcp" || value === "disabled"
+    ? value
+    : fallback
+}
+
+function normalizeAlphaSearchMode(value: unknown, fallback: AlphaSearchMode): AlphaSearchMode {
+  return value === "auto" || value === "local" || value === "upstream"
     ? value
     : fallback
 }
@@ -302,6 +314,7 @@ function normalizeSettings(
         ? settings.fullRequestLoggingEnabled
         : seed.fullRequestLoggingEnabled,
     webSearchMode: normalizeWebSearchMode(settings.webSearchMode, seed.webSearchMode),
+    alphaSearchMode: normalizeAlphaSearchMode(settings.alphaSearchMode, seed.alphaSearchMode),
   }
 }
 

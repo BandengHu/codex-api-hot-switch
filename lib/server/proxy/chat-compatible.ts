@@ -26,7 +26,6 @@ import {
 } from "./reasoning-dialects"
 import {
   canonicalJson,
-  canonicalToolArguments,
   canonicalToolArgumentsString,
 } from "./json-canonical"
 import { assertSseBufferWithinLimit, lastCompleteSseFrameBoundary } from "./sse-frame"
@@ -39,7 +38,12 @@ import {
   wrapRefSiblingsInChatTools,
 } from "./moonshot-schema"
 import { planChatToolOutputMedia } from "./chat-tool-media"
+import { injectChatPromptCacheKey } from "./prompt-cache-routing"
 import { normalizeErrorCode, normalizeErrorType } from "./upstream-error"
+import {
+  normalizeToolCallArguments,
+  ToolCallArgumentsError,
+} from "./tool-call-arguments"
 import {
   buildRemoteCompactionChatBody,
   chatCompletionToRemoteCompactionResponse,
@@ -348,8 +352,15 @@ function responsesHistoryFunctionName(item: AnyRecord) {
   return name && namespace ? flattenNamespaceToolName(namespace, name) : name
 }
 
-function responseArgumentsToChat(value: unknown) {
-  return canonicalToolArguments(value)
+function responseArgumentsToChat(
+  value: unknown,
+  item: AnyRecord,
+  name: string,
+) {
+  return normalizeToolCallArguments(value, {
+    completed: safeTrim(item.status).toLowerCase() !== "incomplete",
+    name,
+  }).text
 }
 
 function orphanToolOutputMessage(callId: string, output: unknown) {
@@ -539,7 +550,7 @@ function appendResponsesInput(input: unknown, messages: AnyRecord[]) {
         type: "function",
         function: {
           name,
-          arguments: responseArgumentsToChat(raw.arguments ?? {}),
+          arguments: responseArgumentsToChat(raw.arguments ?? {}, raw, name),
         },
       })
       return
@@ -569,7 +580,7 @@ function appendResponsesInput(input: unknown, messages: AnyRecord[]) {
         type: "function",
         function: {
           name: "tool_search",
-          arguments: responseArgumentsToChat(raw.arguments ?? {}),
+          arguments: responseArgumentsToChat(raw.arguments ?? {}, raw, "tool_search"),
         },
       })
       return
@@ -628,7 +639,7 @@ function appendResponsesInput(input: unknown, messages: AnyRecord[]) {
         type: "function",
         function: {
           name,
-          arguments: responseArgumentsToChat(raw.tool_use.input ?? {}),
+          arguments: responseArgumentsToChat(raw.tool_use.input ?? {}, raw, name),
         },
       })
       return
@@ -708,7 +719,6 @@ function shouldBackfillToolCallReasoning(target: ProxyTarget) {
   return (
     dialect === "deepseek-official" ||
     dialect === "qwen-enable-thinking" ||
-    dialect === "kimi-thinking" ||
     dialect === "glm-thinking"
   )
 }
@@ -732,20 +742,6 @@ function supportsChatResponseFormat(target: ProxyTarget, model: string) {
   const hint = `${target.provider.name} ${target.provider.baseUrl} ${target.provider.protocol} ${model}`.toLowerCase()
   if (dialect === "deepseek-official" || hint.includes("deepseek")) return false
   return true
-}
-
-function collapseSystemMessagesToHead(messages: AnyRecord[]) {
-  const system: string[] = []
-  const rest: AnyRecord[] = []
-  for (const message of messages) {
-    if (message.role === "system") {
-      const text = contentToText(message.content).trim()
-      if (text) system.push(text)
-    } else {
-      rest.push(message)
-    }
-  }
-  return system.length > 0 ? [{ role: "system", content: system.join("\n\n") }, ...rest] : rest
 }
 
 const EXTRA_CHAT_PASSTHROUGH_FIELDS = [
@@ -788,7 +784,10 @@ export function responsesToChatCompletions(
   const normalizedMessages = normalizeContextCheckpointRecoveryMessages(
     normalizeChatToolPairing(messages),
   )
-  result.messages = collapseSystemMessagesToHead(normalizedMessages)
+  // 顶层 instructions 已经稳定地放在首条 system；input 中途出现的
+  // developer/system 必须保持原位。上提或合并会改变对话语义，并让每轮新增的
+  // 元数据破坏上游前缀缓存（对齐 cc-switch #6941）。
+  result.messages = normalizedMessages
 
   const reasoningDialect = resolveReasoningDialect(target)
   const maxOutputTokens = body.max_output_tokens ?? body.max_tokens ?? body.max_completion_tokens
@@ -931,6 +930,7 @@ export function chatCompletionToResponse(
   const respId = id.startsWith("resp_") ? id : `resp_${id || "compat"}`
   const toolContext = deserializeToolContext(serializedContext)
   const output: AnyRecord[] = []
+  const status = responseStatusFromFinishReason(choice.finish_reason)
 
   const reasoning = chatReasoningText(message)
   if (reasoning) {
@@ -957,19 +957,43 @@ export function chatCompletionToResponse(
     : isObject(message.function_call)
       ? [{ id: message.function_call.id, type: "function", function: message.function_call }]
       : []
+  let droppedToolCalls = 0
+  let validToolCalls = 0
   toolCalls.forEach((toolCall: AnyRecord, index: number) => {
     const callId = safeTrim(toolCall.id) || `call_${index}`
     const fn = isObject(toolCall.function) ? toolCall.function : {}
     const name = safeTrim(fn.name)
-    if (!name) return
-    output.push(toolCallItem(callId, name, responseArgumentsToChat(fn.arguments ?? {}), toolContext, reasoning))
+    if (!name) {
+      droppedToolCalls += 1
+      return
+    }
+    validToolCalls += 1
+    const normalizedArguments = normalizeToolCallArguments(fn.arguments ?? {}, {
+      completed: status === "completed",
+      name,
+    })
+    output.push(
+      toolCallItem(
+        callId,
+        name,
+        normalizedArguments.text,
+        toolContext,
+        reasoning,
+      ),
+    )
   })
+
+  if (status === "completed" && droppedToolCalls > 0 && validToolCalls === 0) {
+    throw new Error(
+      `Upstream returned ${droppedToolCalls} tool call(s) without a function name, leaving no usable tool call in this turn`,
+    )
+  }
 
   const response: AnyRecord = {
     id: respId,
     object: "response",
     created_at: Number(payload.created) || Math.floor(Date.now() / 1000),
-    status: responseStatusFromFinishReason(choice.finish_reason),
+    status,
     model: safeTrim(payload.model),
     output,
     output_text: outputTextFromResponseItems(output),
@@ -1064,6 +1088,7 @@ export function buildChatCompatibleRequest(
   const converted = responsesToChatCompletions(request, target, {
     applyLanguagePolicy: !compactionTrigger,
   })
+  injectChatPromptCacheKey(target.provider, converted.body, originalRequest)
   // 对齐 cc-switch #6863：Moonshot / Kimi 的 Chat 校验器拒绝带兄弟关键字的 $ref，
   // 只在命中的上游改写，其他供应商保持字节级不变。
   if (upstreamRequiresRefSiblingAllOf(target.provider.baseUrl)) {
@@ -1302,6 +1327,7 @@ interface ChatSseAccum {
     }
   >
   addedToolIndexes: Set<number>
+  nextToolIndexToAdd: number
   usage: unknown
   finishReason: string
   sawChoice: boolean
@@ -1327,6 +1353,7 @@ function createChatSseAccumulator(): ChatSseAccum {
     inlineThinkBuffer: "",
     toolCalls: new Map(),
     addedToolIndexes: new Set(),
+    nextToolIndexToAdd: 0,
     usage: null,
     finishReason: "",
     sawChoice: false,
@@ -1372,19 +1399,98 @@ function resetChatSseAccumulatedOutput(state: ChatSseAccum) {
   state.inlineThinkBuffer = ""
   state.toolCalls.clear()
   state.addedToolIndexes.clear()
+  state.nextToolIndexToAdd = 0
   state.nextOutputIndex = 0
   state.responseStarted = false
 }
 
-function chatToolCallIndex(toolCall: AnyRecord, fallback: number) {
-  const raw = Number(toolCall.index ?? fallback)
-  return Number.isSafeInteger(raw) && raw >= 0 ? raw : fallback
+function chatToolCallIndex(
+  state: ChatSseAccum,
+  toolCall: AnyRecord,
+  fallback: number,
+) {
+  if (toolCall.index != null) {
+    const raw = Number(toolCall.index)
+    if (Number.isSafeInteger(raw) && raw >= 0) return raw
+  }
+
+  const knownIndexes = [...state.toolCalls.keys()].sort((left, right) => left - right)
+  const lastIndex = knownIndexes.at(-1)
+  const callId = safeTrim(toolCall.id)
+  if (!callId) return lastIndex ?? fallback
+
+  for (const [index, existing] of state.toolCalls) {
+    if (existing.id === callId) return index
+  }
+  if (lastIndex == null) return 0
+  return lastIndex < Number.MAX_SAFE_INTEGER ? lastIndex + 1 : lastIndex
 }
 
 function chatToolArgumentsDelta(value: unknown) {
   if (typeof value === "string") return value
   if (value == null) return ""
   return canonicalJson(value)
+}
+
+function addChatSseToolCall(
+  state: ChatSseAccum,
+  index: number,
+  toolCall: ChatSseAccum["toolCalls"] extends Map<number, infer T> ? T : never,
+  toolContext: ToolContext,
+) {
+  if (
+    state.addedToolIndexes.has(index) ||
+    !toolCall.id.trim() ||
+    !toolCall.name.trim()
+  ) {
+    return ""
+  }
+
+  toolCall.itemId = toolCallItemId(toolCall.id, toolCall.name, toolContext)
+  let out = ensureResponseStarted(state)
+  toolCall.outputIndex = nextStreamingOutputIndex(state)
+  out += sse("response.output_item.added", {
+    type: "response.output_item.added",
+    output_index: toolCall.outputIndex,
+    item: toolCallAddedItem(
+      toolCall.id,
+      toolCall.name,
+      toolContext,
+      toolCall.reasoningContent,
+    ),
+  })
+  state.addedToolIndexes.add(index)
+
+  if (
+    toolCall.args &&
+    !isCustomToolProxy(toolCall.name, toolContext) &&
+    !toolContext.toolSearchTools.has(toolCall.name)
+  ) {
+    out += sse("response.function_call_arguments.delta", {
+      type: "response.function_call_arguments.delta",
+      item_id: toolCall.itemId,
+      output_index: toolCall.outputIndex,
+      delta: toolCall.args,
+    })
+  }
+  return out
+}
+
+function flushReadyChatSseToolCalls(state: ChatSseAccum, toolContext: ToolContext) {
+  let out = ""
+  while (true) {
+    const index = state.nextToolIndexToAdd
+    const toolCall = state.toolCalls.get(index)
+    if (!toolCall) break
+    if (state.addedToolIndexes.has(index)) {
+      state.nextToolIndexToAdd += 1
+      continue
+    }
+    if (!toolCall.id.trim() || !toolCall.name.trim()) break
+    out += addChatSseToolCall(state, index, toolCall, toolContext)
+    state.nextToolIndexToAdd += 1
+  }
+  return out
 }
 
 function mergeChatSseToolCallDelta(
@@ -1396,7 +1502,7 @@ function mergeChatSseToolCallDelta(
 ) {
   if (!isObject(rawToolCall)) return ""
   let out = ""
-  const index = chatToolCallIndex(rawToolCall, fallbackIndex)
+  const index = chatToolCallIndex(state, rawToolCall, fallbackIndex)
   const existing =
     state.toolCalls.get(index) || {
       id: "",
@@ -1414,42 +1520,12 @@ function mergeChatSseToolCallDelta(
   if (argumentDelta) {
     existing.args = options.replaceArguments ? argumentDelta : existing.args + argumentDelta
   }
-  let wasAddedNow = false
-  if (!state.addedToolIndexes.has(index) && existing.id && existing.name) {
-    existing.itemId = toolCallItemId(existing.id, existing.name, toolContext)
-    out += ensureResponseStarted(state)
-    existing.outputIndex = nextStreamingOutputIndex(state)
-    out += sse("response.output_item.added", {
-      type: "response.output_item.added",
-      output_index: existing.outputIndex,
-      item: toolCallAddedItem(
-        existing.id,
-        existing.name,
-        toolContext,
-        existing.reasoningContent,
-      ),
-    })
-    state.addedToolIndexes.add(index)
-    wasAddedNow = true
-    if (
-      existing.args &&
-      !options.replaceArguments &&
-      !isCustomToolProxy(existing.name, toolContext) &&
-      !toolContext.toolSearchTools.has(existing.name)
-    ) {
-      out += sse("response.function_call_arguments.delta", {
-        type: "response.function_call_arguments.delta",
-        item_id: existing.itemId,
-        output_index: existing.outputIndex,
-        delta: existing.args,
-      })
-    }
-  }
+  const wasAlreadyAdded = state.addedToolIndexes.has(index)
+  state.toolCalls.set(index, existing)
   if (
     argumentDelta &&
-    !wasAddedNow &&
+    wasAlreadyAdded &&
     !options.replaceArguments &&
-    state.addedToolIndexes.has(index) &&
     existing.outputIndex != null &&
     existing.itemId &&
     !isCustomToolProxy(existing.name, toolContext) &&
@@ -1462,7 +1538,9 @@ function mergeChatSseToolCallDelta(
       delta: argumentDelta,
     })
   }
-  state.toolCalls.set(index, existing)
+  // 并行调用的后一个名称可能先到。只连续释放 Chat index，避免把 index=1
+  // 提前映射成更小的 Responses output_index（对齐 cc-switch #5310）。
+  out += flushReadyChatSseToolCalls(state, toolContext)
   return out
 }
 
@@ -1838,9 +1916,20 @@ function finalizeChatSse(
   out += flushChatSseInlineThinkAtBoundary(state)
   out += finalizeChatSseReasoning(state)
   const hasVisibleMessage = state.messageAdded && state.content.trim().length > 0
-  const hasToolCall = Array.from(state.toolCalls.values()).some((toolCall) =>
-    toolCall.name.trim().length > 0,
-  )
+  const toolCalls = Array.from(state.toolCalls.values())
+  const hasToolCall = toolCalls.some((toolCall) => toolCall.name.trim().length > 0)
+  const droppedToolCalls = toolCalls.filter(
+    (toolCall) => toolCall.name.trim().length === 0,
+  ).length
+  const status = responseStatusFromFinishReason(state.finishReason || "stop")
+  if (status === "completed" && droppedToolCalls > 0 && !hasToolCall) {
+    return out + failedChatSse(
+      state,
+      `Upstream returned ${droppedToolCalls} tool call(s) without a function name, leaving no usable tool call in this turn`,
+      "upstream_tool_call_dropped",
+      serializedContext,
+    )
+  }
   if (
     !chatStreamHasUsableOutput({
       hasVisibleMessage,
@@ -1857,6 +1946,24 @@ function finalizeChatSse(
       "empty_visible_output",
       serializedContext,
     )
+  }
+  try {
+    for (const toolCall of toolCalls) {
+      if (!toolCall.name.trim()) continue
+      toolCall.args = normalizeToolCallArguments(toolCall.args, {
+        completed: status === "completed",
+        name: toolCall.name,
+      }).text
+    }
+  } catch (error) {
+    if (error instanceof ToolCallArgumentsError) {
+      return out + failedChatSse(
+        state,
+        error.message,
+        error.code,
+      )
+    }
+    throw error
   }
   state.completed = true
   if (state.messageAdded) {
@@ -1894,27 +2001,20 @@ function finalizeChatSse(
   }
   if (state.toolCalls.size > 0) {
     const toolContext = deserializeToolContext(serializedContext)
-    for (const [index, toolCall] of state.toolCalls) {
+    const orderedToolCalls = [...state.toolCalls.entries()].sort(
+      ([left], [right]) => left - right,
+    )
+    for (const [index, toolCall] of orderedToolCalls) {
       if (!toolCall.name) continue
       if (!toolCall.id) toolCall.id = `call_${index}`
       if (toolCall.outputIndex == null) {
-        toolCall.outputIndex = nextStreamingOutputIndex(state)
-        toolCall.itemId = toolCallItemId(toolCall.id, toolCall.name, toolContext)
-        out += sse("response.output_item.added", {
-          type: "response.output_item.added",
-          output_index: toolCall.outputIndex,
-          item: toolCallAddedItem(
-            toolCall.id,
-            toolCall.name,
-            toolContext,
-            toolCall.reasoningContent,
-          ),
-        })
-        state.addedToolIndexes.add(index)
+        // 流中缺失更早 index 或名称时，不能永远卡住后面的有效调用；收尾按
+        // Chat index 排序补发，保留稀疏 index 和后续有效调用。
+        out += addChatSseToolCall(state, index, toolCall, toolContext)
       }
       const outputIndex = toolCall.outputIndex
       const itemId = toolCall.itemId || toolCallItemId(toolCall.id, toolCall.name, toolContext)
-      const argumentsText = canonicalToolArgumentsString(toolCall.args)
+      const argumentsText = toolCall.args || "{}"
       const item = toolCallItem(
         toolCall.id,
         toolCall.name,
@@ -1955,7 +2055,6 @@ function finalizeChatSse(
   }
 
   const output = completedChatSseOutputItems(state, serializedContext)
-  const status = responseStatusFromFinishReason(state.finishReason || "stop")
   const response: AnyRecord = {
     id: state.id,
     object: "response",

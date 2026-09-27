@@ -5,7 +5,6 @@ import {
   classifyEndpointFailure,
   endpointTargetProvider,
   EndpointAttemptError,
-  prepareUpstreamResponse,
   recordProviderEndpointFailure,
   recordProviderEndpointSuccess,
 } from "@/lib/server/provider-endpoint-runtime"
@@ -18,6 +17,7 @@ import {
   parseJsonSafe,
   type BuiltProxyRequest,
 } from "./request-builder"
+import { prepareUpstreamResponse } from "./upstream-response-primer"
 
 export interface EndpointFailoverResult {
   target: ProxyTarget
@@ -164,8 +164,8 @@ export async function fetchWithEndpointFailover(params: {
         continue
       }
 
-      if (response.ok && params.requestIsStream) {
-        response = await prepareUpstreamResponse(response, true, {
+      if (response.ok) {
+        response = await prepareUpstreamResponse(response, params.requestIsStream, {
           requestSignal: params.requestSignal,
           timeoutMs: target.provider.timeoutMs,
         })

@@ -43,7 +43,6 @@ if (fs.existsSync(path.join(root, "integrations", "codexbridge"))) {
     path.join(standaloneDir, "integrations", "codexbridge"),
   )
 }
-
 const runtime = resolveServerRuntimeConfig({ root })
 process.env.HOSTNAME = runtime.host
 process.env.PORT = String(runtime.port)

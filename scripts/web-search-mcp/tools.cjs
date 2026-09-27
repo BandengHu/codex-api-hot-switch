@@ -1,7 +1,8 @@
 "use strict"
 
 const { randomUUID } = require("node:crypto")
-const { executeBrowsePage, normalizeBrowsePageInput } = require("./page-reader.cjs")
+const { normalizeBrowsePageInput } = require("./page-reader.cjs")
+const { postWebApi } = require("./api-client.cjs")
 const { executeWebSearch, normalizeWebSearchInput } = require("./search.cjs")
 
 const WEB_SEARCH_TOOL_NAME = "web_search"
@@ -12,37 +13,46 @@ const TOOL_DEFINITIONS = [
   {
     name: WEB_SEARCH_TOOL_NAME,
     description:
-      "Search the public web and return structured results with title, URL, publication date, source domain, and summary. For important factual claims, follow the search with browse_page on at least two independent or official sources.",
+      "Search the public web and return grouped structured results with title, URL, publication date, source domain, summary, relative ranking score, and capability metadata. Scores are comparable only within one query. Set answer=true for an extractive answer, or includeContent=true to inline bounded Markdown from up to five top results. For important factual claims, follow the search with browse_page on at least two independent or official sources.",
     annotations: { readOnlyHint: true, openWorldHint: true },
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
-        query: { type: "string", description: "The search query." },
-        numResults: {
+        query: { type: "string", description: "One search query." },
+        queries: {
+          type: "array",
+          minItems: 1,
+          maxItems: 10,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              query: { type: "string" },
+              recencyDays: { type: "integer", minimum: 1, maximum: 3650 },
+              domains: { type: "array", items: { type: "string" }, maxItems: 20 },
+              language: { type: "string" },
+            },
+            required: ["query"],
+          },
+          description: "Optional grouped queries.",
+        },
+        limit: {
           type: "integer",
           minimum: 1,
           maximum: 20,
-          description: "Maximum number of results.",
+          description: "Results per query.",
         },
-        type: {
-          type: "string",
-          enum: ["auto", "fast", "deep"],
-          description: "Exa search depth.",
+        answer: {
+          type: "boolean",
+          description: "Include a short extractive answer assembled from returned sources.",
         },
-        livecrawl: {
-          type: "string",
-          enum: ["fallback", "preferred"],
-          description: "Exa live crawl preference.",
-        },
-        contextMaxCharacters: {
-          type: "integer",
-          minimum: 1,
-          maximum: 200000,
-          description: "Optional Exa context character budget.",
+        includeContent: {
+          type: "boolean",
+          description: "Inline bounded Markdown from up to five top results.",
         },
       },
-      required: ["query"],
+      anyOf: [{ required: ["query"] }, { required: ["queries"] }],
     },
   },
   {
@@ -96,7 +106,7 @@ async function executeTool(name, argumentsValue, signal) {
     )
   }
   if (name === BROWSE_PAGE_TOOL_NAME) {
-    return await executeBrowsePage(normalizeBrowsePageInput(argumentsValue), signal)
+    return postWebApi("browse", normalizeBrowsePageInput(argumentsValue), signal)
   }
   throw new Error(`Unknown tool: ${name || "(missing)"}`)
 }

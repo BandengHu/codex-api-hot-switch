@@ -26,6 +26,8 @@ import {
   type SerializedToolContext,
   type ToolContext,
 } from "./codex-tool-proxy"
+import { planNativeToolOutputMedia } from "./native-tool-media"
+import { normalizeToolCallArguments } from "./tool-call-arguments"
 
 type AnyRecord = Record<string, any>
 
@@ -288,6 +290,20 @@ function normalizeToolResultContent(output: unknown) {
   return undefined
 }
 
+function canonicalFunctionCallOutput(outputValue: unknown) {
+  const mediaPlan = planNativeToolOutputMedia(outputValue)
+  if (mediaPlan) {
+    return {
+      output: mediaPlan.outputText,
+      outputContent: mediaPlan.contentParts,
+    }
+  }
+  return {
+    output: contentText(outputValue),
+    outputContent: normalizeToolResultContent(outputValue),
+  }
+}
+
 function parseArgumentsObject(argumentsText: string): AnyRecord {
   if (!argumentsText.trim()) return {}
   try {
@@ -297,6 +313,21 @@ function parseArgumentsObject(argumentsText: string): AnyRecord {
   } catch {
     return { input: argumentsText }
   }
+}
+
+function dropOrphanThinkingItems(items: CanonicalInputItem[]) {
+  return items.filter((item, index) => {
+    if (item.type !== "thinking") return true
+    for (let followerIndex = index + 1; followerIndex < items.length; followerIndex += 1) {
+      const follower = items[followerIndex]
+      if (follower.type === "thinking") continue
+      return (
+        follower.type === "function_call" ||
+        (follower.type === "message" && follower.role === "assistant")
+      )
+    }
+    return false
+  })
 }
 
 function normalizeArgumentsText(value: unknown) {
@@ -549,24 +580,25 @@ function normalizeInputItems(
     if (type === "function_call") {
       const originalName = safeTrim(rawItem.name || rawItem.function?.name)
       if (!originalName) throw new Error(`function_call[${index}] 缺少 name`)
-      const argumentsText = normalizeArgumentsText(
+      const normalizedArguments = normalizeToolCallArguments(
         rawItem.arguments ?? rawItem.function?.arguments,
+        {
+          completed: safeTrim(rawItem.status).toLowerCase() !== "incomplete",
+          name: originalName,
+          location: `input[${index}]`,
+        },
       )
       items.push({
         type: "function_call",
         callId: callIdFromItem(rawItem, index),
         name: mappedToolCallName({
           rawItem,
-          argumentsText,
+          argumentsText: normalizedArguments.text,
           forwardToolNameMap,
           toolContext,
         }),
-        argumentsText: normalizeArgumentsText(
-          rawItem.arguments ?? rawItem.function?.arguments,
-        ),
-        argumentsObject: parseArgumentsObject(
-          normalizeArgumentsText(rawItem.arguments ?? rawItem.function?.arguments),
-        ),
+        argumentsText: normalizedArguments.text,
+        argumentsObject: normalizedArguments.object,
         geminiThoughtSignature: safeTrim(
           rawItem.gemini_thought_signature ||
           rawItem.thoughtSignature ||
@@ -605,12 +637,14 @@ function normalizeInputItems(
       )
       if (!callId) throw new Error(`function_call_output[${index}] 缺少 call_id`)
       const outputValue = rawItem.output ?? rawItem.content ?? rawItem.text ?? ""
-      const outputContent = normalizeToolResultContent(outputValue)
+      const normalizedOutput = canonicalFunctionCallOutput(outputValue)
       items.push({
         type: "function_call_output",
         callId,
-        output: contentText(outputValue),
-        ...(outputContent && outputContent.length > 0 ? { outputContent } : {}),
+        output: normalizedOutput.output,
+        ...(normalizedOutput.outputContent && normalizedOutput.outputContent.length > 0
+          ? { outputContent: normalizedOutput.outputContent }
+          : {}),
       })
       return
     }
@@ -624,10 +658,14 @@ function normalizeInputItems(
       )
       if (!callId) throw new Error(`${type}[${index}] 缺少 call_id`)
       const outputValue = rawItem.output ?? rawItem.content ?? rawItem.text ?? rawItem
+      const normalizedOutput = canonicalFunctionCallOutput(outputValue)
       items.push({
         type: "function_call_output",
         callId,
-        output: contentText(outputValue),
+        output: normalizedOutput.output,
+        ...(normalizedOutput.outputContent && normalizedOutput.outputContent.length > 0
+          ? { outputContent: normalizedOutput.outputContent }
+          : {}),
       })
       return
     }
@@ -646,11 +684,16 @@ function normalizeInputItems(
     throw new Error(`原生协议暂不支持 input[${index}].type=${type || "<empty>"}`)
   })
 
-  if (items.length === 0) {
-    items.push({ type: "message", role: "user", content: [{ type: "text", text: "" }] })
+  const normalizedItems = dropOrphanThinkingItems(items)
+  if (normalizedItems.length === 0) {
+    normalizedItems.push({
+      type: "message",
+      role: "user",
+      content: [{ type: "text", text: "" }],
+    })
   }
 
-  return { instructions: instructions.join("\n\n"), input: items }
+  return { instructions: instructions.join("\n\n"), input: normalizedItems }
 }
 
 function appendOutputLanguagePolicyToLatestUserContext(

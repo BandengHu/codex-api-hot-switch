@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react"
 import {
+  Copy,
   FolderOpen,
   ListRestart,
   PlugZap,
@@ -37,6 +38,7 @@ type McpAction =
   | "remove-web-search"
   | "install-codegraph"
   | "remove-codegraph"
+  | "copy-dsh-address"
   | "select-project"
   | "init-projects"
 
@@ -101,6 +103,20 @@ export function McpView() {
     }
   }
 
+  async function copyDshAddress() {
+    const endpoint = status?.dshWebSearch.endpoint
+    if (!endpoint) return
+    setWorking("copy-dsh-address")
+    try {
+      await navigator.clipboard.writeText(endpoint)
+      toast.success("已复制 DSH 搜索地址")
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error))
+    } finally {
+      setWorking(null)
+    }
+  }
+
   const busy = working !== null
 
   return (
@@ -122,6 +138,40 @@ export function McpView() {
           {working === "refresh" ? <Spinner /> : <RefreshCw />}
         </Button>
       </div>
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <CardTitle className="text-base">DSH 搜索地址</CardTitle>
+              <CardDescription>
+                这里只提供本地中转地址，不修改 DSH 的插件、依赖或 profile。
+              </CardDescription>
+            </div>
+            <Badge variant="secondary">仅地址</Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="flex items-center gap-2">
+            <code className="min-w-0 flex-1 break-all rounded bg-muted px-2 py-2 font-mono text-xs">
+              {status?.dshWebSearch.endpoint || "正在读取"}
+            </code>
+            <Button
+              variant="outline"
+              size="icon"
+              title="复制 DSH 搜索地址"
+              aria-label="复制 DSH 搜索地址"
+              disabled={busy || !status?.dshWebSearch.endpoint}
+              onClick={() => void copyDshAddress()}
+            >
+              {working === "copy-dsh-address" ? <Spinner /> : <Copy />}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            DSH 是否支持填入或调用此地址，由 DSH 自身能力决定；中转不再自动安装或改写 DSH。
+          </p>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

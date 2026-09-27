@@ -23,15 +23,16 @@ import {
   type NativeOutputItem,
 } from "./native-openai"
 import { applyAnthropicClientIdentity } from "./anthropic-client-identity"
+import { applyAnthropicPromptCaching } from "./anthropic-prompt-cache"
 
 type AnyRecord = Record<string, any>
 
 const MIN_THINKING_BUDGET_TOKENS = 1024
-const ANTHROPIC_MAX_PROMPT_CACHE_BREAKPOINTS = 4
-const ANTHROPIC_PROMPT_CACHE_BREAKPOINTS_TO_ADD = 3
 const ANTHROPIC_THINKING_PLACEHOLDER = "tool call"
 const ANTHROPIC_REDACTED_THINKING_PLACEHOLDER = "[redacted thinking]"
-const REASONING_VENDOR_HINTS = ["moonshot", "kimi", "deepseek", "mimo", "xiaomimimo"]
+// Kimi/Moonshot no longer require synthetic thinking replay on tool turns.
+// Injecting placeholders there disrupts the model's own reasoning history.
+const REASONING_VENDOR_HINTS = ["deepseek", "mimo", "xiaomimimo"]
 
 export interface AnthropicBuiltRequest {
   url: string
@@ -514,71 +515,6 @@ function disableThinkingForIncompatibleToolContinuation(body: AnyRecord) {
     if (Object.keys(body.output_config).length === 0) {
       delete body.output_config
     }
-  }
-}
-
-function isClaudeAnthropicBody(body: AnyRecord) {
-  return safeTrim(body.model).toLowerCase().includes("claude")
-}
-
-function countPromptCacheBreakpoints(value: unknown, seen = new WeakSet<object>()): number {
-  if (!value || typeof value !== "object") return 0
-  if (seen.has(value)) return 0
-  seen.add(value)
-
-  let count = isObject(value) && value.cache_control != null ? 1 : 0
-  for (const child of Object.values(value)) {
-    count += countPromptCacheBreakpoints(child, seen)
-  }
-  return count
-}
-
-function lastCacheableBlock(blocks: unknown) {
-  if (!Array.isArray(blocks)) return null
-  for (let index = blocks.length - 1; index >= 0; index -= 1) {
-    const block = blocks[index]
-    if (!isObject(block)) continue
-    const type = safeTrim(block.type)
-    if (type === "thinking" || type === "redacted_thinking") continue
-    return block
-  }
-  return null
-}
-
-function setPromptCacheBreakpoint(block: AnyRecord | null, consume: () => boolean) {
-  if (!block || block.cache_control != null || !consume()) return false
-  block.cache_control = { type: "ephemeral" }
-  return true
-}
-
-function applyAnthropicPromptCaching(body: AnyRecord) {
-  if (!isClaudeAnthropicBody(body)) return
-
-  let remaining = Math.min(
-    ANTHROPIC_PROMPT_CACHE_BREAKPOINTS_TO_ADD,
-    ANTHROPIC_MAX_PROMPT_CACHE_BREAKPOINTS - countPromptCacheBreakpoints(body),
-  )
-  if (remaining <= 0) return
-
-  const consume = () => {
-    if (remaining <= 0) return false
-    remaining -= 1
-    return true
-  }
-
-  setPromptCacheBreakpoint(lastCacheableBlock(body.system), consume)
-
-  if (!Array.isArray(body.messages)) return
-  let messageBreakpoints = 0
-  for (
-    let index = body.messages.length - 1;
-    index >= 0 && remaining > 0 && messageBreakpoints < 2;
-    index -= 1
-  ) {
-    const message = body.messages[index]
-    if (!isObject(message)) continue
-    const added = setPromptCacheBreakpoint(lastCacheableBlock(message.content), consume)
-    if (added) messageBreakpoints += 1
   }
 }
 

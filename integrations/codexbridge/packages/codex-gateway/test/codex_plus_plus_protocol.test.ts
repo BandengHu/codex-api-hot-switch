@@ -310,7 +310,7 @@ test('codex++ port: request flattens namespace function-call history', () => {
   assert.equal(chat.messages[1].tool_call_id, 'call_ns');
 });
 
-test('codex++ port: request collapses late system and developer messages to the head', () => {
+test('codex++ port: request preserves late system and developer messages in place', () => {
   const chat = responsesRequestToChatCompletions({
     model: 'MiniMax-M2.7',
     instructions: 'root system',
@@ -329,11 +329,12 @@ test('codex++ port: request collapses late system and developer messages to the 
     }],
   });
 
-  assert.equal(chat.messages[0].role, 'system');
-  assert.equal(chat.messages[0].content, 'root system\n\nlate developer');
-  assert.equal(chat.messages.filter((message: any) => message.role === 'system').length, 1);
-  assert.equal(chat.messages[1].role, 'user');
-  assert.equal(chat.messages[2].role, 'assistant');
+  assert.deepEqual(
+    chat.messages.map((message: any) => message.role),
+    ['system', 'user', 'system', 'assistant'],
+  );
+  assert.equal(chat.messages[0].content, 'root system');
+  assert.equal(chat.messages[2].content, 'late developer');
 });
 
 test('codex++ port: request maps latest_reminder to user role', () => {
