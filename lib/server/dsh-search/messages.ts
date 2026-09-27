@@ -203,7 +203,7 @@ export async function executeDshSearchMessages(
     throw new WebSearchError(error.message, {
       code: error.code,
       retryable: error.retryable,
-      provider: "switchgate-dsh",
+      provider: error.provider,
       status: error.status,
     })
   }
@@ -222,7 +222,10 @@ export function dshSearchErrorResponse(error: unknown) {
       type: "error",
       error: {
         type: normalized.retryable ? "api_error" : "invalid_request_error",
-        message: normalized.message,
+        message: `${normalized.message} [${normalized.code}/${normalized.provider}]`,
+        code: normalized.code,
+        retryable: normalized.retryable,
+        provider: normalized.provider,
       },
     },
     {

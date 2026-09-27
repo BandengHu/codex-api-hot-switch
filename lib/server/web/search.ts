@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 import { readSearchCache, writeSearchCache } from "./cache"
 import { WebSearchError, classifyHttpError, isAbortError, throwIfAborted, webToolError } from "./errors"
+import { fetchWeb } from "./fetch"
 import { browseWebPages } from "./page"
 import {
   compactWhitespace,
@@ -52,6 +53,25 @@ const MAX_INLINE_CONTENT_CHARS = 8_000
 
 function object(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value))
+}
+
+function errorDetail(error: unknown): string {
+  if (!(error instanceof Error)) return String(error)
+  const cause = "cause" in error
+    ? (error as Error & { cause?: unknown }).cause
+    : undefined
+  if (!cause || typeof cause !== "object") return error.message
+  const causeRecord = cause as { code?: unknown; message?: unknown }
+  const causeMessage = typeof causeRecord.message === "string"
+    ? causeRecord.message
+    : ""
+  const causeCode = typeof causeRecord.code === "string"
+    ? causeRecord.code
+    : ""
+  const suffix = [causeCode, causeMessage].filter(Boolean).join(": ")
+  return suffix && suffix !== error.message
+    ? `${error.message} (${suffix})`
+    : error.message
 }
 
 function timeoutSignal(signal?: AbortSignal): { signal: AbortSignal; done: () => void } {
@@ -215,10 +235,10 @@ async function callMcp(
   try {
     let response: Response
     try {
-      response = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
+        response = await fetchWeb(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
         signal: timeout.signal,
       })
     } catch (error) {
@@ -229,7 +249,7 @@ async function callMcp(
           provider,
         })
       }
-      throw new WebSearchError(`${provider} 搜索网络请求失败：${String(error)}`, {
+      throw new WebSearchError(`${provider} 搜索网络请求失败：${errorDetail(error)}`, {
         code: "WEB_PROVIDER_NETWORK",
         retryable: true,
         provider,
@@ -337,10 +357,27 @@ function duckDuckGoProvider(): SearchProvider {
       try {
         const url = new URL("https://html.duckduckgo.com/html/")
         url.searchParams.set("q", query.query)
-        const response = await fetch(url, {
-          headers: { accept: "text/html", "user-agent": "Mozilla/5.0 SwitchGate" },
-          signal: timeout.signal,
-        })
+        let response: Response
+        try {
+          response = await fetchWeb(url, {
+            headers: { accept: "text/html", "user-agent": "Mozilla/5.0 SwitchGate" },
+            signal: timeout.signal,
+          })
+        } catch (error) {
+          if (isAbortError(error, signal)) {
+            throw new WebSearchError("DuckDuckGo 搜索超时或已取消", {
+              code: signal?.aborted ? "WEB_ABORTED" : "WEB_PROVIDER_TIMEOUT",
+              retryable: !signal?.aborted,
+              provider: "duckduckgo",
+            })
+          }
+          throw new WebSearchError(`DuckDuckGo 搜索网络请求失败：${errorDetail(error)}`, {
+            code: "WEB_PROVIDER_NETWORK",
+            retryable: true,
+            provider: "duckduckgo",
+            cause: error,
+          })
+        }
         const text = await readText(response)
         if (!response.ok) throw classifyHttpError("duckduckgo", response.status, text)
         const results: RawResult[] = []
@@ -505,6 +542,9 @@ async function searchGroup(
     retryable: true,
     provider: "switchgate",
   }
+  const message = errors.length > 1
+    ? `所有搜索 provider 均失败：${errors.map((error) => `${error.provider}: ${error.message}`).join("；")}`
+    : last.message
   return {
     query: query.query,
     total: 0,
@@ -514,7 +554,7 @@ async function searchGroup(
     capabilities: capabilities(query),
     results: [],
     scoreBasis: "relative",
-    error: last,
+    error: { ...last, message },
   }
 }
 
