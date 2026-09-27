@@ -189,10 +189,15 @@ interface SseFrameInfo {
   usage?: TokenUsage
   terminal?: string
   hasOutput?: boolean
+  protocol?: "chat"
 }
 
 function hasMeaningfulOutput(value: AnyRecord) {
-  const type = typeof value.type === "string" ? value.type : ""
+  const type = typeof value.type === "string"
+    ? value.type
+    : typeof value.object === "string"
+      ? value.object
+      : ""
   if (type === "chat.completion.chunk") {
     return Array.isArray(value.choices)
       ? value.choices.some((choice: AnyRecord) => {
@@ -251,6 +256,10 @@ function parseSseFrameInfo(frameText: string): SseFrameInfo {
   info.usage = extractTokenUsage(parsed)
   info.hasOutput = isObject(parsed) && hasMeaningfulOutput(parsed)
   const type = isObject(parsed) ? String(parsed.type || "") : ""
+  const objectType = isObject(parsed) ? String(parsed.object || "") : ""
+  if (type === "chat.completion.chunk" || objectType === "chat.completion.chunk") {
+    info.protocol = "chat"
+  }
   if (type === "response.completed" || type === "response.done") info.terminal = "completed"
   else if (type === "response.failed") info.terminal = "failed"
   return info
@@ -262,6 +271,7 @@ export class TokenUsageSseCollector {
   private usage: TokenUsage | undefined
   private terminalType: string | undefined
   private firstOutputAt: number | undefined
+  private sawChatChunk = false
 
   push(chunk: Uint8Array, observedAt = Date.now()) {
     if (!chunk.length) return
@@ -273,9 +283,7 @@ export class TokenUsageSseCollector {
     this.buffer += this.decoder.decode()
     if (this.buffer.trim()) {
       const info = parseSseFrameInfo(this.buffer)
-      this.usage = info.usage || this.usage
-      this.recordFirstOutput(info.hasOutput, observedAt)
-      this.recordTerminal(info.terminal)
+      this.recordInfo(info, observedAt)
     }
     this.buffer = ""
     return this.usage
@@ -301,14 +309,19 @@ export class TokenUsageSseCollector {
       const frameText = this.buffer.slice(0, boundary.index)
       this.buffer = this.buffer.slice(boundary.index + boundary.separatorLength)
       const info = parseSseFrameInfo(frameText)
-      this.usage = info.usage || this.usage
-      this.recordFirstOutput(info.hasOutput, observedAt)
-      this.recordTerminal(info.terminal)
+      this.recordInfo(info, observedAt)
     }
   }
 
   private recordFirstOutput(hasOutput: boolean | undefined, observedAt: number) {
     if (hasOutput && this.firstOutputAt == null) this.firstOutputAt = observedAt
+  }
+
+  private recordInfo(info: SseFrameInfo, observedAt: number) {
+    this.usage = info.usage || this.usage
+    if (info.protocol === "chat") this.sawChatChunk = true
+    this.recordFirstOutput(info.hasOutput, observedAt)
+    this.recordTerminal(info.terminal)
   }
 
   // response.completed / response.failed 是权威终态；[DONE] 只是流终止标记。
@@ -317,6 +330,10 @@ export class TokenUsageSseCollector {
   private recordTerminal(next: string | undefined) {
     if (!next) return
     if (next === "done") {
+      if (this.sawChatChunk) {
+        this.terminalType = "completed"
+        return
+      }
       if (!this.terminalType) this.terminalType = "done"
       return
     }

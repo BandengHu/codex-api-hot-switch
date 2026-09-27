@@ -117,16 +117,18 @@ test("ignores Chat role-only chunks before visible output", () => {
   const collector = new TokenUsageSseCollector()
   collector.push(
     encoder.encode(
-      'data: {"type":"chat.completion.chunk","choices":[{"delta":{"role":"assistant","content":""}}]}\n\n',
+      'data: {"object":"chat.completion.chunk","choices":[{"delta":{"role":"assistant","content":""}}]}\n\n',
     ),
     1_000,
   )
   collector.push(
     encoder.encode(
-      'data: {"type":"chat.completion.chunk","choices":[{"delta":{"content":"好"}}]}\n\n',
+      'data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"好"}}]}\n\n',
     ),
     1_500,
   )
+  collector.push(encoder.encode("data: [DONE]\n\n"), 1_800)
 
   assert.equal(collector.firstOutputMs(1_000), 500)
+  assert.equal(collector.terminal(), "completed")
 })
