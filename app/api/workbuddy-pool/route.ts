@@ -55,13 +55,14 @@ export async function GET() {
  item.balanceError = errorMessage(error)
  }
  }
- const lastRunDate = schedule.lastRunByUid[entry.uid]
- if (lastRunDate) {
-   item.dailyStatus = {
-     lastRunDate,
-     lastResult: schedule.lastResultByUid?.[entry.uid],
-     needsRun: lastRunDate !== today,
-   }
+  const lastRunDate = schedule.lastRunByUid[entry.uid]
+  const lastResult = schedule.lastResultByUid?.[entry.uid]
+  if (lastRunDate || lastResult) {
+    item.dailyStatus = {
+      lastRunDate: lastRunDate ?? "",
+      lastResult,
+      needsRun: lastRunDate !== today || schedule.retryPendingByUid?.[entry.uid] === true,
+    }
  }
  enriched.push(item)
  }

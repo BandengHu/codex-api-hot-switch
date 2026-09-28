@@ -1,7 +1,13 @@
 import "server-only"
 
 import type { WorkbuddyAccount } from "./account"
-import { asNumber, realmBase, taskFetch, WorkbuddyTaskApiError } from "./api-client"
+import {
+ asNumber,
+ realmBase,
+ taskFetch,
+ type TaskFetchInit,
+ WorkbuddyTaskApiError,
+} from "./api-client"
 import { isGlobalAccount } from "./task-api"
 
 /**
@@ -18,6 +24,15 @@ import { isGlobalAccount } from "./task-api"
 
 /**签到 /礼包 /补偿三类「已领过」文案（实测原文）。 */
 const ALREADY_DONE_MARKERS = ["已签到", "已领取", "无法重复领取", "未开启", "已过期"]
+
+function dailyTaskFetch(
+ account: WorkbuddyAccount,
+ url: string,
+ init: TaskFetchInit,
+ context: string,
+) {
+ return taskFetch(account, url, { ...init, retry: true }, context)
+}
 
 /**
  * 判定错误是否为「今天已经领过了」这类幂等拒绝。
@@ -38,13 +53,13 @@ export async function dailyCheckin(account: WorkbuddyAccount) {
  const path = isGlobalAccount(account)
  ? "/billing/meter/daily-checkin"
  : "/v2/billing/meter/daily-checkin"
- await taskFetch(account, `${base.billing}${path}`, { method: "POST", body: {} }, "每日签到")
+ await dailyTaskFetch(account, `${base.billing}${path}`, { method: "POST", body: {} }, "每日签到")
 }
 
 /**新手礼包（每号一次，已领返回幂等错误）。返回获得的积分。 */
 export async function claimGift(account: WorkbuddyAccount): Promise<number> {
  const base = realmBase(account)
- const record = await taskFetch(
+ const record = await dailyTaskFetch(
  account,
  `${base.billing}/billing/meter/claim-gift`,
  { method: "POST", body: {} },
@@ -56,7 +71,7 @@ export async function claimGift(account: WorkbuddyAccount): Promise<number> {
 /**活动补偿（有则领，无则幂等错误）。返回获得的积分。 */
 export async function claimCompensation(account: WorkbuddyAccount): Promise<number> {
  const base = realmBase(account)
- const record = await taskFetch(
+ const record = await dailyTaskFetch(
  account,
  `${base.billing}/billing/meter/claim-compensation`,
  { method: "POST", body: {} },
@@ -87,7 +102,7 @@ export interface StreakState {
 /**连登完整状态（growth域）：天数、补签卡余额、各档位可兑换状态。 */
 export async function fetchStreakState(account: WorkbuddyAccount): Promise<StreakState> {
  const base = realmBase(account)
- const record = await taskFetch(
+ const record = await dailyTaskFetch(
  account,
  `${base.chat}/activity/growth/streak`,
  { method: "GET" },
@@ -146,7 +161,7 @@ export async function redeemStreakTier(account: WorkbuddyAccount, tier: string) 
 /**当前抽奖次数（只能由连登兑换获得）。 */
 export async function fetchLotteryChances(account: WorkbuddyAccount): Promise<number> {
  const base = realmBase(account)
- const record = await taskFetch(
+ const record = await dailyTaskFetch(
  account,
  `${base.chat}/activity/growth/lottery/summary`,
  { method: "GET" },
@@ -171,7 +186,7 @@ export async function drawLottery(account: WorkbuddyAccount): Promise<string> {
 /**昨日是否漏签（热力图 cell score==0）。 */
 export async function missedYesterday(account: WorkbuddyAccount): Promise<boolean> {
  const base = realmBase(account)
- const record = await taskFetch(
+ const record = await dailyTaskFetch(
  account,
  `${base.chat}/activity/growth/heatmap`,
  { method: "GET" },
@@ -209,7 +224,7 @@ export interface BuddyInfo {
 /**当前猫档案；`undefined` 表示无猫（上游 `data.buddy` 为 null）。 */
 export async function fetchBuddy(account: WorkbuddyAccount): Promise<BuddyInfo | undefined> {
  const base = realmBase(account)
- const record = await taskFetch(
+ const record = await dailyTaskFetch(
  account,
  `${base.chat}/activity/growth/buddy/info`,
  { method: "GET" },
@@ -228,7 +243,7 @@ export async function fetchBuddy(account: WorkbuddyAccount): Promise<BuddyInfo |
 /**同意 Buddy 协议（幂等，重复调用无副作用）。 */
 export async function agreeBuddyTerms(account: WorkbuddyAccount) {
  const base = realmBase(account)
- await taskFetch(
+ await dailyTaskFetch(
  account,
  `${base.chat}/activity/growth/buddy/agreement`,
  { method: "POST", body: { agree: true } },
@@ -261,7 +276,7 @@ export interface TravelState {
 /**猫猫旅行状态（growth域）。 */
 export async function fetchTravelState(account: WorkbuddyAccount): Promise<TravelState> {
  const base = realmBase(account)
- const record = await taskFetch(
+ const record = await dailyTaskFetch(
  account,
  `${base.chat}/activity/growth/buddy/travel/status`,
  { method: "GET" },

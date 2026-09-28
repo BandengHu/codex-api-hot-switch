@@ -58,7 +58,7 @@ export async function fetchSchoolShareState(
   const record = await taskFetch(
     account,
     `${base.billing}${SCHOOL_BASE}/tasks`,
-    { method: "GET" },
+    { method: "GET", retry: true },
     "查询开学季分享任务",
   )
   return parseSchoolShareRecord(record.data)

@@ -82,6 +82,27 @@ export interface TaskFetchInit {
  skipEnvelope?: boolean
  debug?: boolean
  timeoutMs?: number
+ /**仅对网络、超时、429与5xx做有限重试；仅供可安全重放的调用使用。 */
+ retry?: boolean
+ /**测试或特殊调用可覆盖退避间隔；长度决定额外重试次数。 */
+ retryDelaysMs?: number[]
+}
+
+const DEFAULT_RETRY_DELAYS_MS = [1_000, 3_000]
+
+export function isRetryableWorkbuddyTaskError(error: unknown) {
+ if (!(error instanceof WorkbuddyTaskApiError)) return false
+ if (
+  error.status === 408 ||
+  error.status === 425 ||
+  error.status === 429 ||
+  (error.status !== undefined && error.status >= 500)
+ ) {
+  return true
+ }
+ if (error.status !== undefined || error.payload !== undefined) return false
+ return /fetch failed|请求超时|network|socket|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|UND_ERR/i
+  .test(error.message)
 }
 
 /**由 uid稳定派生36位标识（machineId/sessionId/qimei复用，模拟固定设备）。 */
@@ -159,61 +180,76 @@ export async function taskFetch(
  context: string,
 ): Promise<Record<string, unknown>> {
  const fingerprint = init.fingerprint ?? "billing"
- const startedAt = Date.now()
- let response: Response | undefined
  const headers = buildHeaders(account, init)
+ const retryDelays = init.retry ? (init.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS) : []
 
- const controller = new AbortController()
- const timeout = setTimeout(() => controller.abort(), init.timeoutMs ??20_000)
+ for (let attempt = 0; ; attempt += 1) {
+  const startedAt = Date.now()
+  let response: Response | undefined
+  let retryDelay: number | undefined
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), init.timeoutMs ??20_000)
+  try {
+   response = await fetch(url, {
+    method: init.method,
+    headers,
+    body: init.body === undefined ? undefined : JSON.stringify(init.body),
+    signal: controller.signal,
+    cache: "no-store",
+   })
+   const text = await response.text()
 
- try {
- response = await fetch(url, {
- method: init.method,
- headers,
- body: init.body === undefined ? undefined : JSON.stringify(init.body),
- signal: controller.signal,
- cache: "no-store",
- })
- const text = await response.text()
+   if (!response.ok) {
+    throw new WorkbuddyTaskApiError(
+     `${context}：HTTP ${response.status} ${text.trim().slice(0,200)}`,
+     text.trim().slice(0,1000),
+     response.status,
+    )
+   }
 
- if (!response.ok) {
- throw new WorkbuddyTaskApiError(
- `${context}：HTTP ${response.status} ${text.trim().slice(0,200)}`,
- text.trim().slice(0,1000),
- response.status,
- )
- }
+   let payload: unknown
+   try {
+    payload = JSON.parse(text)
+   } catch {
+    throw new WorkbuddyTaskApiError(
+     `${context}：响应不是 JSON：${text.trim().slice(0,180)}`,
+     text.trim().slice(0,1000),
+    )
+   }
 
- let payload: unknown
- try {
- payload = JSON.parse(text)
- } catch {
- throw new WorkbuddyTaskApiError(
- `${context}：响应不是 JSON：${text.trim().slice(0,180)}`,
- text.trim().slice(0,1000),
- )
- }
-
- if (init.skipEnvelope) {
- return (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>
- }
- return assertOk(payload, context)
- } catch (error) {
- if (error instanceof WorkbuddyTaskApiError) throw error
- if (error instanceof Error && error.name === "AbortError") {
- throw new WorkbuddyTaskApiError(`${context}：请求超时`, undefined)
- }
- throw new WorkbuddyTaskApiError(
- `${context}：${error instanceof Error ? error.message : String(error)}`,
- undefined,
- )
- } finally {
- clearTimeout(timeout)
- if (init.debug) {
- await appendTaskDebug(
- `[workbuddy-task] ${new Date().toISOString()} ${context} ${init.method} ${url} fingerprint=${fingerprint} status=${response?.status} durationMs=${Date.now() - startedAt}`,
- )
- }
+   if (init.skipEnvelope) {
+    return (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>
+   }
+   return assertOk(payload, context)
+  } catch (error) {
+   const normalized = error instanceof WorkbuddyTaskApiError
+    ? error
+    : error instanceof Error && error.name === "AbortError"
+    ? new WorkbuddyTaskApiError(`${context}：请求超时`, undefined)
+    : new WorkbuddyTaskApiError(
+     `${context}：${error instanceof Error ? error.message : String(error)}`,
+     undefined,
+    )
+   retryDelay = retryDelays[attempt]
+   if (retryDelay === undefined || !isRetryableWorkbuddyTaskError(normalized)) {
+    throw normalized
+   }
+   if (init.debug) {
+    await appendTaskDebug(
+     `[workbuddy-task] ${new Date().toISOString()} ${context} retry=${attempt +1}/${retryDelays.length} delayMs=${retryDelay} error=${normalized.message}`,
+    )
+   }
+  } finally {
+   clearTimeout(timeout)
+   if (init.debug) {
+    await appendTaskDebug(
+     `[workbuddy-task] ${new Date().toISOString()} ${context} ${init.method} ${url} fingerprint=${fingerprint} attempt=${attempt +1} status=${response?.status} durationMs=${Date.now() - startedAt}`,
+    )
+   }
+  }
+  if (retryDelay && retryDelay > 0) {
+   await new Promise((resolve) => setTimeout(resolve, retryDelay))
+  }
  }
 }
 

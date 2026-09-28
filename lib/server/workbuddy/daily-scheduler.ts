@@ -3,8 +3,12 @@ import "server-only"
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { hotSwitchDataDir } from "@/lib/server/state-store"
-import type { DailyRunResult } from "./daily-automation"
-import { runDailyRewards } from "./daily-automation"
+import { isRetryableWorkbuddyTaskError } from "./api-client"
+import {
+  dailyRunNeedsRetry,
+  runDailyRewards,
+  type DailyRunResult,
+} from "./daily-automation"
 import { sleep } from "./task-query"
 import { tryLockTaskAccount, unlockTaskAccount } from "./task-lock"
 import {
@@ -15,10 +19,11 @@ import {
 } from "./task-pool-store"
 
 export interface DailyScheduleState {
-  version: 1
-  /**CST 自然日；同一天只自动跑一次，失败也不当日重试。 */
+  version: 2
+  /**CST 自然日；永久失败当天不再自动执行。 */
   lastRunByUid: Record<string, string>
   lastResultByUid?: Record<string, string>
+  retryPendingByUid?: Record<string, boolean>
 }
 
 export interface DailySchedulerCycleResult {
@@ -51,10 +56,10 @@ export function formatScheduleDay(value: Date) {
 
 export function normalizeDailyScheduleState(value: unknown): DailyScheduleState {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { version: 1, lastRunByUid: {} }
+    return { version: 2, lastRunByUid: {} }
   }
   const raw = value as Record<string, unknown>
-  if (raw.version !== 1) return { version: 1, lastRunByUid: {} }
+  if (raw.version !== 1 && raw.version !== 2) return { version: 2, lastRunByUid: {} }
   const normalizeMap = (input: unknown) => {
     if (!input || typeof input !== "object" || Array.isArray(input)) return undefined
     const output: Record<string, string> = {}
@@ -65,11 +70,27 @@ export function normalizeDailyScheduleState(value: unknown): DailyScheduleState 
   }
   const lastRunByUid = normalizeMap(raw.lastRunByUid) ?? {}
   const lastResultByUid = normalizeMap(raw.lastResultByUid)
+  const retryPendingByUid: Record<string, boolean> = {}
+  if (raw.version === 1) {
+    for (const [uid, summary] of Object.entries(lastResultByUid ?? {})) {
+      if (lastRunByUid[uid] && legacySummaryNeedsRetry(summary)) retryPendingByUid[uid] = true
+    }
+  } else if (raw.retryPendingByUid && typeof raw.retryPendingByUid === "object" && !Array.isArray(raw.retryPendingByUid)) {
+    for (const [uid, pending] of Object.entries(raw.retryPendingByUid)) {
+      if (uid && pending === true && lastRunByUid[uid]) retryPendingByUid[uid] = true
+    }
+  }
   return {
-    version: 1,
+    version: 2,
     lastRunByUid,
     ...(lastResultByUid ? { lastResultByUid } : {}),
+    ...(Object.keys(retryPendingByUid).length ? { retryPendingByUid } : {}),
   }
+}
+
+function legacySummaryNeedsRetry(summary: string) {
+  return /fetch failed|请求超时|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|HTTP (?:408|425|429|5\d\d)/i
+    .test(summary)
 }
 
 export async function readDailyScheduleState(): Promise<DailyScheduleState> {
@@ -77,7 +98,7 @@ export async function readDailyScheduleState(): Promise<DailyScheduleState> {
     const raw = await readFile(schedulePath(), "utf8")
     return normalizeDailyScheduleState(JSON.parse(raw))
   } catch {
-    return { version: 1, lastRunByUid: {} }
+    return { version: 2, lastRunByUid: {} }
   }
 }
 
@@ -89,13 +110,17 @@ export async function writeDailyScheduleState(state: DailyScheduleState) {
   await rename(tempPath, schedulePath())
 }
 
-/**只挑今天还没跑的可用账号；禁用账号不参与自动化。 */
+/**挑出今天未运行或待重试的可用账号；禁用账号不参与自动化。 */
 export function pickAccountsNeedingRun(
   entries: WorkbuddyPoolEntry[],
   state: DailyScheduleState,
   today = formatScheduleDay(new Date()),
 ) {
-  return entries.filter((entry) => !entry.disabled && state.lastRunByUid[entry.uid] !== today)
+  return entries.filter((entry) => {
+    if (entry.disabled) return false
+    if (state.lastRunByUid[entry.uid] !== today) return true
+    return state.retryPendingByUid?.[entry.uid] === true
+  })
 }
 
 export function summarizeDailyRun(result: DailyRunResult) {
@@ -106,20 +131,36 @@ export function summarizeDailyRun(result: DailyRunResult) {
     ...(errors.length
       ? [`异常 ${errors.length}项：${errors.map((step) => `${step.label} ${step.message}`).join("；")}`]
       : []),
+    ...(dailyRunNeedsRetry(result) ? ["等待自动重试"] : []),
   ]
   const text = parts.join("；")
   return Array.from(text).slice(0, RESULT_PREVIEW_LIMIT).join("")
 }
 
-/**跑完就落日期（含异常步骤）；下一次 2 小时巡检自然跳过。 */
+/**记录结果和结构化待重试状态；非瞬时错误当天不重复。 */
 export async function recordDailyRun(uid: string, result: DailyRunResult) {
   const state = await readDailyScheduleState()
-  state.lastRunByUid[uid] = formatScheduleDay(new Date())
-  state.lastResultByUid = {
-    ...(state.lastResultByUid ?? {}),
-    [uid]: summarizeDailyRun(result),
+  await writeDailyScheduleState(updateDailyRunState(
+    state, uid, summarizeDailyRun(result), dailyRunNeedsRetry(result),
+  ))
+}
+
+export function updateDailyRunState(
+  state: DailyScheduleState,
+  uid: string,
+  summary: string,
+  retryable: boolean,
+  day = formatScheduleDay(new Date()),
+): DailyScheduleState {
+  const retryPendingByUid = { ...(state.retryPendingByUid ?? {}) }
+  if (retryable) retryPendingByUid[uid] = true
+  else delete retryPendingByUid[uid]
+  return {
+    version: 2,
+    lastRunByUid: { ...state.lastRunByUid, [uid]: day },
+    lastResultByUid: { ...(state.lastResultByUid ?? {}), [uid]: summary },
+    ...(Object.keys(retryPendingByUid).length ? { retryPendingByUid } : {}),
   }
-  await writeDailyScheduleState(state)
 }
 
 function errorText(error: unknown) {
@@ -156,14 +197,22 @@ export async function maybeRunDailyForAllAccounts(): Promise<DailySchedulerCycle
     isFirstRun = false
     try {
       let summary: string
+      let dailyResult: DailyRunResult | undefined
+      let runError: unknown
       try {
         const account = await readPoolAccount(entry.uid)
-        const dailyResult = await runDailyRewards(account)
-        summary = summarizeDailyRun(dailyResult)
+        dailyResult = await runDailyRewards(account)
       } catch (error) {
-        summary = truncateResult(`执行失败：${errorText(error)}`)
+        runError = error
       }
-      await recordDailyRunText(entry.uid, summary)
+      if (dailyResult) {
+        summary = summarizeDailyRun(dailyResult)
+        await recordDailyRun(entry.uid, dailyResult)
+      } else {
+        const retryable = isRetryableWorkbuddyTaskError(runError)
+        summary = truncateResult(`执行失败：${errorText(runError)}${retryable ? "；等待自动重试" : ""}`)
+        await recordDailyRunError(entry.uid, summary, retryable)
+      }
       result.ran.push({ uid: entry.uid, result: summary })
     } finally {
       unlockTaskAccount(entry.uid)
@@ -172,14 +221,9 @@ export async function maybeRunDailyForAllAccounts(): Promise<DailySchedulerCycle
   return result
 }
 
-async function recordDailyRunText(uid: string, summary: string) {
+async function recordDailyRunError(uid: string, summary: string, retryable: boolean) {
   const state = await readDailyScheduleState()
-  state.lastRunByUid[uid] = formatScheduleDay(new Date())
-  state.lastResultByUid = {
-    ...(state.lastResultByUid ?? {}),
-    [uid]: summary,
-  }
-  await writeDailyScheduleState(state)
+  await writeDailyScheduleState(updateDailyRunState(state, uid, summary, retryable))
 }
 
 type SchedulerScope = typeof globalThis & {

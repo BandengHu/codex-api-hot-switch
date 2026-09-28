@@ -1,7 +1,7 @@
 import "server-only"
 
 import type { WorkbuddyAccount } from "./account"
-import { uniqueId } from "./api-client"
+import { isRetryableWorkbuddyTaskError, uniqueId, WorkbuddyTaskApiError } from "./api-client"
 import {
  adoptFirstBuddy,
  agreeBuddyTerms,
@@ -38,10 +38,8 @@ import {
  * 活跃上报（点亮连登 + 解锁领养） → 补签保连登 → 签到 → 礼包/补偿 → 连登兑换 →
  * 抽奖 → 猫猫旅行。
  *
- * 每一步都幂等：上游对「已领过」返回业务错误，这里按 `isAlreadyDoneError` 记成
- * 「今天已领」而不是失败；未解锁档位（403）直接跳过。
- *
- * **不自动重试**：一次点到什么就是什么，失败原因原样回报给界面。
+ * 领取类请求的「已领过」响应按 `isAlreadyDoneError` 跳过；未解锁档位（403）
+ * 同样跳过。仅可安全重放的请求在网络失败时立即重试，其余瞬时失败留待巡检。
  */
 
 export interface DailyStepResult {
@@ -52,6 +50,8 @@ export interface DailyStepResult {
  message: string
  /**该步骤实际入账的积分（能取到时才有）。 */
  credit?: number
+ /**网络、超时、限流或服务端错误；调度器应继续补跑。 */
+ retryable?: boolean
 }
 
 export interface DailyRunResult {
@@ -69,12 +69,13 @@ export async function runDailyRewards(account: WorkbuddyAccount): Promise<DailyR
  return step
  }
  const fail = (key: string, label: string, error: unknown) =>
- push({
+  push({
  key,
  label,
- status: "error",
- message: error instanceof Error ? error.message : String(error),
- })
+  status: "error",
+  message: error instanceof Error ? error.message : String(error),
+  ...(isRetryableWorkbuddyTaskError(error) ? { retryable: true } : {}),
+  })
 
  // 国际站没有 CN 任务/签到体系（上游口径），不发起任何调用。
  if (isGlobalAccount(account)) {
@@ -103,6 +104,10 @@ export async function runDailyRewards(account: WorkbuddyAccount): Promise<DailyR
 
  const creditTotal = steps.reduce((sum, step) => sum + (step.credit ??0),0)
  return { steps, creditTotal, ...(streakDays === undefined ? {} : { streakDays }) }
+}
+
+export function dailyRunNeedsRetry(result: DailyRunResult) {
+ return result.steps.some((step) => step.retryable === true)
 }
 
 /**
@@ -138,6 +143,7 @@ async function stepSchoolShare(
         label,
         status: "skipped",
         message: "分享已上报，但进度未点亮（下次自动重试）",
+        retryable: true,
       })
       return
     }
@@ -177,7 +183,10 @@ async function stepActivity(
  await sleep(REPORT_GAP_MS)
  const days = await fetchStreakState(account)
  .then((state) => state.days)
- .catch(() => undefined)
+ .catch((error) => {
+  if (isRetryableWorkbuddyTaskError(error)) throw error
+  return undefined
+ })
  push({
  key: "activity",
  label,
@@ -304,6 +313,8 @@ async function stepStreak(
 
  const messages: string[] = []
  let credit =0
+ let retryable = false
+ let failed = false
  for (const tier of redeemable) {
  try {
  await redeemStreakTier(account, tier.tier)
@@ -314,15 +325,20 @@ async function stepStreak(
  } catch (error) {
  // 未解锁（403）属预期：状态字段可能滞后，静默跳过。
  if (isAlreadyDoneError(error) || isForbidden(error)) continue
+ failed = true
+ retryable ||= isRetryableWorkbuddyTaskError(error)
  messages.push(`${tier.tier} 失败：${error instanceof Error ? error.message : String(error)}`)
  }
  }
  push({
  key: "streak",
  label,
- status: messages.length ? "done" : "skipped",
- message: messages.length ? `已兑换：${messages.join("；")}` : `连登 ${state.days}天，档位暂不可兑`,
+ status: failed ? "error" : messages.length ? "done" : "skipped",
+ message: messages.length
+  ? `${failed ? "兑换结果" : "已兑换"}：${messages.join("；")}`
+  : `连登 ${state.days}天，档位暂不可兑`,
  ...(credit >0 ? { credit } : {}),
+ ...(retryable ? { retryable: true } : {}),
  })
  return state.days
 }
@@ -374,6 +390,9 @@ async function stepTravel(
  await adoptFirstBuddy(account)
  push({ key: "travel", label, status: "done", message: "已领养第一只猫猫（+300分）", credit: 300 })
  } catch (error) {
+ if (!(error instanceof WorkbuddyTaskApiError &&
+   error.status === 400 &&
+   error.message.includes("first_buddy task not completed yet"))) throw error
  // 门槛未达标（当日活跃上报不足）属预期，明天再试，不当失败。
  push({
  key: "travel",
