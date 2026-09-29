@@ -37,6 +37,11 @@ const nextConfig = {
   outputFileTracingExcludes: {
     "/api/codex-sessions": runtimeFileSystemTraceExcludes,
     "/api/wecom-bridge": runtimeFileSystemTraceExcludes,
+    // 国际版号池会按动态路径读写数据目录，NFT 会误把整个项目卷进追踪清单，
+    // 这里与上面两个路由同样处理，避免 standalone 把源码/dist 一并拷进去。
+    "/api/workbuddy-global-pool": runtimeFileSystemTraceExcludes,
+    "/api/workbuddy-global-pool/[uid]": runtimeFileSystemTraceExcludes,
+    "/api/workbuddy-global-pool/login": runtimeFileSystemTraceExcludes,
   },
 }
 

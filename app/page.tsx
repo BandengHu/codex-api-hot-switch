@@ -14,6 +14,7 @@ const VIEW_KEYS = new Set<ViewKey>([
   "codex-sessions",
   "wecom-bridge",
   "workbuddy-pool",
+  "workbuddy-global-pool",
   "settings",
 ])
 

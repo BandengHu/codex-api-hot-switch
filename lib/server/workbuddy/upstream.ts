@@ -8,12 +8,15 @@ import {
 import type { HeaderEntry, Provider, ResolvedProvider } from "@/lib/types"
 import {
   isWorkbuddyProvider,
+  workbuddyCatalogError,
   workbuddyCatalogUrl,
   workbuddyCatalogModels,
+  workbuddyRealmOfProvider,
   workbuddySiteUrl,
 } from "@/lib/workbuddy-provider"
 import { getSystemProxyDispatcher } from "@/lib/server/proxy/system-proxy"
 import type { WorkbuddyAccount } from "./account"
+import { readActiveGlobalPoolAccount } from "./global-pool-store"
 import { readActivePoolAccount } from "./pool-account"
 
 const MAX_CATALOG_BYTES = 2 * 1024 * 1024
@@ -22,22 +25,28 @@ const CATALOG_TIMEOUT_MS = 15_000
 /**
  * 把当前生效账号的登录态写进供应商：token 落到每个端点，账号相关的头补齐。
  *
- * 生效账号 = 号池里被手动选中的那个（默认本机桌面端登录态）。号池**不做自动轮转**，
- * 换号只发生在用户点「切换」时，所以这里每次请求现读一次，切完立刻生效。
+ * 生效账号 = 号池里被手动选中的那个。**按 realm 取池**：
+ * - `cn`（国内站 www.codebuddy.cn / copilot.tencent.com）→ 国内站号池，默认本机桌面端登录态；
+ * - `global`（国际站 www.workbuddy.ai）→ 国际版号池，默认池里第一个可用账号。
+ *
+ * 两个池都**不做自动轮转**，换号只发生在用户点「设为转发账号」时，所以这里每次请求
+ * 现读一次，切完立刻生效。
  *
  * 非 WorkBuddy 供应商原样返回——这批头只有它认。
  */
 export async function withWorkbuddyCredentials(provider: Provider): Promise<Provider> {
- if (!isWorkbuddyProvider(provider)) return provider
- const account = await readActivePoolAccount()
- return {
- ...provider,
- endpoints: provider.endpoints.map((endpoint) => ({
- ...endpoint,
- apiKey: account.accessToken,
- })),
- headers: withAccountHeaders(provider.headers, account, provider),
-}
+  if (!isWorkbuddyProvider(provider)) return provider
+  const realm = workbuddyRealmOfProvider(provider)
+  const account =
+    realm === "global" ? await readActiveGlobalPoolAccount() : await readActivePoolAccount()
+  return {
+    ...provider,
+    endpoints: provider.endpoints.map((endpoint) => ({
+      ...endpoint,
+      apiKey: account.accessToken,
+    })),
+    headers: withAccountHeaders(provider.headers, account, provider),
+  }
 }
 
 export async function withWorkbuddyTargetCredentials<T extends { provider: ResolvedProvider }>(
@@ -79,14 +88,16 @@ function withAccountHeaders(
 }
 
 /**
- * 账号可用的模型目录。列表接口不在 chat 前缀下，是站点根上的 `/v3/config`，
- * 和桌面端配置接口同一份数据。
+ * 账号可用的模型目录。列表接口不在 chat 前缀下，两个 realm 路径不同：
+ * - 国内站：站点根上的 `/v3/config`，和桌面端配置接口同一份数据；
+ * - 国际站：`/v2/enterprises/personal/models`，信封是 `{code, data:{models:[]}}`。
  */
 export async function discoverWorkbuddyCatalogModels(
   provider: Provider,
 ): Promise<ProviderModelDiscoveryResult> {
   const endpoint =
     provider.endpoints.find((candidate) => candidate.enabled) ?? primaryProviderEndpoint(provider)
+  const realm = workbuddyRealmOfProvider(provider)
   const url = workbuddyCatalogUrl(endpoint.baseUrl)
   const headers = new Headers({ accept: "application/json" })
   for (const entry of provider.headers) {
@@ -124,9 +135,12 @@ export async function discoverWorkbuddyCatalogModels(
     } catch {
       throw new Error(`WorkBuddy 没有返回 JSON 模型目录：${text.trim().slice(0, 180)}`)
     }
+    // 国际站信封带业务码，code != 0 时 data.models 可能是空的，先把原因带出来。
+    const catalogError = workbuddyCatalogError(payload)
+    if (catalogError) throw new Error(`获取模型失败：${catalogError}`)
     return {
       endpointName: endpoint.name,
-      models: workbuddyCatalogModels(payload),
+      models: workbuddyCatalogModels(payload, realm),
       fetchedAt: new Date().toISOString(),
     }
   } catch (error) {

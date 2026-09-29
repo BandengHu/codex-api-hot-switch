@@ -6,6 +6,13 @@ import type {
   ReasoningDialect,
 } from "@/lib/types"
 import { createProviderEndpoint } from "@/lib/provider-endpoints"
+import {
+  WORKBUDDY_API_BASE_URL,
+  WORKBUDDY_GLOBAL_API_BASE_URL,
+  WORKBUDDY_REASONING_DIALECT,
+  workbuddyPresetModelSpecs,
+  workbuddyStaticHeaders,
+} from "@/lib/workbuddy-provider"
 
 export interface ProviderPresetModel {
   displayName: string
@@ -192,7 +199,56 @@ const OPENAI_OFFICIAL_PRESET_MODELS: ProviderPresetModel[] = [
   ...OPENAI_CODEX_PRESET_MODELS,
 ]
 
+/**
+ * WorkBuddy 预设模型。
+ *
+ * 国内站与国际站共用同一份模型规格（`workbuddyPresetModelSpecs()`），上游目录里
+ * 还有别的模型时，控制台「获取模型」会按各自 realm 的目录接口补全。
+ */
+const WORKBUDDY_PRESET_MODELS_FOR_PRESET: ProviderPresetModel[] = workbuddyPresetModelSpecs().map(
+  (spec) => ({
+    displayName: spec.displayName,
+    modelId: spec.modelId,
+    capabilities: [
+      "chat",
+      ...(spec.supportsReasoning ? ["reasoning"] : []),
+      ...(spec.supportsVision ? ["vision"] : []),
+      "tools",
+    ],
+    contextLength: spec.contextLength,
+    supportsReasoning: spec.supportsReasoning,
+    reasoningDialect: WORKBUDDY_REASONING_DIALECT,
+    supportsVision: spec.supportsVision,
+  }),
+)
+
 export const PROVIDER_PRESETS: ProviderPreset[] = [
+  {
+    id: "workbuddy-cn",
+    name: "WorkBuddy 国内账号",
+    category: "国内",
+    protocol: "openai-chat",
+    baseUrl: WORKBUDDY_API_BASE_URL,
+    timeoutMs: 180000,
+    reasoningDialect: WORKBUDDY_REASONING_DIALECT,
+    headers: workbuddyStaticHeaders().map((header) => ({ key: header.key, value: header.value })),
+    apiKeyPlaceholder: "无需填写，请求时自动注入本机/号池登录态",
+    note: "腾讯 CodeBuddy 国内站（www.codebuddy.cn）本机账号。上游是 OpenAI Chat 协议，下游的 /v1/responses 会由本地中转转成 Chat 再转发。凭据按请求从「WorkBuddy 号池」当前生效账号注入，这里不用填 Key。",
+    models: WORKBUDDY_PRESET_MODELS_FOR_PRESET,
+  },
+  {
+    id: "workbuddy-global",
+    name: "WorkBuddy 国际账号",
+    category: "海外",
+    protocol: "openai-chat",
+    baseUrl: WORKBUDDY_GLOBAL_API_BASE_URL,
+    timeoutMs: 180000,
+    reasoningDialect: WORKBUDDY_REASONING_DIALECT,
+    headers: workbuddyStaticHeaders().map((header) => ({ key: header.key, value: header.value })),
+    apiKeyPlaceholder: "无需填写，请求时自动注入国际版号池登录态",
+    note: "WorkBuddy 国际站（www.workbuddy.ai）账号，与国内站相互独立。凭据按请求从「WorkBuddy 国际版号池」当前生效账号注入（可在号池页指定用哪个账号）。模型目录走 /v2/enterprises/personal/models，并补上目录未列出的 deepseek-v4.1-flash / deepseek-v3。",
+    models: WORKBUDDY_PRESET_MODELS_FOR_PRESET,
+  },
   {
     id: "sharesai-relay",
     name: "SharesAI / 白白中转",

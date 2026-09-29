@@ -17,6 +17,26 @@ export const WORKBUDDY_API_BASE_URL = "https://www.codebuddy.cn/v2"
 export const WORKBUDDY_CREDENTIAL_PLACEHOLDER = "workbuddy-local-account"
 export const WORKBUDDY_REASONING_DIALECT = "workbuddy-effort" as const
 
+/**
+ * 国际站（www.workbuddy.ai）realm。
+ *
+ * 与国内站共用 `/v2/plugin/auth/*` 设备授权流与 chat 接口，但上游口径不同。以下口径
+ * 直接对照开源实现 `ErfanBagheri404/WorkBuddy2API`（`auth.go` / `upstream.go`）：
+ * - 设备流平台标识 `workbuddy-ai`（国内站是 `CLI`）；
+ * - 模型目录在 `GET /v2/enterprises/personal/models`（国内站是站点根的 `/v3/config`）；
+ * - 上游请求头与国内站一致（`X-Product: SaaS` + `X-User-Id` + `X-Domain`）。
+ */
+export const WORKBUDDY_GLOBAL_PROVIDER_ID = "prov-workbuddy-global"
+export const WORKBUDDY_GLOBAL_ENDPOINT_ID = "prov-workbuddy-global-primary"
+export const WORKBUDDY_GLOBAL_API_BASE_URL = "https://www.workbuddy.ai/v2"
+export const WORKBUDDY_GLOBAL_CREDENTIAL_PLACEHOLDER = "workbuddy-global-account"
+export const WORKBUDDY_GLOBAL_PLATFORM = "workbuddy-ai"
+
+/** 上游 realm：国内站 `cn` / 国际站 `global`。 */
+export type WorkbuddyRealm = "cn" | "global"
+
+const WORKBUDDY_GLOBAL_HOSTS = new Set(["www.workbuddy.ai", "workbuddy.ai"])
+
 /** 上游按 User-Agent 认 CodeBuddy CLI 版本，缺了会直接拒掉配置接口。 */
 export const WORKBUDDY_CLI_VERSION = "2.137.1"
 export const WORKBUDDY_USER_AGENT = `CLI/${WORKBUDDY_CLI_VERSION} CodeBuddy/${WORKBUDDY_CLI_VERSION}`
@@ -108,11 +128,25 @@ export function workbuddyPresetModelIds(): string[] {
   return [...WORKBUDDY_MODEL_IDS]
 }
 
+/** 预设模型规格（不含 providerId / 生成 id），供内置供应商与预设供应商共用。 */
+export interface WorkbuddyPresetModelSpec {
+  displayName: string
+  modelId: string
+  contextLength: number
+  supportsReasoning: boolean
+  supportsVision: boolean
+}
+
+export function workbuddyPresetModelSpecs(): WorkbuddyPresetModelSpec[] {
+  return WORKBUDDY_PRESET_MODELS.map((preset) => ({ ...preset }))
+}
+
 /** 供应商是否指向 WorkBuddy 上游：内置 id 或任一已知官方域名。 */
 export function isWorkbuddyProvider(
   provider: Pick<Provider, "id" | "endpoints">,
 ): boolean {
   if (provider.id === WORKBUDDY_PROVIDER_ID) return true
+  if (provider.id === WORKBUDDY_GLOBAL_PROVIDER_ID) return true
   return provider.endpoints.some((endpoint) => isWorkbuddyBaseUrl(endpoint.baseUrl))
 }
 
@@ -121,9 +155,31 @@ export function isWorkbuddyBaseUrl(baseUrl: string) {
   return host ? WORKBUDDY_API_HOSTS.has(host) : false
 }
 
-/** 上游账号/模型目录接口，和 chat 前缀不同：`/v3/config` 挂在站点根上。 */
+/** 按 baseUrl 判定 realm；未知域名一律当国内站（保持既有行为）。 */
+export function workbuddyRealmOf(baseUrl: string): WorkbuddyRealm {
+  return WORKBUDDY_GLOBAL_HOSTS.has(hostnameOf(baseUrl)) ? "global" : "cn"
+}
+
+/** 供应商级别的 realm：显式国际版内置 id，或任一端点落在国际站域。 */
+export function workbuddyRealmOfProvider(
+  provider: Pick<Provider, "id" | "endpoints">,
+): WorkbuddyRealm {
+  if (provider.id === WORKBUDDY_GLOBAL_PROVIDER_ID) return "global"
+  return provider.endpoints.some((endpoint) => workbuddyRealmOf(endpoint.baseUrl) === "global")
+    ? "global"
+    : "cn"
+}
+
+/**
+ * 上游账号/模型目录接口，两个 realm 路径不同：
+ * - 国内站：站点根上的 `/v3/config`（与桌面端配置接口同一份数据）；
+ * - 国际站：`/v2/enterprises/personal/models`（对照 WorkBuddy2API `upstream.go`）。
+ */
 export function workbuddyCatalogUrl(baseUrl: string) {
   const url = new URL(baseUrl.trim() || WORKBUDDY_API_BASE_URL)
+  if (workbuddyRealmOf(baseUrl) === "global") {
+    return `${url.origin}/v2/enterprises/personal/models`
+  }
   return `${url.origin}/v3/config`
 }
 
@@ -166,6 +222,36 @@ export function workbuddyProviderTemplate(): Provider {
 }
 
 /**
+ * 国际版（www.workbuddy.ai）供应商模板。
+ *
+ * 与国内版并列的独立供应商：地址停在 `https://www.workbuddy.ai/v2`，凭据同样由
+ * `lib/server/workbuddy/upstream.ts` 在请求时从**国际版号池**注入，所以状态里只存占位 Key。
+ */
+export function workbuddyGlobalProviderTemplate(): Provider {
+  return {
+    id: WORKBUDDY_GLOBAL_PROVIDER_ID,
+    name: "WorkBuddy 国际账号",
+    protocol: "openai-chat",
+    endpoints: [
+      createProviderEndpoint(WORKBUDDY_GLOBAL_PROVIDER_ID, {
+        id: WORKBUDDY_GLOBAL_ENDPOINT_ID,
+        name: "国际站登录态",
+        baseUrl: WORKBUDDY_GLOBAL_API_BASE_URL,
+        apiKey: WORKBUDDY_GLOBAL_CREDENTIAL_PLACEHOLDER,
+      }),
+    ],
+    headers: workbuddyStaticHeaders(),
+    bodyOverride: "",
+    timeoutMs: 180_000,
+    reasoningDialect: WORKBUDDY_REASONING_DIALECT,
+    rawResponsesPassthrough: false,
+    enabled: true,
+    isDefault: false,
+    health: "healthy",
+  }
+}
+
+/**
  * 官方客户端会带的一批固定头。桌面端登录态相关的 `X-User-Id`、`X-Domain` 不在这里，
  * 它们随 token 一起在请求时注入。
  */
@@ -184,7 +270,7 @@ export function workbuddyStaticHeaders(): Provider["headers"] {
 }
 
 export function workbuddyPresetModels(): Model[] {
-  return WORKBUDDY_PRESET_MODELS.map((preset) => ({
+  return workbuddyPresetModelSpecs().map((preset) => ({
     id: workbuddyModelId(preset.modelId),
     providerId: WORKBUDDY_PROVIDER_ID,
     displayName: preset.displayName,
@@ -228,12 +314,59 @@ export function seedWorkbuddyBuiltin(
 }
 
 /**
- * `/v3/config` 的 `data.models[]` 转成通用模型条目。
+ * 上游模型目录的响应信封。
+ *
+ * 两个 realm 都是 `{ code, data: { models: [...] } }`，`code === 0` 才算成功；
+ * 失败时把上游的 message 带出来（对照 WorkBuddy2API `upstream.go` 的 `envelope.Code != 0`）。
+ * 国内站 `/v3/config` 不带 `code`，这时返回空串、不拦截。
+ */
+export function workbuddyCatalogError(payload: unknown): string {
+  const root = asRecord(payload)
+  const code = root.code
+  if (typeof code !== "number" || code === 0) return ""
+  const message = asString(root.message) || asString(root.msg) || asString(root.error)
+  return message ? `上游返回 code=${code}：${message}` : `上游返回 code=${code}`
+}
+
+/**
+ * 国际站 `/v2/enterprises/personal/models` 里**没有**、但 `/v2/chat/completions`
+ * 直接认的模型名（对照 WorkBuddy2API `upstream.go` 的 `extraModels`）。
+ */
+const WORKBUDDY_GLOBAL_EXTRA_MODELS: Array<{ id: string; displayName: string }> = [
+  { id: "deepseek-v4.1-flash", displayName: "DeepSeek-V4.1-Flash" },
+  { id: "deepseek-v3", displayName: "DeepSeek-V3" },
+]
+
+/** 目录条目转成通用模型条目。 */
+function toDiscoveredModel(record: Record<string, unknown>): DiscoveredModel | null {
+  const id = asString(record.id)
+  if (!id) return null
+  const contextLength = asNumber(record.maxInputTokens)
+  if (contextLength <= 0) return null
+  return {
+    id,
+    displayName: asString(record.name) || id,
+    contextLength: clampWorkbuddyContextLength(contextLength),
+    supportsReasoning: record.supportsReasoning === true,
+    supportsVision: record.supportsImages === true,
+    supportsTools: record.supportsToolCall === true,
+  }
+}
+
+/**
+ * `/v3/config`（国内站）与 `/v2/enterprises/personal/models`（国际站）的
+ * `data.models[]` 转成通用模型条目。
  *
  * 只保留带 token 上限的条目：上游把纯生图模型（`hunyuan-image-alpha` 之类）也放在同一份
  * 列表里，但它们没有上下文长度，也走不了 chat 接口。
+ *
+ * 国际站额外并入 `extraModels`：那批模型 chat 接口直接认，但目录里不列（对照
+ * WorkBuddy2API `upstream.go`），不补的话在控制台里看不到。
  */
-export function workbuddyCatalogModels(payload: unknown): DiscoveredModel[] {
+export function workbuddyCatalogModels(
+  payload: unknown,
+  realm: WorkbuddyRealm = "cn",
+): DiscoveredModel[] {
   const models = asRecord(asRecord(payload).data).models
   if (!Array.isArray(models)) return []
   const seen = new Set<string>()
@@ -241,20 +374,27 @@ export function workbuddyCatalogModels(payload: unknown): DiscoveredModel[] {
   for (const entry of models) {
     const record = asRecord(entry)
     if (record.disabled === true) continue
-    const id = asString(record.id)
-    if (!id || seen.has(id.toLowerCase())) continue
-    const contextLength = asNumber(record.maxInputTokens)
-    if (contextLength <= 0) continue
-    seen.add(id.toLowerCase())
-    discovered.push({
-      id,
-      displayName: asString(record.name) || id,
-      contextLength: clampWorkbuddyContextLength(contextLength),
-      supportsReasoning: record.supportsReasoning === true,
-      supportsVision: record.supportsImages === true,
-      supportsTools: record.supportsToolCall === true,
-    })
+    const model = toDiscoveredModel(record)
+    if (!model || seen.has(model.id.toLowerCase())) continue
+    seen.add(model.id.toLowerCase())
+    discovered.push(model)
   }
+
+  if (realm === "global") {
+    for (const extra of WORKBUDDY_GLOBAL_EXTRA_MODELS) {
+      if (seen.has(extra.id.toLowerCase())) continue
+      seen.add(extra.id.toLowerCase())
+      discovered.push({
+        id: extra.id,
+        displayName: extra.displayName,
+        contextLength: WORKBUDDY_MAX_CONTEXT_LENGTH,
+        supportsReasoning: true,
+        supportsVision: false,
+        supportsTools: true,
+      })
+    }
+  }
+
   return discovered
 }
 

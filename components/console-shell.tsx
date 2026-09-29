@@ -13,6 +13,7 @@ import { CodexDesktopView } from "@/components/views/codex-desktop-view"
 import { CodexSessionsView } from "@/components/views/codex-sessions-view"
 import { WecomBridgeView } from "@/components/views/wecom-bridge-view"
 import { WorkbuddyPoolView } from "@/components/views/workbuddy-pool-view"
+import { WorkbuddyGlobalPoolView } from "@/components/views/workbuddy-global-pool-view"
 import { SettingsView } from "@/components/views/settings-view"
 import { McpView } from "@/components/views/mcp-view"
 
@@ -62,6 +63,7 @@ export function ConsoleShell({
             {view === "codex-sessions" ? <CodexSessionsView /> : null}
             {view === "wecom-bridge" ? <WecomBridgeView /> : null}
             {view === "workbuddy-pool" ? <WorkbuddyPoolView /> : null}
+            {view === "workbuddy-global-pool" ? <WorkbuddyGlobalPoolView /> : null}
             {view === "settings" ? <SettingsView /> : null}
           </div>
         </main>

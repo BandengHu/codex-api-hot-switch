@@ -6,6 +6,7 @@ import {
   Boxes,
   ChartLine,
   GitMerge,
+  Globe2,
   MessagesSquare,
   MonitorCog,
   Network,
@@ -28,6 +29,7 @@ export type ViewKey =
   | "codex-sessions"
   | "wecom-bridge"
   | "workbuddy-pool"
+  | "workbuddy-global-pool"
   | "settings"
 
 export const DEFAULT_VIEW: ViewKey = "codex-desktop"
@@ -44,6 +46,7 @@ const NAV_ITEMS: { key: ViewKey; label: string; icon: typeof LayoutDashboard }[]
   { key: "codex-sessions", label: "同步会话", icon: GitMerge },
   { key: "wecom-bridge", label: "企业微信机器人", icon: MessagesSquare },
   { key: "workbuddy-pool", label: "WorkBuddy 号池", icon: Users },
+  { key: "workbuddy-global-pool", label: "WorkBuddy 国际号池", icon: Globe2 },
   { key: "settings", label: "设置", icon: SettingsIcon },
 ]
 
