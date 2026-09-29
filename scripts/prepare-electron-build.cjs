@@ -70,7 +70,6 @@ async function pruneStaticToolBinaries(dir) {
 }
 
 const STATIC_TOOL_PACKAGE_NAMES = new Set(["ffprobe-static", "ffmpeg-static"])
-
 // 递归找到所有静态工具包（ffmpeg / ffprobe）的 bin 目录，交给调用方处理。
 // 裁剪与校验必须共用同一条遍历逻辑，否则两条打包路径会再次出现裁剪不一致。
 async function forEachStaticToolBinDir(dir, handler) {
@@ -114,6 +113,73 @@ async function assertWin64StaticToolBinaries(nodeModulesDir) {
   })
   if (offenders.length > 0) {
     throw new Error(`静态工具仍打包了非 Windows x64 二进制：${offenders.join(", ")}`)
+  }
+}
+
+/**
+ * Electron 自带 55 个语言包（约 48MB），本应用只有中文界面、兜底英文，
+ * 其余 53 个 .pak 打进安装包纯属浪费。这里只保留 en-US 与 zh-CN。
+ *
+ * 注意：这是就地裁剪 `node_modules/electron/dist/locales`，可重复执行（幂等）；
+ * 需要恢复时 `npm install electron` 或重装依赖即可拿回全部语言包。
+ * 这版 electron-builder 不支持 `electronLanguages` 配置项，所以只能在这里裁。
+ */
+const KEEP_ELECTRON_LOCALES = new Set(["en-us.pak", "zh-cn.pak"])
+
+async function pruneElectronLocales() {
+  const localesDir = path.join(root, "node_modules", "electron", "dist", "locales")
+  if (!(await exists(localesDir))) return
+  let removed = 0
+  for (const entry of await fs.readdir(localesDir, { withFileTypes: true })) {
+    if (!entry.isFile()) continue
+    if (!entry.name.toLowerCase().endsWith(".pak")) continue
+    if (KEEP_ELECTRON_LOCALES.has(entry.name.toLowerCase())) continue
+    await removePath(localesDir, entry.name)
+    removed += 1
+  }
+  if (removed > 0) console.log(`已裁剪 Electron 语言包 ${removed} 个（保留 en-US / zh-CN）`)
+}
+
+/**
+ * 去掉 vendor 里那份重复的 ffprobe/ffmpeg 静态工具。
+ *
+ * 项目根把 ffprobe-static / ffmpeg-static 声明成了依赖，所以 vendor 闭包会拷一份；
+ * 而真正用它们的只有 integrations/codexbridge（企业微信语音转缩略图），那份代码用
+ * `createRequire(import.meta.url)` 从自己的 node_modules 解析，永远命中
+ * integrations/codexbridge/node_modules 下的副本，不会走 vendor 的 NODE_PATH。
+ * 单是 ffprobe.exe 就有 63MB，两份就是 126MB，删掉 vendor 那份省一半。
+ *
+ * 保守起见：只有当 codexbridge 侧的 ffprobe.exe 确实存在时才删 vendor 那份；
+ * 否则原样保留，宁可多占空间也不让功能缺二进制。
+ */
+async function pruneRedundantVendorStaticTools(vendorDir) {
+  const codexBridgeNodeModules = path.join(
+    path.dirname(vendorDir),
+    "integrations",
+    "codexbridge",
+    "node_modules",
+  )
+  const codexBridgeFfprobe = path.join(
+    codexBridgeNodeModules,
+    "ffprobe-static",
+    "bin",
+    "win32",
+    "x64",
+    "ffprobe.exe",
+  )
+  if (!(await exists(codexBridgeFfprobe))) return
+
+  const pnpmDir = path.join(vendorDir, ".pnpm")
+  if (!(await exists(pnpmDir))) return
+  let removed = 0
+  for (const entry of await fs.readdir(pnpmDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    if (!/^(ffmpeg|ffprobe)-static@/i.test(entry.name)) continue
+    await removePath(pnpmDir, entry.name)
+    removed += 1
+  }
+  if (removed > 0) {
+    console.log(`已去掉 vendor 里重复的静态工具 ${removed} 个（codexbridge 侧仍保留一份）`)
   }
 }
 
@@ -257,7 +323,6 @@ async function copyCodexBridgeRuntimeNodeModules(codexBridgeDir) {
 
 async function prunePackagedVendor(vendorDir) {
   await pruneRuntimeNodeModules(vendorDir)
-
   // better-sqlite3 运行只需要 .node 原生模块，源码、构建中间文件和静态库很占空间。
   for (const relativePath of [
     ["better-sqlite3", "deps"],
@@ -276,6 +341,7 @@ async function prunePackagedVendor(vendorDir) {
   }
 
   await pruneDuplicatedTopLevelVendorPackages(vendorDir)
+  await pruneRedundantVendorStaticTools(vendorDir)
   await assertWin64StaticToolBinaries(vendorDir)
 }
 
@@ -344,6 +410,9 @@ async function main() {
   if (!(await exists(path.join(standaloneDir, "server.js")))) {
     throw new Error("缺少 .next/standalone/server.js，请先运行 next build")
   }
+
+  // 先裁掉用不到的 Electron 语言包，再让 electron-builder 拷贝 electronDist。
+  await pruneElectronLocales()
 
   for (const artifact of tracedBuildArtifacts) {
     await fs.rm(path.join(standaloneDir, artifact), { recursive: true, force: true })

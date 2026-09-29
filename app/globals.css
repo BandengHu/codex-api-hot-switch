@@ -128,3 +128,37 @@
     @apply font-sans;
   }
 }
+
+/*
+ * 提示（sonner toast）：允许选中文字，方便复制报错信息。
+ *
+ * sonner 自带样式在滑动状态下会写 user-select: none，而且没有给关闭按钮留位置；
+ * 这里统一放开选中，并把关闭按钮压到右上角、常显可点。
+ */
+[data-sonner-toast],
+[data-sonner-toast] [data-title],
+[data-sonner-toast] [data-description],
+[data-sonner-toast] [data-content] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+[data-sonner-toast] {
+  /* 关闭按钮绝对定位到右上角，别和正文挤在一行 */
+  position: relative;
+  align-items: flex-start;
+  padding-right: 2rem;
+}
+
+[data-sonner-toast] [data-close-button] {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  left: auto;
+  transform: none;
+  opacity: 1;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border-color: var(--border);
+}
+

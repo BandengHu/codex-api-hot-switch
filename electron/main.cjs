@@ -657,8 +657,43 @@ function setupFloatingIpc() {
     }
   })
 
-  ipcMain.on("codex-hot-switch-console", (_event, message) => {
-    if (message?.type === "console-changed") {
+  // 授权登录/外链统一走系统浏览器。
+  //
+  // 渲染进程里 `window.open` 在 Electron 里会开一个应用内 BrowserWindow，OAuth 页面
+  // 在那个窗口里既不好完成授权、也没法回到控制台，所以这里统一改走 shell.openExternal。
+  // 只放行 http/https，避免 file:// 之类的本地协议被当成外链打开。
+  ipcMain.handle("codex-hot-switch-open-external", async (event, message) => {
+    const sender = event.sender
+    const trusted =
+      (mainWindow && !mainWindow.isDestroyed() && sender === mainWindow.webContents) ||
+      (floatingPanelWindow &&
+        !floatingPanelWindow.isDestroyed() &&
+        sender === floatingPanelWindow.webContents) ||
+      (floatingBallWindow &&
+        !floatingBallWindow.isDestroyed() &&
+        sender === floatingBallWindow.webContents)
+    if (!trusted) return { ok: false, error: "未授权的调用来源" }
+
+    const raw = typeof message?.url === "string" ? message.url.trim() : ""
+    if (!raw) return { ok: false, error: "缺少 url" }
+    let parsed
+    try {
+      parsed = new URL(raw)
+    } catch {
+      return { ok: false, error: "url 不是合法地址" }
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return { ok: false, error: `不支持的协议：${parsed.protocol}` }
+    }
+    try {
+      await shell.openExternal(parsed.toString())
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
+  ipcMain.on("codex-hot-switch-console", (_event, message) => {    if (message?.type === "console-changed") {
       broadcastConsoleChanged(message.payload?.source || "renderer")
     }
     if (message?.type === "request-desktop-state") {
@@ -900,7 +935,21 @@ function createWindow() {
     mainWindow.show()
   })
   mainWindow.on("close", hideMainWindowToTray)
+  // 兜底：控制台里任何 `window.open` / target=_blank 都不在应用内开新窗口，
+  // 一律交给系统浏览器（授权登录走的就是这条路）。
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:$/i.test(safeProtocolOf(url))) void shell.openExternal(url)
+    return { action: "deny" }
+  })
   mainWindow.loadURL(appUrl())
+}
+
+function safeProtocolOf(url) {
+  try {
+    return new URL(url).protocol
+  } catch {
+    return ""
+  }
 }
 
 function stopServer() {

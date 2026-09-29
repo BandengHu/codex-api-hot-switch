@@ -436,8 +436,13 @@ export function LogsView() {
               </EmptyHeader>
             </Empty>
           ) : (
-            <Table>
-              <TableHeader>
+            <Table
+              // 20 行日志的表格很高，横向滚动条会被挤到折叠线以下、够不着。
+              // 这里给滚动容器限高并开启纵向滚动，让横向滚动条始终贴在可见区域底部；
+              // 表头同时吸顶，纵向滚动时列名不会跟着跑掉。
+              containerClassName="max-h-[calc(100dvh-21rem)] overflow-y-auto"
+            >
+              <TableHeader className="sticky top-0 z-10 bg-card">
                 <TableRow>
                   <TableHead>时间</TableHead>
                   <TableHead>Codex 原始模型</TableHead>

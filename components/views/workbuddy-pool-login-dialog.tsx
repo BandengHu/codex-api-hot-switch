@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
+import { openExternalUrl } from "@/lib/desktop-open-external"
 import { pollPoolLogin, startPoolLogin } from "@/lib/workbuddy-pool-api"
 import type { WorkbuddyLoginStart } from "@/lib/workbuddy-pool-types"
 
@@ -47,6 +48,24 @@ export function WorkbuddyPoolLoginDialog({ open, onOpenChange, onLoggedIn }: Pro
  }
  }, [])
 
+ /**
+ * 打开授权页。
+ *
+ * 安装版走 preload 的 IPC 交给 `shell.openExternal`，直接开系统浏览器；
+ * 浏览器里调试时退化成 `window.open`（可能被弹窗拦截，所以失败不抛错）。
+ */
+ const openInBrowser = useCallback(async (url: string, options: { quiet?: boolean } = {}) => {
+ try {
+ await openExternalUrl(url)
+ return true
+ } catch (caught) {
+ if (!options.quiet) {
+ setError(caught instanceof Error ? caught.message : String(caught))
+ }
+ return false
+ }
+ }, [])
+
  const begin = useCallback(async () => {
  setStarting(true)
  setError("")
@@ -55,14 +74,16 @@ export function WorkbuddyPoolLoginDialog({ open, onOpenChange, onLoggedIn }: Pro
  try {
  const started = await startPoolLogin()
  setSession(started)
- setStatus("请在浏览器打开下面的链接完成登录")
+ // 拿到链接就直接把系统浏览器拉起来，用户不用再点一次。
+ setStatus("已在系统浏览器打开授权页，完成登录后这里会自动继续")
+ await openInBrowser(started.url, { quiet: true })
  } catch (caught) {
  setError(caught instanceof Error ? caught.message : String(caught))
  setStatus("")
  } finally {
  setStarting(false)
  }
- }, [])
+ }, [openInBrowser])
 
  //登录态轮询：拿到 done=true即回调父组件刷新号池。
  useEffect(() => {
@@ -121,16 +142,16 @@ export function WorkbuddyPoolLoginDialog({ open, onOpenChange, onLoggedIn }: Pro
  {session ? (
  <>
  <div className="rounded-md border bg-muted/40 p-3">
- <div className="break-all font-mono text-xs">{session.url}</div>
+ <div className="select-all break-all font-mono text-xs">{session.url}</div>
  </div>
  <div className="flex flex-wrap gap-2">
  <Button
  variant="outline"
  size="sm"
- onClick={() => window.open(session.url, "_blank", "noopener,noreferrer")}
+ onClick={() => void openInBrowser(session.url)}
  >
  <ExternalLink data-icon="inline-start" />
-打开授权页面
+在浏览器打开
  </Button>
  <Button
  variant="outline"
@@ -143,7 +164,7 @@ export function WorkbuddyPoolLoginDialog({ open, onOpenChange, onLoggedIn }: Pro
  </>
  ) : (
  <div className="text-sm text-muted-foreground">
-点「获取授权链接」后，在浏览器登录 CodeBuddy账号并确认授权。
+点「获取授权链接」后会自动打开系统浏览器，登录 CodeBuddy账号并确认授权即可。
  </div>
  )}
 

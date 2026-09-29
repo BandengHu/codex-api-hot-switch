@@ -11,6 +11,8 @@ const Toaster = ({ ...props }: ToasterProps) => {
     <Sonner
       theme={theme as ToasterProps["theme"]}
       className="toaster group"
+      // 每条提示都带关闭按钮，长错误信息不用等它自己消失。
+      closeButton
       icons={{
         success: (
           <CircleCheckIcon className="size-4" />

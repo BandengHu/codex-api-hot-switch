@@ -16,6 +16,12 @@ contextBridge.exposeInMainWorld("codexHotSwitchFloating", {
       initialPath: typeof initialPath === "string" ? initialPath : "",
     })
   },
+  /** 用系统默认浏览器打开 http/https 外链（授权登录走这条）。 */
+  openExternal(url) {
+    return ipcRenderer.invoke("codex-hot-switch-open-external", {
+      url: typeof url === "string" ? url : "",
+    })
+  },
   onDesktopMessage(callback) {
     if (typeof callback !== "function") return () => undefined
     const listener = (_event, message) => callback(message)
