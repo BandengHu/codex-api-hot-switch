@@ -306,10 +306,8 @@ function spawnCodexBridge(settings: WecomBridgeSettings) {
 
 function resolveTsxLoaderPath() {
   const candidates = [
+    join(/* turbopackIgnore: true */ process.cwd(), "vendor", "node_modules", "tsx", "dist", "loader.mjs"),
     join(/* turbopackIgnore: true */ process.cwd(), "node_modules", "tsx", "dist", "loader.mjs"),
-    join(/* turbopackIgnore: true */ process.cwd(), "vendor", "tsx", "dist", "loader.mjs"),
-    join(/* turbopackIgnore: true */ process.cwd(), "..", "node_modules", "tsx", "dist", "loader.mjs"),
-    join(/* turbopackIgnore: true */ process.cwd(), "..", "vendor", "tsx", "dist", "loader.mjs"),
   ]
   const found = candidates.find((candidate) => existsSync(/* turbopackIgnore: true */ candidate))
   return found || "tsx"

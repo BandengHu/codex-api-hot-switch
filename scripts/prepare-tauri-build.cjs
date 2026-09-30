@@ -8,6 +8,16 @@
 
 const fs = require("node:fs/promises")
 const path = require("node:path")
+const {
+  assertCodexBridgeStarts,
+  copyDir,
+  exists,
+  pruneAllStaticToolBinaries,
+  pruneNonRuntimeFiles,
+  rmRetry,
+} = require("./tauri-build-lib.cjs")
+const { createCodexBridgeRuntimeCopier } = require("./tauri-codexbridge-runtime.cjs")
+const { assertNoLongPaths, assertResourcesComplete } = require("./tauri-resource-check.cjs")
 
 const root = path.resolve(__dirname, "..")
 const standaloneDir = path.join(root, ".next", "standalone")
@@ -18,6 +28,29 @@ const tauriResourcesDir = process.env.TAURI_RESOURCES_DIR
   ? path.resolve(process.env.TAURI_RESOURCES_DIR)
   : path.join(root, "tauri", "src-tauri", "resources")
 const targetServerDir = path.join(tauriResourcesDir, "server")
+
+/**
+ * `tsx` 的企业微信启动器走的是 `node --import <tsx>/dist/loader.mjs`。
+ * `tsx` 本身只是薄壳，真正执行 TypeScript 的 `esbuild` 不在 Next standalone
+ * 的追踪结果里，只存在于 pnpm 的 `.pnpm` 目录。这里显式给出当前平台包名，
+ * 供依赖闭包与完整性检查共用。
+ */
+function esbuildPlatformPackageName() {
+  return process.platform === "win32"
+    ? (process.arch === "arm64" ? "@esbuild/win32-arm64" : "@esbuild/win32-x64")
+    : process.platform === "darwin"
+      ? (process.arch === "arm64" ? "@esbuild/darwin-arm64" : "@esbuild/darwin-x64")
+      : process.arch === "arm64" ? "@esbuild/linux-arm64" : "@esbuild/linux-x64"
+}
+
+const copyCodexBridgeRuntimeNodeModules = createCodexBridgeRuntimeCopier({
+  root,
+  exists,
+  rmRetry,
+  pruneAllStaticToolBinaries,
+  pruneNonRuntimeFiles,
+  platformPackageName: esbuildPlatformPackageName,
+})
 
 // 构建产物本身不能进包。
 const tracedBuildArtifacts = [
@@ -33,67 +66,6 @@ const tracedBuildArtifacts = [
   "tauri",
 ]
 
-async function exists(p) {
-  try {
-    await fs.access(p)
-    return true
-  } catch {
-    return false
-  }
-}
-
-/**
- * 带重试的删除。
- *
- * Windows 上删目录树经常遇到 `EPERM: operation not permitted, rmdir ...`：
- * 子项刚删完、父目录句柄还没释放（杀毒软件实时扫描、索引服务都会加剧），
- * 这时直接 rmdir 会被拒。Node 的 fs.rm 自带重试，但对这类瞬时占用仍可能失败，
- * 而一次失败就会让整个 23 分钟的资源准备白跑。这里显式重试并逐步加大间隔。
- */
-async function rmRetry(target) {
-  if (!(await exists(target))) return
-  const delays = [0, 120, 300, 700, 1500]
-  let lastError = null
-  for (const delay of delays) {
-    if (delay) await new Promise((r) => setTimeout(r, delay))
-    try {
-      await fs.rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
-      return
-    } catch (error) {
-      lastError = error
-      if (error && (error.code === "ENOENT" || error.code === "ENOTEMPTY" || error.code === "EPERM" || error.code === "EBUSY")) {
-        continue
-      }
-      throw error
-    }
-  }
-  // 最后一次仍失败：如果目标已经不在，就当作成功（并发清理 / 已释放）
-  if (!(await exists(target))) return
-  throw lastError
-}
-
-/**
- * 拷贝目录树。
- *
- * `filter` 用来在拷贝阶段就剪掉整棵子树（比拷完再删快得多，也避开大量文件带来的瞬时错误）。
- * `maxRetries` 是必须的：Node 的 `fs.cp` 在多文件并发拷贝时，
- * 偶尔会因为 Windows 上的瞬时占用（杀软扫描、索引）报 ENOENT/EPERM，
- * 而源文件其实好端端地在原地 —— 实测遇到过
- * `ENOENT: copyfile '...\.next\standalone\node_modules\.pnpm\...\ZodError.cjs'`，
- * 同一文件单独 copyFile 完全成功。
- */
-async function copyDir(from, to, filter) {
-  await rmRetry(to)
-  await fs.cp(from, to, {
-    recursive: true,
-    dereference: true,
-    force: true,
-    errorOnExist: false,
-    maxRetries: 8,
-    retryDelay: 150,
-    ...(filter ? { filter } : {}),
-  })
-}
 
 // ＮＯＴＥ：这里原本有个 `skipPnpmFilter`（拷贝时跳过 .pnpm），已删除。
 // 那个策略是错的 —— standalone 顶层那 11 个包多是**符号链接**指向 `.pnpm`，
@@ -191,79 +163,6 @@ async function flattenPnpmStore(nmDir) {
   return { moved: moved.length, skipped: [...new Set(conflicts)].sort() }
 }
 
-const STATIC_TOOL_PACKAGE_NAMES = new Set(["ffprobe-static", "ffmpeg-static"])
-
-async function forEachStaticToolBinDir(dir, handler) {
-  if (!(await exists(dir))) return
-  for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue
-    const child = path.join(dir, entry.name)
-    if (STATIC_TOOL_PACKAGE_NAMES.has(entry.name.toLowerCase())) {
-      await handler(path.join(child, "bin"))
-      continue
-    }
-    await forEachStaticToolBinDir(child, handler)
-  }
-}
-
-async function removeChildrenExcept(dir, keepNames) {
-  if (!(await exists(dir))) return
-  const keep = new Set(keepNames.map((n) => n.toLowerCase()))
-  for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
-    if (keep.has(entry.name.toLowerCase())) continue
-    await rmRetry(path.join(dir, entry.name), { recursive: true, force: true })
-  }
-}
-
-async function pruneStaticToolBinaries(dir) {
-  if (!(await exists(dir))) return
-  const entries = await fs.readdir(dir, { withFileTypes: true })
-  const hasWin32 = entries.some(
-    (e) => e.isDirectory() && e.name.toLowerCase() === "win32",
-  )
-  if (hasWin32) {
-    await removeChildrenExcept(dir, ["win32"])
-    await removeChildrenExcept(path.join(dir, "win32"), ["x64"])
-    return
-  }
-  for (const entry of entries) {
-    if (entry.isDirectory()) await pruneStaticToolBinaries(path.join(dir, entry.name))
-  }
-}
-
-async function pruneAllStaticToolBinaries(nodeModulesDir) {
-  await forEachStaticToolBinDir(nodeModulesDir, pruneStaticToolBinaries)
-}
-
-async function pruneNonRuntimeFiles(dir) {
-  if (!(await exists(dir))) return
-  for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name)
-    const lower = entry.name.toLowerCase()
-    if (entry.isDirectory()) {
-      if (
-        ["test", "tests", "__tests__", "example", "examples", "benchmark", "benchmarks", "docs"].includes(lower)
-      ) {
-        await rmRetry(full, { recursive: true, force: true })
-        continue
-      }
-      await pruneNonRuntimeFiles(full)
-      continue
-    }
-    if (
-      lower.endsWith(".map") ||
-      lower.endsWith(".md") ||
-      lower === "license" ||
-      lower.startsWith("license.") ||
-      lower === "changelog" ||
-      lower.startsWith("changelog.") ||
-      lower === "readme" ||
-      lower.startsWith("readme.")
-    ) {
-      await rmRetry(full, { recursive: true, force: true })
-    }
-  }
-}
 
 /**
  * ⚠️ 这个函数**曾经是个 bug**，别再按「顶层包都是冗余」的思路去删。
@@ -320,6 +219,55 @@ async function prunePnpmStore(vendorDir) {
   const store = path.join(vendorDir, ".pnpm")
   if (!(await exists(store))) return
   await rmRetry(store, { recursive: true, force: true })
+}
+
+async function ensureTsxRuntimeDependencies(vendorNmDir) {
+  const sourceStore = path.join(root, "node_modules", ".pnpm")
+  if (!(await exists(sourceStore))) return []
+
+  const platformPackage = esbuildPlatformPackageName()
+  const wanted = ["esbuild", platformPackage]
+  const missing = []
+
+  for (const packageName of wanted) {
+    const dest = path.join(vendorNmDir, ...packageName.split("/"))
+    if (await exists(dest)) continue
+
+    const encoded = packageName.startsWith("@")
+      ? `@${packageName.slice(1).replace("/", "+")}@`
+      : `${packageName}@`
+    let source = ""
+    for (const entry of await fs.readdir(sourceStore, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !entry.name.startsWith(encoded)) continue
+      const candidate = path.join(sourceStore, entry.name, "node_modules", ...packageName.split("/"))
+      if (await exists(candidate)) {
+        source = candidate
+        break
+      }
+    }
+    if (!source) {
+      missing.push(packageName)
+      continue
+    }
+
+    await fs.mkdir(path.dirname(dest), { recursive: true })
+    await fs.cp(source, dest, {
+      recursive: true,
+      dereference: true,
+      force: true,
+      errorOnExist: false,
+      maxRetries: 8,
+      retryDelay: 150,
+    })
+  }
+
+  if (missing.length > 0) {
+    throw new Error(
+      `缺少 tsx 运行时依赖：${missing.join("、")}。` +
+        `请先在仓库根执行 pnpm install，再重新打包。`,
+    )
+  }
+  return wanted
 }
 
 /**
@@ -383,152 +331,6 @@ async function pruneVendor(vendorDir) {
   await prunePnpmStore(vendorDir)
 }
 
-/**
- * 打包前的护栏：确认资源树里没有超过 Windows 260 字符上限的路径。
- *
- * NSIS 的 makensis 打不开超长路径的文件时会直接中止整个打包，报错信息还很隐晦
- * （“failed opening file ... -- aborting creation process”）。与其等打包跑十几分钟
- * 再失败，不如在这里秒级拦下来并打印最长的几个 offender。
- */
-async function assertNoLongPaths(root, limit = 250) {
-  const offenders = []
-  let maxLen = 0
-
-  async function walk(dir) {
-    let entries
-    try {
-      entries = await fs.readdir(dir, { withFileTypes: true })
-    } catch {
-      return
-    }
-    for (const entry of entries) {
-      const full = path.join(dir, entry.name)
-      if (full.length > maxLen) maxLen = full.length
-      if (full.length > limit && offenders.length < 10) {
-        offenders.push(`${full.length}  ${path.relative(root, full)}`)
-      }
-      if (entry.isDirectory()) await walk(full)
-    }
-  }
-
-  await walk(root)
-  if (offenders.length > 0) {
-    throw new Error(
-      `检测到超长路径（> ${limit} 字符），NSIS 打包会失败。最长 ${maxLen}。\n` +
-        offenders.map((o) => `  ${o}`).join("\n"),
-    )
-  }
-  return maxLen
-}
-
-/**
- * 打包前的护栏：确认资源树里该有的东西都在。
- *
- * 起因是一次真实事故——脚本因为上级目录被句柄占住，`copyDir` 中途失败，
- * 但流程吞掉了错误继续跑完，最后打出一个只剩个别目录的包；装到机器上表现为
- * “找不到 server.js”，排查成本极高。与其信任“脚本退出码为 0”，
- * 不如在这里把运行时的关键路径逐个 stat 一遍，缺一个就立刻报错。
- */
-const REQUIRED_RESOURCE_PATHS = [
-  "server.js",
-  "package.json",
-  ".next/BUILD_ID",
-  ".next/server",
-  ".next/static",
-]
-
-/**
- * `server.js` 运行时会 `require()` 的顶层包，一个都不能少。
- *
- * 为什么单独列：体积护栏抓不到这类缺失 —— 删掉 `next`（161MB）只会让资源树
- * 「变小」，看起来更健康。但装到机器上就是 `Cannot find module 'next'`，
- * 而外壳只看 8787 通不通，表现为**无报错地一直显示「正在启动」**。
- *
- * 实测由 `.next/standalone/node_modules/` 决定（Next 的 outputFileTracing 产物），
- * 这里是它的快照。若某天 Next 版本变更导致依赖增减，以 standalone 那份为准。
- */
-const REQUIRED_VENDOR_PACKAGES = [
-  "next",
-  "react",
-  "react-dom",
-  "zod",
-  "ws",
-  "@openai",
-  "@wecom",
-  "better-sqlite3",
-  "tsx",
-]
-
-async function assertResourcesComplete(dir) {
-  const missing = []
-  for (const rel of REQUIRED_RESOURCE_PATHS) {
-    const full = path.join(dir, rel)
-    let ok = false
-    try {
-      await fs.stat(full)
-      ok = true
-    } catch {
-      ok = false
-    }
-    if (!ok) missing.push(rel)
-  }
-
-  // 路由目录至少要有若干个子项，空目录同样意味着打包不完整。
-  const apiDir = path.join(dir, ".next", "server", "app", "api")
-  let apiCount = 0
-  try {
-    apiCount = (await fs.readdir(apiDir)).length
-  } catch {
-    apiCount = 0
-  }
-
-  // chunks 数量太少同样意味着构建产物没拷全（正常约 190 项）。
-  let chunks = 0
-  try {
-    chunks = (await fs.readdir(path.join(dir, ".next", "server", "chunks"))).length
-  } catch {
-    chunks = 0
-  }
-
-  // 运行时依赖：`vendor/node_modules/` 下必须有这些包，否则 node server.js 起来就崩。
-  // 注意基准是 `vendor/node_modules`，不是 `vendor` —— 摊平后的包都在这层，
-  // 而且 Node 的「逐级向上找 node_modules」也只会命中这一层。
-  // （只检查存在性；实际可用性由「打包前实跑 server.js」兜底。）
-  const missingVendor = []
-  const vendorDir = path.join(dir, "vendor", "node_modules")
-  for (const pkg of REQUIRED_VENDOR_PACKAGES) {
-    let ok = false
-    try {
-      await fs.stat(path.join(vendorDir, pkg))
-      ok = true
-    } catch {
-      ok = false
-    }
-    if (!ok) missingVendor.push(pkg)
-  }
-
-  const problems = [...missing.map((m) => `  缺失：${m}`)]
-  if (apiCount < 5) problems.push(`  .next/server/app/api 下只有 ${apiCount} 项（预期 >= 5）`)
-  if (chunks < 20) problems.push(`  .next/server/chunks 只有 ${chunks} 项（预期 >= 20）`)
-  if (missingVendor.length > 0) {
-    problems.push(
-      `  vendor/node_modules 缺少运行时依赖：${missingVendor.join("、")}\n` +
-        `    → server.js 会报「Cannot find module '...'」并崩溃，` +
-        `而外壳只会一直显示「正在启动」。别删 vendor/node_modules 下的包！`,
-    )
-  }
-
-  if (problems.length > 0) {
-    throw new Error(
-      `资源树不完整，打包会得到一个跑不起来的安装包：\n${problems.join("\n")}\n` +
-        `目录：${dir}\n` +
-        `常见原因：上一次构建残留 / 目录被句柄占用导致拷贝中断。` +
-        `请删掉该目录后重新运行本脚本。`,
-    )
-  }
-  return { apiRoutes: apiCount, chunks }
-}
-
 async function main() {
   if (!(await exists(path.join(standaloneDir, "server.js")))) {
     throw new Error("缺少 .next/standalone/server.js，请先运行 next build")
@@ -578,11 +380,14 @@ async function main() {
     path.join(root, "scripts", "web-search-mcp"),
     path.join(targetServerDir, "scripts", "web-search-mcp"),
   )
+  let codexBridgeDependencies = []
   if (await exists(path.join(root, "integrations", "codexbridge"))) {
+    const targetCodexBridgeDir = path.join(targetServerDir, "integrations", "codexbridge")
     await copyDir(
       path.join(root, "integrations", "codexbridge"),
-      path.join(targetServerDir, "integrations", "codexbridge"),
+      targetCodexBridgeDir,
     )
+    codexBridgeDependencies = await copyCodexBridgeRuntimeNodeModules(targetCodexBridgeDir)
   }
 
   // 顶层依赖目录保留 `vendor` 这个名字（既有约定，裁剪函数都基于它），
@@ -600,6 +405,8 @@ async function main() {
     await fs.mkdir(vendor, { recursive: true })
     await fs.rename(nm, vendorNm)
   }
+  await fs.mkdir(vendorNm, { recursive: true })
+  const tsxRuntimePackages = await ensureTsxRuntimeDependencies(vendorNm)
   await pruneVendor(vendorNm)
 
   // 兜底：NFT 全项目追踪偶尔会把仓库根塞进 standalone，于是资源树里出现
@@ -608,7 +415,8 @@ async function main() {
   await pruneSelfNestedDirs(targetServerDir)
 
   const maxLen = await assertNoLongPaths(targetServerDir)
-  const check = await assertResourcesComplete(targetServerDir)
+  const check = await assertResourcesComplete(targetServerDir, esbuildPlatformPackageName())
+  assertCodexBridgeStarts(targetServerDir)
 
   const size = await dirSize(targetServerDir)
   // 体积护栏：只抓「量级错」的情况（自嵌套会把资源撑到 GB 级）。
@@ -628,6 +436,12 @@ async function main() {
   console.log(`Tauri 资源已就绪：tauri/src-tauri/resources/server`)
   console.log(`  体积 ${(size / 1024 / 1024).toFixed(0)}MB，最长路径 ${maxLen} 字符`)
   console.log(`  关键路径自检通过（api 路由 ${check.apiRoutes} 项，chunks ${check.chunks} 项）`)
+  if (tsxRuntimePackages.length > 0) {
+    console.log(`  tsx 运行时依赖已补齐：${tsxRuntimePackages.join("、")}`)
+  }
+  if (codexBridgeDependencies.length > 0) {
+    console.log(`  CodexBridge 运行依赖已补齐：${codexBridgeDependencies.join("、")}`)
+  }
 }
 
 async function dirSize(dir) {
