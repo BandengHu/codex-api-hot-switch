@@ -122,7 +122,10 @@ fn server_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 
     for candidate in &candidates {
         if candidate.join("server.js").exists() {
-            return Ok(candidate.clone());
+            // 关键：剥掉 `\\?\` 前缀再交出去。
+            // 后续要把它拼进 node 的入口参数 / current_dir / NODE_PATH，
+            // 带前缀会让 node 把路径解析成 `C:` 并抛 EISDIR（见函数注释）。
+            return Ok(strip_windows_long_prefix(candidate.clone()));
         }
     }
 
@@ -131,6 +134,38 @@ fn server_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         candidates[0].display(),
         candidates[1].display()
     ))
+}
+
+/// 去掉 Windows 的 `\\?\` 长路径前缀。
+///
+/// **这是个真踩过的坑**：Tauri 的 `resource_dir()` 在 Windows 上返回的是
+/// `\\?\C:\Users\...\Codex Switch Gate` 这种带扩展前缀的形式。这个前缀对 Win32 API
+/// 本身没问题（它就是为了绕开 260 字符限制而设计的），但**不能原样交给 Node**：
+/// Node 在校验入口路径时（`resolveMainPath` → `toRealPath` → `realpathSync`）
+/// 会把它解析成 `C:`，然后在一级盘符上做 `lstat`，直接抛
+/// `EISDIR: illegal operation on a directory, lstat 'C:'`，进程秒退，
+/// 表现为引导页「正在启动…」转 30 秒后超时。
+///
+/// 所以凡是准备传给子进程（node 的入口参数、`NODE_PATH`、`current_dir`）的路径，
+/// 都要先过这一道。
+fn strip_windows_long_prefix(p: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::PathBuf as Pb;
+        let s = p.to_string_lossy();
+        // `\\?\C:\x` -> `C:\x`
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            // 注意：`\\?\UNC\server\share` 是另一回事，这里不处理（本应用用不到网络路径）
+            if !rest.starts_with("UNC\\") && !rest.starts_with("unc\\") {
+                return Pb::from(rest);
+            }
+        }
+        p
+    }
+    #[cfg(not(windows))]
+    {
+        p
+    }
 }
 
 fn default_data_dir() -> PathBuf {
@@ -142,7 +177,8 @@ fn default_data_dir() -> PathBuf {
     let base = std::env::var("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."));
-    base.join("codex-api-hot-switch").join("data")
+    // 同样剥前缀：这个路径会以 CODEX_HOT_SWITCH_DATA_DIR 传给 node 子进程。
+    strip_windows_long_prefix(base.join("codex-api-hot-switch").join("data"))
 }
 
 // ---------------------------------------------------------------- Node 探测
@@ -364,6 +400,7 @@ fn start_server(
     let data_dir = options
         .data_dir
         .map(PathBuf::from)
+        .map(strip_windows_long_prefix)
         .unwrap_or_else(default_data_dir);
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("无法创建数据目录：{e}"))?;
 
@@ -496,8 +533,12 @@ fn debug_paths(app: tauri::AppHandle) -> serde_json::Value {
     let res = app.path().resource_dir().ok();
     let resolved = server_root(&app).ok();
     serde_json::json!({
+        // resource_dir() 的原始返回值（Windows 上带 `\\?\` 前缀，仅供参考）
         "resourceDir": res.as_ref().map(|p| p.display().to_string()),
+        // 以下都是剥过前缀、真正交给子进程的形式
+        "resourceDirNormalized": res.as_ref().map(|p| strip_windows_long_prefix(p.clone()).display().to_string()),
         "serverRoot": resolved.as_ref().map(|p| p.display().to_string()),
+        "serverJs": resolved.as_ref().map(|p| p.join("server.js").display().to_string()),
         "serverJsExists": resolved.as_ref().map(|p| p.join("server.js").exists()).unwrap_or(false),
         "exeDir": std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.display().to_string())),
         "dataDir": default_data_dir().display().to_string(),
