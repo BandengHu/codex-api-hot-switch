@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>Codex SwitchGate 引导</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f6f4;
+    --card: #ffffff;
+    --fg: #23231f;
+    --muted: #6b6b63;
+    --line: #e2e2dc;
+    --ok: #2f8f5b;
+    --warn: #b07d1a;
+    --err: #c0392b;
+    --accent: #23231f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #191918;
+      --card: #232322;
+      --fg: #ecece8;
+      --muted: #9a9a92;
+      --line: #33332f;
+      --ok: #5fce8e;
+      --warn: #e0b354;
+      --err: #f0776b;
+      --accent: #ecece8;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 14px/1.6 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    display: grid;
+    place-items: center;
+    min-height: 100vh;
+    padding: 24px;
+  }
+  main { width: 100%; max-width: 560px; }
+  h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 12px;
+  }
+  .row { display: flex; align-items: flex-start; gap: 10px; }
+  .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    margin-top: 7px; flex: none;
+    background: var(--muted);
+  }
+  .dot.ok { background: var(--ok); }
+  .dot.err { background: var(--err); }
+  .dot.warn { background: var(--warn); }
+  .label { font-weight: 500; }
+  .detail {
+    color: var(--muted);
+    font-size: 12.5px;
+    word-break: break-all;
+    font-family: ui-monospace, Consolas, monospace;
+    margin-top: 2px;
+  }
+  button {
+    font: inherit;
+    font-weight: 500;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    padding: 9px 18px;
+    cursor: pointer;
+    background: var(--accent);
+    color: var(--bg);
+  }
+  button.ghost {
+    background: transparent;
+    color: var(--fg);
+    border-color: var(--line);
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  .actions { display: flex; gap: 8px; margin-top: 16px; }
+  .hint {
+    font-size: 12.5px;
+    color: var(--muted);
+    margin-top: 14px;
+    line-height: 1.7;
+  }
+  code {
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 12px;
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Codex SwitchGate</h1>
+  <div class="sub">本地模型热切换中转 · 环境自检</div>
+
+  <div class="card">
+    <div class="row">
+      <div class="dot" id="node-dot"></div>
+      <div style="flex:1">
+        <div class="label" id="node-label">正在检测 Node 环境…</div>
+        <div class="detail" id="node-detail"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <div class="dot" id="svc-dot"></div>
+      <div style="flex:1">
+        <div class="label" id="svc-label">中转服务未启动</div>
+        <div class="detail" id="svc-detail"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button id="start" disabled>启动并打开控制台</button>
+    <button id="recheck" class="ghost">重新检测</button>
+  </div>
+
+  <div class="hint" id="hint"></div>
+</main>
+
+<script>
+const invoke = window.__TAURI__.core.invoke;
+
+const el = (id) => document.getElementById(id);
+
+function setNode(state, label, detail) {
+  el("node-dot").className = "dot " + (state || "");
+  el("node-label").textContent = label;
+  el("node-detail").textContent = detail || "";
+}
+
+function setSvc(state, label, detail) {
+  el("svc-dot").className = "dot " + (state || "");
+  el("svc-label").textContent = label;
+  el("svc-detail").textContent = detail || "";
+}
+
+const MIN = "22.5";
+
+async function checkNode() {
+  setNode("", "正在检测 Node 环境…", "");
+  try {
+    const probe = await invoke("probe_node");
+    if (probe.supported) {
+      setNode("ok", "Node " + probe.version, probe.path);
+      el("hint").innerHTML = "";
+      return true;
+    }
+    setNode(
+      "warn",
+      "Node 版本过低：" + probe.version,
+      probe.path + "　（需要 >= " + MIN + "）"
+    );
+    el("hint").innerHTML =
+      "需要 Node " + MIN + " 或更高版本（依赖内置 <code>node:sqlite</code>）。当前 " +
+      probe.version + " 会回退到 better-sqlite3，而那份二进制是按 Electron ABI 编译的，无法加载。" +
+      "<br>升级后点「重新检测」。";
+    return false;
+  } catch (e) {
+    setNode("err", "未找到 Node", String(e));
+    el("hint").innerHTML =
+      "请先安装 Node " + MIN + " 或更高版本：<br>" +
+      "· 官网 https://nodejs.org/<br>" +
+      "· 或 <code>winget install OpenJS.NodeJS</code><br>" +
+      "装完点「重新检测」。";
+    return false;
+  }
+}
+
+async function startService() {
+  el("start").disabled = true;
+  setSvc("warn", "正在启动…", "");
+  try {
+    const status = await invoke("start_server", { options: {} });
+    setSvc(status.owned === false ? "ok" : "warn", status.message, status.endpoint);
+    // 轮询等健康检查通过
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      const s = await invoke("server_status");
+      setSvc(s.state === "running" ? "ok" : "warn", s.message, s.endpoint);
+      if (s.state === "running") {
+        location.replace(s.endpoint);
+        return;
+      }
+    }
+    setSvc("err", "启动超时", "请查看日志：%APPDATA%/codex-api-hot-switch/logs/");
+  } catch (e) {
+    setSvc("err", "启动失败", String(e));
+  } finally {
+    el("start").disabled = false;
+  }
+}
+
+el("recheck").addEventListener("click", async () => {
+  const ok = await checkNode();
+  el("start").disabled = !ok;
+});
+
+el("start").addEventListener("click", startService);
+
+(async () => {
+  const ok = await checkNode();
+  el("start").disabled = !ok;
+  if (ok) startService();
+})();
+</script>
+</body>
+</html>

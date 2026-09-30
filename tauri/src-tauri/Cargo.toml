@@ -1,0 +1,51 @@
+[package]
+name = "codex-switchgate-tauri"
+version = "0.2.11"
+description = "Codex SwitchGate Tauri shell"
+authors = ["Local"]
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "codex_switchgate_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-shell = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Windows Job Object —— 保证本进程退出时连带杀掉 node 子进程，不留孤儿。
+# 需要的 feature：Foundation(HANDLE) / Security(CreateJobObjectW 签名的 SA 参数) /
+# Threading(JOBOBJECT_EXTENDED_LIMIT_INFORMATION 依赖 IO_COUNTERS)。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+# ---------------------------------------------------------------------------
+# 上游兼容性补丁：schemars 0.8.22 在 Rust 1.94 下编译不过
+#
+# tauri-build 2.7.0 硬依赖 `schemars = "^0.8.22"`，而该版本的
+# `src/lib.rs` 在启用 `preserve_order` feature 时写的是：
+#     pub type Map<K, V> = indexmap::IndexMap<K, V>;
+# 但 indexmap 1.9.3 的 `IndexMap` 定义在 map.rs:76 是 `<K, V, S>`（无默认值），
+# 而 schemars 声明的 `indexmap = "1.2"` 实际解析到 1.9.3 → 报 E0107。
+#
+# 实测 indexmap 1.6~1.9 全系都挂，说明是 schemars 自身写法的历史遗留问题
+# （早期 indexmap 的 `IndexMap` 只有两个泛型参数）。
+# 该 feature 由 tauri-utils 链路启用，我们无法从下游关闭，因此本地修补一份。
+# 改动仅一行：显式补上第三泛型 RandomState。
+# ---------------------------------------------------------------------------
+[patch.crates-io]
+schemars = { path = "../vendor-patches/schemars" }

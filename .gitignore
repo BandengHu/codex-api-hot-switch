@@ -33,3 +33,8 @@ tsconfig.tsbuildinfo
 # Build outputs
 out/
 coverage/
+
+# Tauri / Rust
+tauri/src-tauri/target/
+tauri/src-tauri/resources/
+tauri/src-tauri/gen/schemas/
