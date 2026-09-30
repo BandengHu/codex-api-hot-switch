@@ -28,9 +28,14 @@ Tauri 用的是**系统 WebView2**，Electron 自带 Chromium。
 tauri/
 ├─ ui/index.html              引导界面：环境自检 → 一键启动 → 跳转控制台
 ├─ vendor-patches/schemars/   上游补丁（见下）
+├─ dist/                      产出的 NSIS 安装器
 └─ src-tauri/
    ├─ Cargo.toml
    ├─ tauri.conf.json
+   ├─ resources/server/       ← 打包时生成，勿提交
+   │  ├─ server.js
+   │  ├─ .next/
+   │  └─ vendor/node_modules/<pkg>   ← 摊平后的运行时依赖（见坑 8）
    └─ src/
       ├─ app.rs               Node 探测 / 版本校验 / 服务拉起 / 孤儿进程防护
       ├─ lib.rs
@@ -41,9 +46,12 @@ tauri/
 
 - **Node 探测**：PATH 裸名 + ProgramFiles / nvm / fnm / Volta 常见落点
 - **版本闸门**：低于 22.5 明确报错（否则会回退到 ABI 不兼容的 better-sqlite3）
-- **服务拉起**：`node server.js`，cwd 指向 server 根，NODE_PATH 指向 vendor
+- **服务拉起**：`node server.js`，cwd 指向 server 根，NODE_PATH 指向 `vendor/node_modules`
 - **端口复用**：8787 已在监听时不重复拉起，直接标记为「已连接」
 - **孤儿进程防护**：Windows Job Object（`KILL_ON_JOB_CLOSE`）
+- **失败可诊断**：`server_status` 会 `try_wait()` 检测子进程是否已退出，
+  若退出则把 `server.err.log` 尾部（滤掉 `at ...` 栈帧噪音）回传引导页，
+  不再「无报错地一直显示正在启动」
 - **托盘图标**：关窗只隐藏、进程常驻，所以必须有托盘作为回窗口的入口。
   菜单提供「显示主窗口 / 重启中转服务 / 退出」，左键单击图标唤回窗口
 - **引导界面**：检测 → 启动 → 轮询健康检查 → 自动跳转
@@ -101,14 +109,18 @@ cd tauri/src-tauri && NODE_OPTIONS= cargo tauri build --bundles nsis
 
 | | Electron 外壳 | Tauri 外壳（release） |
 |---|---|---|
-| **安装包** | **141.31 MB** | **8.63 MB**（-94%） |
+| **安装包** | **141.31 MB** | **36.94 MB**（-74%） |
 | 外壳 exe | 172MB+（含 Chromium） | 13 MB |
-| 随包服务端 | — | 37 MB |
+| 随包服务端 | — | ~237 MB（vendor ~192MB，其中 next 161MB 必须保留） |
 | 空闲内存 | 200MB+ | **31 MB** |
 
-安装包骤降的原因：不再内嵌 Chromium（省 ~120MB），且 `.pnpm` 被裁掉（省 197MB）。
-NSIS 对 `.exe` 与 `.asar` 类内容的压缩率高于对成千上万个小文件的压缩率，所以 37MB 的资源
-最终只让安装包涨了约 8MB。
+安装包骤降的原因：不再内嵌 Chromium（省 ~120MB）。
+服务端资源 237MB 经 NSIS 压缩后只让安装包涨了约 24MB —— NSIS 对 `.exe` / 少量大文件的
+压缩率远高于对成千上万个小文件。
+
+⚠️ **别拿资源体积当「越小越好」的指标**：曾经把 vendor 顶层包删光掉到 46MB，
+看起来更健康，实则打出的包跑不起来（`Cannot find module 'next'`）。
+正确性由 `assertResourcesComplete()` 的 `REQUIRED_VENDOR_PACKAGES` 保证。
 
 ## 踩过的坑
 
@@ -251,8 +263,64 @@ resources/server/tauri/dist/          ← Electron 免安装版，600MB+
    会去 typecheck 副本里的 `integrations/codexbridge/app/api/**/route.ts`，
    报 `Cannot find module '@/lib/server/auth'` 直接 `Failed to type check`。
 2. `tracedBuildArtifacts` 加 `"tauri"`，并新增 `pruneSelfNestedDirs()` 兜底；
-   `main()` 末尾加体积护栏：**超过 120MB 就报错**（正常 ~33MB），
+   `main()` 末尾加体积护栏：**超过 1GB 就报错**（正常 ~237MB），
    宁可失败也不要打出个 8GB 的包。
+
+### 8. `.pnpm` 不能直接删 —— 必须摊平（`Cannot find module '@swc/helpers/...'`）
+
+**这是继「vendor 顶层包不能删」之后的第二个同类事故，症状几乎一样（外壳静默卡在「正在启动」）。**
+
+报错原文（装完实跑 `server.err.log`）：
+
+```
+Error: Cannot find module '@swc/helpers/_/_interop_require_default'
+code: 'MODULE_NOT_FOUND',
+requireStack: [
+  '...\resources\server\vendor\next\dist\shared\lib\constants.js',
+  '...\resources\server\vendor\next\dist\server\config.js',
+  '...\resources\server\vendor\next\dist\server\next.js',
+  '...\resources\server\server.js'
+]
+```
+
+`next/dist/shared/lib/constants.js` 第 1 行就是
+`require("@swc/helpers/_/_interop_require_default")` —— 而 `@swc/helpers` 是 `next` 的
+**传递依赖**，只存在于 pnpm 的 `.pnpm/` 里，不在 standalone 顶层那 11 个包里。
+
+三个必须同时满足的硬约束（少一个都不行）：
+
+1. **不能删 `.pnpm`** —— 传递依赖（`@swc/helpers` / `@next/env` / `styled-jsx` /
+   `client-only` / `postcss` / `caniuse-lite` …）全在里面。
+2. **长路径必须消** —— `.pnpm` 的目录名嵌了 peer 校验和，例如
+   `next@16.2.6_@babel+core@7.2_40a7effce8bcad24669d45809ebe449e`，
+   实测 146 个条目绝对路径超 Windows 260 上限（最长 291），NSIS 直接中止。
+   （详见坑 2）
+3. **必须有一层真的叫 `node_modules`** —— Node 解析 `require('@swc/helpers/...')`
+   是从出错文件所在目录**逐级向上找名为 `node_modules` 的目录**：
+   `vendor/next/dist/shared/lib/node_modules` → … → `vendor/next/node_modules` →
+   **`vendor/node_modules`** ← 命中。只把包放在 `vendor/` 顶层**不生效**。
+
+**解法 = 摊平（flatten）**：`scripts/prepare-tauri-build.cjs` 的 `flattenPnpmStore(nmDir)`
+把 `.pnpm/*/node_modules/<pkg>` 按包名 rename 到 `<nmDir>/<pkg>`（作用域包走 `@scope/name`），
+然后删掉 `.pnpm` 本身。于是：
+
+- 依赖实体保住了；
+- 带校验和的长目录名没了（路径退化成普通 `node_modules` 深度）；
+- 目标目录真的叫 `node_modules`。
+
+最终结构定为 **`resources/server/vendor/node_modules/<pkg>`**
+（`vendor` 保留作命名空间，`pruneVendor` 等既有函数都基于它）。
+`app.rs` 的 `build_node_path()` 相应把 `vendor/node_modules` 放在 NODE_PATH 首位，
+`vendor` 本身作兜底。
+
+**先在源侧摊平再拷贝**：`copyDir` 用 `dereference: true`，若不先摊平，
+standalone 顶层那些**指向 `.pnpm` 的符号链接**会被解引成实体副本 ——
+「顶层实体 + `.pnpm` 实体」两份并存，体积翻倍。
+所以 `main()` 里先对 `.next/standalone/node_modules` 摊平一次，再整体 copy，目标侧 `pruneVendor` 再兜底一次（幂等）。
+
+对照：Electron 版没这个问题，因为 `electron/main.cjs` 的 `packagedNodePath()` 会把
+`[vendor, ...vendor/.pnpm/*/node_modules]` 全塞进 NODE_PATH；Tauri 因 NSIS 不能保留
+`.pnpm`，只能摊平。两者效果等价。
 
 ## 排查手段（GUI 程序没有控制台）
 
@@ -265,8 +333,12 @@ resources/server/tauri/dist/          ← Electron 免安装版，600MB+
 | `guide.log` | 引导页状态机：node 探测结果、启动成功/失败、ready 跳转 |
 | `server.out.log` / `server.err.log` | 被拉起的 node 服务输出 |
 
-另有 `debug_paths` 命令返回外壳实际解析到的路径（`resourceDir` / `serverRoot` /
-`serverJsExists` / `exeDir`），引导页启动失败时会自动写进 `guide.log`。
+**`server.err.log` 是定位启动失败的第一现场**。`server_status` 检测到子进程已退出时，
+会把它的尾部（滤掉 `at ...` 栈帧与 `Node.js v...` 噪音）直接显示在引导页上，
+所以现在「启动失败」不再是无报错的死循环。
+
+另有 `debug_paths` 命令返回外壳实际解析到的路径（`resourceDir` / `resourceDirNormalized` /
+`serverRoot` / `serverJs` / `serverJsExists` / `exeDir`），引导页启动失败时会自动写进 `guide.log`。
 
 **注意**：探测 Node 版本时会 spawn 子进程。实测沙箱环境里 `spawn node` 直接返回
 `EBUSY`，所以引导页在沙箱内只能走到 `guide page loaded` 就停住——**这不是代码问题**，

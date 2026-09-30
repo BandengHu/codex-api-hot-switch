@@ -325,14 +325,33 @@ fn health_ok(endpoint: &str) -> bool {
 
 /// 把 vendor 拼进 NODE_PATH。
 ///
-/// 注意：这里**不再**扫 `.pnpm/*/node_modules`。打包脚本已经删掉整个 .pnpm 链接农场
-/// （原因见 scripts/prepare-tauri-build.cjs 的 prunePnpmStore：pnpm 的目录名把 peer
-/// 依赖校验和嵌进去了，实测有 146 个条目的绝对路径超过 Windows 260 字符上限，
-/// NSIS 打包会整体中止；而实测删掉它之后服务与 16 个 API 路由全部正常）。
-/// 现在 vendor 下只有 `tsx`（企业微信启动器的 --import loader），一个目录足够。
+/// 布局：`<server>/vendor/node_modules/<pkg>`。
+///
+/// 为什么 NODE_PATH 必须指向 `vendor/node_modules` 这层，而不是 `vendor` 本身：
+/// Node 解析 `require('@swc/helpers/...')` 是从**出错文件所在目录**逐级向上找
+/// 名为 `node_modules` 的目录 ——
+/// `vendor/next/dist/shared/lib/node_modules` → `.../dist/node_modules` →
+/// `.../next/node_modules` → **`vendor/node_modules`** ← 命中。
+/// 少了这一层，`next` 的传递依赖（`@swc/helpers` / `@next/env` / `styled-jsx` /
+/// `postcss` / `caniuse-lite` 等）就永远解析不到，报：
+///   `Cannot find module '@swc/helpers/_/_interop_require_default'`
+///   `Require stack: .../vendor/next/dist/shared/lib/constants.js`
+///
+/// 这里**不再**扫 `.pnpm/*/node_modules`：打包脚本已把 `.pnpm` 里的包**摊平**进
+/// `vendor/node_modules/` 并删掉 `.pnpm` 本身（原因见 scripts/prepare-tauri-build.cjs
+/// 的 flattenPnpmStore：pnpm 的目录名把 peer 依赖校验和嵌进去了，实测有 146 个条目的
+/// 绝对路径超过 Windows 260 字符上限，NSIS 打包会整体中止）。
+/// `vendor` 本身仍作为兜底条目保留。
 fn build_node_path(server_root: &Path) -> String {
     let vendor = server_root.join("vendor");
-    let mut entries: Vec<String> = vec![vendor.to_string_lossy().to_string()];
+    let vendor_nm = vendor.join("node_modules");
+    let mut entries: Vec<String> = Vec::new();
+    if vendor_nm.exists() {
+        entries.push(vendor_nm.to_string_lossy().to_string());
+    }
+    if vendor.exists() {
+        entries.push(vendor.to_string_lossy().to_string());
+    }
     // 兼容旧布局：万一以后又把 .pnpm 放回来，这段会自动带上
     let pnpm = vendor.join(".pnpm");
     if let Ok(read) = std::fs::read_dir(&pnpm) {
@@ -343,9 +362,12 @@ fn build_node_path(server_root: &Path) -> String {
             }
         }
     }
+    if entries.is_empty() {
+        entries.push(vendor.to_string_lossy().to_string());
+    }
     std::env::join_paths(entries.iter().map(Path::new))
         .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| vendor.to_string_lossy().to_string())
+        .unwrap_or_else(|_| vendor_nm.to_string_lossy().to_string())
 }
 
 #[tauri::command]

@@ -107,10 +107,100 @@ async function copyDir(from, to, filter) {
   })
 }
 
-/// 拷贝 standalone 时跳过 `.pnpm`：反正最后要删（见 prunePnpmStore），
-/// 提前剪掉能少拷几万个文件，既快又避开超长路径。
-function skipPnpmFilter(src) {
-  return !/[\\/]node_modules[\\/]\.pnpm([\\/]|$)/.test(src)
+// ＮＯＴＥ：这里原本有个 `skipPnpmFilter`（拷贝时跳过 .pnpm），已删除。
+// 那个策略是错的 —— standalone 顶层那 11 个包多是**符号链接**指向 `.pnpm`，
+// 而 `next` 的传递依赖（`@swc/helpers` / `@next/env` / `styled-jsx` / `postcss` /
+// `caniuse-lite` 等）**只存在于 `.pnpm` 里**。跳过后装到机器上就报：
+//
+//   Error: Cannot find module '@swc/helpers/_/_interop_require_default'
+//   Require stack:
+//   - .../vendor/next/dist/shared/lib/constants.js
+//
+// 正确做法见 flattenPnpmStore()：保留包内容、去掉带 peer 校验和的长目录名。
+
+/**
+ * 把 `.pnpm` 里的包**摊平**到 vendor 顶层，然后删掉 `.pnpm` 本身。
+ *
+ * 为什么必须这么做（两个约束卡在一起）：
+ *
+ * 1. **依赖必须在**。pnpm 布局下，`node_modules/.pnpm/<pkg>@<ver>_<hash>/node_modules/<pkg>`
+ *    才是真实包体；顶层那 11 个多是符号链接。`next` 的传递依赖只在 `.pnpm` 里，
+ *    删了 `.pnpm` 必然 `Cannot find module`（血泪验证过两次）。
+ * 2. **长路径必须消**。`.pnpm` 目录名把 peer 校验和嵌了进去，例如
+ *    `next@16.2.6_@babel+core@7.2_40a7effce8bcad24669d45809ebe449e`，实测 146 个条目
+ *    绝对路径超 260 字符（最长 291），NSIS 的 makensis 直接中止打包。
+ *
+ * 摊平同时满足两者：把每个包按包名放到 **`<nmDir>/<name>`**
+ * （作用域包放 `<nmDir>/@scope/name`），依赖解析退化成普通 node_modules 查找。
+ *
+ * ⚠️ **必须放在 `node_modules/` 这层，不能放 `<vendorDir>` 顶层**：
+ * Node 解析 `next/dist/.../constants.js` 里的 `require('@swc/helpers/...')` 时，
+ * 是从文件所在目录**逐级向上找名为 `node_modules` 的目录**：
+ * `.../next/dist/shared/lib/node_modules` → `.../next/dist/node_modules` →
+ * `.../next/node_modules` → `<vendorDir>/node_modules` ← 命中。
+ * `<vendorDir>` 本身只对「顶层直接 require」有效（且要它在 NODE_PATH 里）。
+ *
+ * 注意再往上一层才是 `vendor` 与 standalone 的差异：
+ * 传进来的 `nmDir` 在源侧是 `.next/standalone/node_modules`（含 `.pnpm`），
+ * 在目标侧是 `<resources>/server/vendor`（Node 查找靠它下面的 `node_modules`）。
+ *
+ * 冲突处理：同名包多版本时**先到先得**并记录。实测本项目同名多版本只出现在
+ * `openai` / `ws` / `zod-to-json-schema` 这类传递依赖上，与运行时主链无关。
+ */
+async function flattenPnpmStore(nmDir) {
+  const store = path.join(nmDir, ".pnpm")
+  if (!(await exists(store))) return { moved: 0, skipped: [] }
+
+  const moved = []
+  const conflicts = []
+
+  for (const entry of await fs.readdir(store, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    // 每个 .pnpm 条目的真实包体在 <entry>/node_modules/ 下
+    const innerNm = path.join(store, entry.name, "node_modules")
+    if (!(await exists(innerNm))) continue
+
+    for (const pkgEntry of await fs.readdir(innerNm, { withFileTypes: true })) {
+      const from = path.join(innerNm, pkgEntry.name)
+
+      // 作用域包：@scope/name
+      if (pkgEntry.name.startsWith("@")) {
+        let scopedChildren = []
+        try {
+          scopedChildren = await fs.readdir(from, { withFileTypes: true })
+        } catch {
+          continue
+        }
+        for (const child of scopedChildren) {
+          if (!child.isDirectory()) continue
+          const rel = path.join(pkgEntry.name, child.name)
+          const dest = path.join(nmDir, rel)
+          if (await exists(dest)) {
+            conflicts.push(rel)
+            continue
+          }
+          await fs.mkdir(path.dirname(dest), { recursive: true })
+          await fs.rename(path.join(from, child.name), dest)
+          moved.push(rel)
+        }
+        continue
+      }
+
+      if (!pkgEntry.isDirectory()) continue
+      const dest = path.join(nmDir, pkgEntry.name)
+      if (await exists(dest)) {
+        conflicts.push(pkgEntry.name)
+        continue
+      }
+      await fs.rename(from, dest)
+      moved.push(pkgEntry.name)
+    }
+  }
+
+  // 摊平完就没用了，而且它是超长路径的源头。
+  await rmRetry(store, { recursive: true, force: true })
+
+  return { moved: moved.length, skipped: [...new Set(conflicts)].sort() }
 }
 
 const STATIC_TOOL_PACKAGE_NAMES = new Set(["ffprobe-static", "ffmpeg-static"])
@@ -205,7 +295,9 @@ async function pruneNonRuntimeFiles(dir) {
  * 运行时依赖（实测 11 个：@openai / @wecom / better-sqlite3 / ffmpeg-static /
  * ffprobe-static / next / react / react-dom / tsx / ws / zod），
  * `server.js` 第 16 行 `require('next')` 就靠它们解析。
- * `.pnpm` 才是真正的冗余（只是 pnpm 布局残留），删它安全。
+ * 而 `next` 自己的传递依赖（@swc/helpers 等）只存在于 `.pnpm` 里 ——
+ * 所以 `.pnpm` **不能直接删**，必须先 `flattenPnpmStore()` 把包体摊平出来
+ * （这一步在 `pruneVendor()` 最前面已经做了，此处拿到的已是摊平后的目录）。
  *
  * 所以这里只删 `dist` 这类**明确的构建产物**，运行时要什么就留什么。
  */
@@ -279,9 +371,18 @@ async function pruneSelfNestedDirs(serverDir) {
 
 async function pruneVendor(vendorDir) {
   // ⚠️ 顺序与「保留什么」都很关键：
-  // - 只删构建产物（better-sqlite3 的编译中间件、静态工具二进制），
-  //   **顶层运行时包一个都不能删**（next / react / zod … 见上方函数注释里的事故）。
-  // - 最后删 `.pnpm` 链接农场（它才是真冗余，且会触发 NSIS 超长路径）。
+  // 1. **先摊平 `.pnpm`**（把包按名并入同一层，再删 `.pnpm`）。
+  //    源侧已经摊过一次，这里是对目标侧做兜底（幂等）。
+  // 2. 只删构建产物（better-sqlite3 的编译中间件、静态工具二进制），
+  //    **运行时包一个都不能删**（见 flattenPnpmStore 注释里的事故）。
+  const flat = await flattenPnpmStore(vendorDir)
+  if (flat.moved > 0) {
+    console.log(`  已摊平 .pnpm：${flat.moved} 个包并入 vendor/node_modules/`)
+  }
+  if (flat.skipped.length > 0) {
+    console.log(`  同名多版本保留先到的：${flat.skipped.join("、")}`)
+  }
+
   await pruneAllStaticToolBinaries(vendorDir)
   await pruneNonRuntimeFiles(vendorDir)
   for (const rel of [
@@ -404,10 +505,12 @@ async function assertResourcesComplete(dir) {
     chunks = 0
   }
 
-  // 运行时依赖：vendor 顶层必须有这些包，否则 node server.js 起来就崩。
+  // 运行时依赖：`vendor/node_modules/` 下必须有这些包，否则 node server.js 起来就崩。
+  // 注意基准是 `vendor/node_modules`，不是 `vendor` —— 摊平后的包都在这层，
+  // 而且 Node 的「逐级向上找 node_modules」也只会命中这一层。
   // （只检查存在性；实际可用性由「打包前实跑 server.js」兜底。）
   const missingVendor = []
-  const vendorDir = path.join(dir, "vendor")
+  const vendorDir = path.join(dir, "vendor", "node_modules")
   for (const pkg of REQUIRED_VENDOR_PACKAGES) {
     let ok = false
     try {
@@ -424,9 +527,9 @@ async function assertResourcesComplete(dir) {
   if (chunks < 20) problems.push(`  .next/server/chunks 只有 ${chunks} 项（预期 >= 20）`)
   if (missingVendor.length > 0) {
     problems.push(
-      `  vendor 缺少运行时依赖：${missingVendor.join("、")}\n` +
+      `  vendor/node_modules 缺少运行时依赖：${missingVendor.join("、")}\n` +
         `    → server.js 会报「Cannot find module '...'」并崩溃，` +
-        `而外壳只会一直显示「正在启动」。别删 vendor 顶层的包！`,
+        `而外壳只会一直显示「正在启动」。别删 vendor/node_modules 下的包！`,
     )
   }
 
@@ -459,9 +562,19 @@ async function main() {
   await copyDir(path.join(root, ".next", "static"), path.join(standaloneDir, ".next", "static"))
   await copyDir(path.join(root, "public"), path.join(standaloneDir, "public"))
 
-  // 拷贝 standalone 时跳过 .pnpm（最终要删，提前剪掉可少拷几万文件）。
-  // 其余三次拷贝目标都在 .next/ 下，不会碰到 .pnpm，不加过滤。
-  await copyDir(standaloneDir, targetServerDir, skipPnpmFilter)
+  // 先在**源侧**把 `.pnpm` 摊平到顶层，再往目标拷（过滤掉已空的 `.pnpm`）。
+  //
+  // 为什么在源侧做：standalone 顶层那 11 个包多是**符号链接**指向 `.pnpm`，
+  // 而 `copyDir` 用 `dereference: true` 会把它们解引用成实体副本 ——
+  // 于是「顶层实体 + .pnpm 实体」两份并存，体积翻倍且解析路径仍可能踩坑。
+  // 先摊平则：真实包体落到顶层，符号链接被 rename 上位替换，`.pnpm` 只剩空壳。
+  //
+  // ⚠️ 源侧改动会写进 `.next/standalone`（构建产物，重新 next build 会覆盖，可接受）。
+  const flattened = await flattenPnpmStore(path.join(standaloneDir, "node_modules"))
+  if (flattened.moved > 0) {
+    console.log(`  源侧摊平 .pnpm：${flattened.moved} 个包移到顶层`)
+  }
+  await copyDir(standaloneDir, targetServerDir)
 
   // 脚本与 integrations（与 Electron 链路一致）
   await fs.mkdir(path.join(targetServerDir, "scripts"), { recursive: true })
@@ -487,11 +600,22 @@ async function main() {
     )
   }
 
-  // node_modules -> vendor，与 Electron 链路命名保持一致
+  // 顶层依赖目录保留 `vendor` 这个名字（既有约定，裁剪函数都基于它），
+  // 但**必须叫 node_modules 的那一层要真的存在**：
+  // `next` 内部 `require('@swc/helpers/...')` 是靠 Node「逐级向上找 node_modules」
+  // 解析的，光把包放在 `vendor/` 顶层不生效。
+  //
+  // 所以最终结构是：`vendor/node_modules/<pkg>` —— vendor 是命名空间，
+  // 真正被 Node 认的是里面的 node_modules。NODE_PATH 也相应指向 vendor/node_modules。
   const nm = path.join(targetServerDir, "node_modules")
   const vendor = path.join(targetServerDir, "vendor")
-  if (await exists(nm)) await fs.rename(nm, vendor)
-  await pruneVendor(vendor)
+  const vendorNm = path.join(vendor, "node_modules")
+  if (await exists(nm)) {
+    await rmRetry(vendor)
+    await fs.mkdir(vendor, { recursive: true })
+    await fs.rename(nm, vendorNm)
+  }
+  await pruneVendor(vendorNm)
 
   // 兜底：NFT 全项目追踪偶尔会把仓库根塞进 standalone，于是资源树里出现
   // `resources/server/tauri/`（自嵌套，还带着 600MB 的 `tauri/dist`）。
