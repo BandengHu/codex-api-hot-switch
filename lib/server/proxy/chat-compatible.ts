@@ -1017,6 +1017,21 @@ function forceUpstreamStream(body: AnyRecord, target: ProxyTarget) {
   body.stream = true
 }
 
+/**
+ * WorkBuddy 的渠道校验只接受官方客户端使用的 Chat 角色。Codex 会发送
+ * OpenAI 风格的 `developer` 消息，上游会以 11128 拒绝；对 WorkBuddy 路由
+ * 归一为 `system`，其他供应商保持原样。
+ */
+function normalizeWorkbuddyChatRoles(body: AnyRecord, target: ProxyTarget) {
+  if (!isWorkbuddyProvider(target.provider) || !Array.isArray(body.messages)) return
+  body.messages = body.messages.map((message: unknown) => {
+    if (!isObject(message) || safeTrim(message.role).toLowerCase() !== "developer") {
+      return message
+    }
+    return { ...message, role: "system" }
+  })
+}
+
 function chatCompatibleUrl(baseUrl: string, endpoint: "chat/completions" | "models") {
   const rawBase = baseUrl.trim()
   const skipVersionPrefix = rawBase.endsWith("#")
@@ -1052,6 +1067,7 @@ export function buildChatCompatibleRequest(
     }
     appendOutputLanguagePolicyToChatBody(passthrough, target)
     const requestedStream = Boolean(passthrough.stream)
+    normalizeWorkbuddyChatRoles(passthrough, target)
     forceUpstreamStream(passthrough, target)
     return {
       url: chatCompatibleUrl(target.provider.baseUrl, "chat/completions"),
