@@ -49,6 +49,21 @@ tauri/
 - **引导界面**：检测 → 启动 → 轮询健康检查 → 自动跳转
 - **capabilities**：`src-tauri/capabilities/default.json` 授权主窗口调用本应用命令，
   并用 `remote.urls` 放行 `http://127.0.0.1:*`，让 WebView 能导航到本地控制台
+- **前端桌面桥分派**：`lib/desktop-open-external.ts` 与 `lib/desktop-directory-picker.ts`
+  现在同时认两条桥 —— Electron 的 `window.codexHotSwitchFloating` 优先，
+  其次是 Tauri 的 `window.__TAURI__`：
+  - 打开外链 → `__TAURI__.opener.openUrl`（`tauri-plugin-opener` + `opener:allow-open-url`）
+  - 选择文件夹 → `invoke("plugin:dialog|open", { options: { directory: true } })`
+    （`tauri-plugin-dialog` + `dialog:allow-open`）
+- **安装包中文化**：NSIS `SimpChinese`（tauri-bundler 内置译文）
+
+### 尚未实现
+
+- **浮球窗口**：`floating-ball-view` / `floating-panel-view` / `settings-view` / `console-store`
+  里那 5 处 `window.codexHotSwitchFloating.send(...)` 是 Electron **独立透明 BrowserWindow**
+  的 IPC。Tauri 外壳是单窗口（引导页 + 主 WebView），没有浮球窗口，
+  调用走 `?.` 静默跳过 —— **不崩，但浮球功能在 Tauri 版不可用**。
+  要补齐需在 Tauri 侧另建 `transparent: true` 的窗口并实现对应 IPC 协议。
 
 ## 已知问题
 
@@ -117,6 +132,33 @@ NSIS 对 `.exe` 与 `.asar` 类内容的压缩率高于对成千上万个小文�
 ```rust
 let candidates = [res.join("resources").join("server"), res.join("server")];
 ```
+
+#### 1b. 同一个 `resource_dir()` 还有第二重坑：返回值带 `\\?\` 长路径前缀
+
+补上 `resources` 层之后，报错变成**引导页一直卡在「正在启动本地中转服务：127.0.0.1:8787」**，
+30 秒后超时。`logs/server.err.log` 里是：
+
+```
+Error: EISDIR: illegal operation on a directory, lstat 'C:'
+    at Object.realpathSync (node:fs:3273:25)
+    at toRealPath (node:internal/modules/helpers:65:13)
+    at Module._findPath (node:internal/modules/cjs/loader:854:22)
+    at resolveMainPath (node:internal/modules/run_main:35:21)
+```
+
+原因是 `resource_dir()` 在 Windows 上返回的是
+`\\?\C:\Users\...\Codex Switch Gate` 这种**扩展长度前缀**形式。该前缀对 Win32 API 无害
+（它本来就是为了绕开 260 字符限制），但**不能原样传给 Node**：
+Node 在 `resolveMainPath` → `toRealPath` → `realpathSync` 阶段把它解析成 `C:`，
+然后对一级盘符做 `lstat`，抛 `EISDIR`，进程秒退。
+
+所以凡是要交给子进程的路径（node 入口参数、`NODE_PATH`、`current_dir`）都要先剥前缀：
+
+```rust
+fn strip_windows_long_prefix(p: PathBuf) -> PathBuf { /* \\?\C:\x -> C:\x */ }
+```
+
+调用点三处：`server_root()` 命中候选后、`default_data_dir()`、`start_server()` 的 `data_dir`。
 
 ### 2. 超长路径会让 NSIS 打包整体中止
 
@@ -189,6 +231,28 @@ error[E0107]: struct takes 3 generic arguments but 2 supplied
 `vendor-patches/schemars/` 是本地修补版，改动两处：
 - `Map` / `MapEntry` 统一退化为 `BTreeMap` / `btree_map::Entry`（放弃保序，对构建无影响）
 - `preserve_order = []`（不再级联 `indexmap` feature，避免编译 `json_schema_impls/indexmap.rs`）
+
+### 7. 资源树自嵌套：`resources/server/tauri/src-tauri/resources/server/...`
+
+`prepare-tauri-build.cjs` 把 Next 的 `.next/standalone` 拷进
+`tauri/src-tauri/resources/server/`。而 Next 的 NFT 在部分路由上会退化成
+「追踪整个项目根」，于是 standalone 里带了一份仓库快照 —— 包括 `tauri/`。
+拷完之后资源树里就出现了自己套自己：
+
+```
+resources/server/tauri/src-tauri/resources/server/tauri/...
+resources/server/tauri/dist/          ← Electron 免安装版，600MB+
+```
+
+实测资源从 **33MB 涨到 8.6GB**，NSIS 打包直接崩（也踩过 safe-delete 阈值中止）。
+
+两处修复：
+1. `tsconfig.json` 的 `exclude` 加 `"tauri"` —— 不加的话 `next build` 的 TS 阶段
+   会去 typecheck 副本里的 `integrations/codexbridge/app/api/**/route.ts`，
+   报 `Cannot find module '@/lib/server/auth'` 直接 `Failed to type check`。
+2. `tracedBuildArtifacts` 加 `"tauri"`，并新增 `pruneSelfNestedDirs()` 兜底；
+   `main()` 末尾加体积护栏：**超过 120MB 就报错**（正常 ~33MB），
+   宁可失败也不要打出个 8GB 的包。
 
 ## 排查手段（GUI 程序没有控制台）
 

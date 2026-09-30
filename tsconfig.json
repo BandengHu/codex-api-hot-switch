@@ -40,6 +40,7 @@
     "dist",
     "dist-*",
     "integrations",
-    "node_modules"
+    "node_modules",
+    "tauri"
   ]
 }

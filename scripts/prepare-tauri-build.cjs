@@ -37,6 +37,12 @@ const tracedBuildArtifacts = [
   "win-unpacked",
   "builder-debug.yml",
   "tsconfig.tsbuildinfo",
+  // Next 的 NFT 全项目追踪会把整个仓库根卷进 `.next/standalone`，
+  // 其中就包含 `tauri/` —— 而 `tauri/src-tauri/resources/server/` 正是本次要写出的目录，
+  // 于是形成自嵌套：资源树里出现 `resources/server/tauri/src-tauri/resources/server/...`，
+  // 且 `tauri/dist/`（Electron 免安装版，600MB+）被一起拖进来，资源从 33MB 涨到 8.6GB。
+  // 之前 tsconfig 没排 `tauri` 时必现；现在排了也仍留着这道保险。
+  "tauri",
 ]
 
 async function exists(p) {
@@ -221,6 +227,40 @@ async function prunePnpmStore(vendorDir) {
   await rmRetry(store, { recursive: true, force: true })
 }
 
+/**
+ * 擦掉资源树里「自嵌套 / 混进构建产物」的目录。
+ *
+ * Next 的 NFT 在部分路由上会退化成「追踪整个项目根」，于是 `.next/standalone`
+ * 里会带上一份仓库快照。拷贝到 `tauri/src-tauri/resources/server/` 之后，就出现
+ * `resources/server/tauri/src-tauri/resources/server/...` 这种自嵌套，
+ * 并且把 `tauri/dist/`（Electron 免安装版，600MB+）一起拖进来 ——
+ * 资源从 33MB 暴涨到 8.6GB，NSIS 打包会直接崩。
+ *
+ * 正常情形下 `main()` 已经用 `tracedBuildArtifacts` 在拷贝前清理过；
+ * 这里只针对「已经落进目标目录」的残留做一次兜底，所以只扫顶层那几个已知名字。
+ */
+async function pruneSelfNestedDirs(serverDir) {
+  const suspicious = [
+    // 最坑的一个：资源树里套着 tauri/，而 tauri/src-tauri/resources/server 就是自己
+    "tauri",
+    ".electron-shell",
+    "dist",
+    "win-unpacked",
+    ".tmp",
+    ".data",
+  ]
+  const removed = []
+  for (const name of suspicious) {
+    const full = path.join(serverDir, name)
+    if (!(await exists(full))) continue
+    await rmRetry(full, { recursive: true, force: true })
+    removed.push(name)
+  }
+  if (removed.length > 0) {
+    console.log(`  已清理误入资源树的构建产物：${removed.join("、")}`)
+  }
+}
+
 async function pruneVendor(vendorDir) {
   // 注意顺序：先清顶层重复包（此时 .pnpm 还在，函数内依赖它判断），
   // 再删 .pnpm 链接农场，否则 pruneDuplicatedTopLevelVendorPackages 会直接短路。
@@ -391,10 +431,24 @@ async function main() {
   if (await exists(nm)) await fs.rename(nm, vendor)
   await pruneVendor(vendor)
 
+  // 兜底：NFT 全项目追踪偶尔会把仓库根塞进 standalone，于是资源树里出现
+  // `resources/server/tauri/`（自嵌套，还带着 600MB 的 `tauri/dist`）。
+  // 上面 `tracedBuildArtifacts` 已经尽量在拷贝前清理，这里再擦一次地。
+  await pruneSelfNestedDirs(targetServerDir)
+
   const maxLen = await assertNoLongPaths(targetServerDir)
   const check = await assertResourcesComplete(targetServerDir)
 
   const size = await dirSize(targetServerDir)
+  // 体积是「是否混进构建产物」的可靠信号：正常 ~33MB。超 120MB 必有问题，
+  // 宁可报错让人查，也不要打出个 8GB 的安装包。
+  if (size > 120 * 1024 * 1024) {
+    throw new Error(
+      `资源树异常膨胀：${(size / 1024 / 1024).toFixed(0)}MB（正常约 33MB）。\n` +
+        `通常是有构建产物被 NFT 追踪卷了进来。请检查 ${targetServerDir} 下是否残留 ` +
+        `tauri/ 、dist/ 、.electron-shell/ 等目录。`,
+    )
+  }
   console.log(`Tauri 资源已就绪：tauri/src-tauri/resources/server`)
   console.log(`  体积 ${(size / 1024 / 1024).toFixed(0)}MB，最长路径 ${maxLen} 字符`)
   console.log(`  关键路径自检通过（api 路由 ${check.apiRoutes} 项，chunks ${check.chunks} 项）`)

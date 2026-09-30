@@ -738,6 +738,9 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
+        // 前端 `selectDesktopDirectory()` 在 Tauri 侧走
+        // `invoke("plugin:dialog|open")`（Electron 侧仍是 preload 的 selectDirectory）。
+        .plugin(tauri_plugin_dialog::init())
         .manage(ServerRuntime::default())
         .invoke_handler(tauri::generate_handler![
             probe_node,
