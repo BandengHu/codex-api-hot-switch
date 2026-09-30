@@ -188,18 +188,34 @@ async function pruneNonRuntimeFiles(dir) {
 }
 
 /**
- * vendor 顶层包多是 .pnpm 内容的重复拷贝；只保留 tsx
- * （企业微信启动器会读 `vendor/tsx/dist/loader.mjs` 作为 --import loader）。
+ * ⚠️ 这个函数**曾经是个 bug**，别再按「顶层包都是冗余」的思路去删。
  *
- * 注意：拷贝阶段已经用 `skipPnpmFilter` 把 .pnpm 剪掉了，所以这里不再以
- * 「.pnpm 是否存在」作为前置条件 —— 那会导致函数直接短路、顶层重复包不被清理。
+ * 历史教训：曾经认为「vendor 顶层包都是 .pnpm 里的重复拷贝，只留 tsx 就够」，
+ * 于是把 `next` / `react` / `react-dom` / `zod` / `better-sqlite3` 等全删了。
+ * 结果安装后 `node server.js` 直接崩：
+ *
+ *   Error: Cannot find module 'next'
+ *   Require stack:
+ *   - ...\resources\server\server.js
+ *
+ * 而外壳的探活只看「8787 能不能连上」，进程崩了它只会一直显示「正在启动…」，
+ * 连报错都没有 —— 极难定位。
+ *
+ * **事实**：`.next/standalone/node_modules/` 下的那批包就是 Next standalone 的
+ * 运行时依赖（实测 11 个：@openai / @wecom / better-sqlite3 / ffmpeg-static /
+ * ffprobe-static / next / react / react-dom / tsx / ws / zod），
+ * `server.js` 第 16 行 `require('next')` 就靠它们解析。
+ * `.pnpm` 才是真正的冗余（只是 pnpm 布局残留），删它安全。
+ *
+ * 所以这里只删 `dist` 这类**明确的构建产物**，运行时要什么就留什么。
  */
-async function pruneDuplicatedTopLevelVendorPackages(vendorDir) {
+async function pruneVendorTopLevelBuildArtifacts(vendorDir) {
   if (!(await exists(vendorDir))) return
-  const keep = new Set([".pnpm", "tsx"])
+  // 仅这些是构建/缓存产物，不可能是运行时依赖
+  const junk = new Set(["dist", "win-unpacked", ".cache"])
   for (const entry of await fs.readdir(vendorDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue
-    if (keep.has(entry.name.toLowerCase())) continue
+    if (!junk.has(entry.name.toLowerCase())) continue
     await rmRetry(path.join(vendorDir, entry.name), { recursive: true, force: true })
   }
 }
@@ -262,8 +278,10 @@ async function pruneSelfNestedDirs(serverDir) {
 }
 
 async function pruneVendor(vendorDir) {
-  // 注意顺序：先清顶层重复包（此时 .pnpm 还在，函数内依赖它判断），
-  // 再删 .pnpm 链接农场，否则 pruneDuplicatedTopLevelVendorPackages 会直接短路。
+  // ⚠️ 顺序与「保留什么」都很关键：
+  // - 只删构建产物（better-sqlite3 的编译中间件、静态工具二进制），
+  //   **顶层运行时包一个都不能删**（next / react / zod … 见上方函数注释里的事故）。
+  // - 最后删 `.pnpm` 链接农场（它才是真冗余，且会触发 NSIS 超长路径）。
   await pruneAllStaticToolBinaries(vendorDir)
   await pruneNonRuntimeFiles(vendorDir)
   for (const rel of [
@@ -275,7 +293,7 @@ async function pruneVendor(vendorDir) {
   ]) {
     await rmRetry(path.join(vendorDir, ...rel), { recursive: true, force: true })
   }
-  await pruneDuplicatedTopLevelVendorPackages(vendorDir)
+  await pruneVendorTopLevelBuildArtifacts(vendorDir)
   await prunePnpmStore(vendorDir)
 }
 
@@ -333,6 +351,28 @@ const REQUIRED_RESOURCE_PATHS = [
   ".next/static",
 ]
 
+/**
+ * `server.js` 运行时会 `require()` 的顶层包，一个都不能少。
+ *
+ * 为什么单独列：体积护栏抓不到这类缺失 —— 删掉 `next`（161MB）只会让资源树
+ * 「变小」，看起来更健康。但装到机器上就是 `Cannot find module 'next'`，
+ * 而外壳只看 8787 通不通，表现为**无报错地一直显示「正在启动」**。
+ *
+ * 实测由 `.next/standalone/node_modules/` 决定（Next 的 outputFileTracing 产物），
+ * 这里是它的快照。若某天 Next 版本变更导致依赖增减，以 standalone 那份为准。
+ */
+const REQUIRED_VENDOR_PACKAGES = [
+  "next",
+  "react",
+  "react-dom",
+  "zod",
+  "ws",
+  "@openai",
+  "@wecom",
+  "better-sqlite3",
+  "tsx",
+]
+
 async function assertResourcesComplete(dir) {
   const missing = []
   for (const rel of REQUIRED_RESOURCE_PATHS) {
@@ -364,9 +404,31 @@ async function assertResourcesComplete(dir) {
     chunks = 0
   }
 
+  // 运行时依赖：vendor 顶层必须有这些包，否则 node server.js 起来就崩。
+  // （只检查存在性；实际可用性由「打包前实跑 server.js」兜底。）
+  const missingVendor = []
+  const vendorDir = path.join(dir, "vendor")
+  for (const pkg of REQUIRED_VENDOR_PACKAGES) {
+    let ok = false
+    try {
+      await fs.stat(path.join(vendorDir, pkg))
+      ok = true
+    } catch {
+      ok = false
+    }
+    if (!ok) missingVendor.push(pkg)
+  }
+
   const problems = [...missing.map((m) => `  缺失：${m}`)]
   if (apiCount < 5) problems.push(`  .next/server/app/api 下只有 ${apiCount} 项（预期 >= 5）`)
   if (chunks < 20) problems.push(`  .next/server/chunks 只有 ${chunks} 项（预期 >= 20）`)
+  if (missingVendor.length > 0) {
+    problems.push(
+      `  vendor 缺少运行时依赖：${missingVendor.join("、")}\n` +
+        `    → server.js 会报「Cannot find module '...'」并崩溃，` +
+        `而外壳只会一直显示「正在启动」。别删 vendor 顶层的包！`,
+    )
+  }
 
   if (problems.length > 0) {
     throw new Error(
@@ -440,11 +502,16 @@ async function main() {
   const check = await assertResourcesComplete(targetServerDir)
 
   const size = await dirSize(targetServerDir)
-  // 体积是「是否混进构建产物」的可靠信号：正常 ~33MB。超 120MB 必有问题，
-  // 宁可报错让人查，也不要打出个 8GB 的安装包。
-  if (size > 120 * 1024 * 1024) {
+  // 体积护栏：只抓「量级错」的情况（自嵌套会把资源撑到 GB 级）。
+  //
+  // ⚠️ 参考值随 vendor 内容变化，别拿它当「越小越好」的指标：
+  // - 正常值 **~237MB**，其中 vendor 约 192MB（next 161MB 是必须的，删了直接崩）；
+  // - 曾经误把 vendor 顶层包删光，掉到 46MB，看起来"更健康"实则打出的包跑不起来。
+  // 所以真正的正确性由 `assertResourcesComplete` 的 REQUIRED_VENDOR_PACKAGES 保证，
+  // 这里只拦 1GB 以上的离谱膨胀。
+  if (size > 1024 * 1024 * 1024) {
     throw new Error(
-      `资源树异常膨胀：${(size / 1024 / 1024).toFixed(0)}MB（正常约 33MB）。\n` +
+      `资源树异常膨胀：${(size / 1024 / 1024).toFixed(0)}MB（正常约 237MB）。\n` +
         `通常是有构建产物被 NFT 追踪卷了进来。请检查 ${targetServerDir} 下是否残留 ` +
         `tauri/ 、dist/ 、.electron-shell/ 等目录。`,
     )

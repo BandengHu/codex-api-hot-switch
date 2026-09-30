@@ -69,6 +69,9 @@ pub struct ServerRuntime {
     child: Mutex<Option<Child>>,
     status: Mutex<ServerStatus>,
     node: Mutex<Option<NodeProbe>>,
+    /// `server.err.log` 所在目录。子进程崩溃时靠它把真实错误回传给引导页 ——
+    /// 否则外壳只探端口，进程死了也只会一直显示「正在启动」。
+    log_dir: Mutex<Option<PathBuf>>,
 }
 
 impl Default for ServerRuntime {
@@ -82,6 +85,7 @@ impl Default for ServerRuntime {
                 owned: false,
             }),
             node: Mutex::new(None),
+            log_dir: Mutex::new(None),
         }
     }
 }
@@ -409,6 +413,8 @@ fn start_server(
         .map(|p| p.join("logs"))
         .unwrap_or_else(|| data_dir.clone());
     std::fs::create_dir_all(&log_dir).ok();
+    // 记下来：子进程若崩溃，`server_status` 要到这里读错误尾部回传给引导页。
+    *state.log_dir.lock().unwrap() = Some(log_dir.clone());
 
     let out_log = std::fs::File::create(log_dir.join("server.out.log")).ok();
     let err_log = std::fs::File::create(log_dir.join("server.err.log")).ok();
@@ -455,15 +461,71 @@ fn start_server(
     Ok(status)
 }
 
+/// 读 `server.err.log` 的尾部，做点清理后返回。
+///
+/// 这条路径是「进程崩了但外壳浑然不知」的唯一解药：`next` 加载失败、
+/// 端口占用、模块缺失之类的错误只会写进 stderr，而外壳原本只探端口，
+/// 于是引导页会**无报错地一直转圈**（真实踩过：`Cannot find module 'next'`）。
+fn read_stderr_tail(state: &State<'_, ServerRuntime>, max_lines: usize) -> Option<String> {
+    let dir = state.log_dir.lock().unwrap().clone()?;
+    let raw = std::fs::read_to_string(dir.join("server.err.log")).ok()?;
+    let text = raw.trim();
+    if text.is_empty() {
+        return None;
+    }
+    // Node 的堆栈又长又吵，只留最后几行有价值的。
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(max_lines);
+    let tail = lines[start..].join("\n");
+    Some(filter_node_noise(&tail))
+}
+
+/// 把堆栈里的噪声行去掉，保留能一眼看出病因的部分。
+fn filter_node_noise(text: &str) -> String {
+    text.lines()
+        .filter(|line| {
+            let t = line.trim();
+            // 过滤 `at ...` 堆栈帧和 `^` 指示符，只留错误头几行
+            !t.starts_with("at ") && t != "^" && !t.starts_with("Node.js v")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
 #[tauri::command]
 fn server_status(state: State<'_, ServerRuntime>) -> ServerStatus {
     let mut status = state.status.lock().unwrap().clone();
-    // 用端口探活修正状态，避免前端拿到过期的 "starting"
+
+    // 端口通了就算成功（权威信号）。
     if status.state == "starting" && health_ok(&status.endpoint) {
         status.state = "running".into();
         status.message = format!("本地中转服务运行中：{}", status.endpoint);
         *state.status.lock().unwrap() = status.clone();
+        return status;
     }
+
+    // 还没到 running，但子进程已经退出了？那就是启动失败 —— 别让引导页傻等。
+    if status.state == "starting" {
+        let exited = {
+            let mut guard = state.child.lock().unwrap();
+            match guard.as_mut() {
+                Some(child) => child.try_wait().ok().flatten().is_some(),
+                // 没记录到子进程（比如复用了已在监听的实例后又断开）
+                None => false,
+            }
+        };
+        if exited {
+            let detail = read_stderr_tail(&state, 12)
+                .unwrap_or_else(|| "子进程已退出，但 server.err.log 为空".into());
+            status.state = "failed".into();
+            status.message = format!("本地中转服务启动失败：\n{detail}");
+            state.child.lock().unwrap().take();
+            *state.status.lock().unwrap() = status.clone();
+        }
+    }
+
     status
 }
 
