@@ -21,11 +21,26 @@ npm exec --yes pnpm@10.21.0 -- dev
 npm exec --yes pnpm@10.21.0 -- desktop
 ```
 
-Windows 安装包：
+Electron 安装包：
 
 ```powershell
 npm exec --yes pnpm@10.21.0 -- desktop:build
 ```
+
+Tauri 安装包：
+
+```powershell
+npm exec --yes pnpm@10.21.0 -- tauri:build
+```
+
+最终安装包统一输出到：
+
+```text
+dist/electron/Codex SwitchGate Setup <version>.exe
+dist/tauri/Codex SwitchGate_<version>_x64-setup.exe
+```
+
+Tauri 的 Cargo 增量编译缓存在 `dist/.tauri-target/`，与发布包分开保存。
 
 当前机器的默认 `pnpm` 版本要求 Node 22+，如果仍使用 Node 20，请继续用上面的 `pnpm@10.21.0` 命令。
 

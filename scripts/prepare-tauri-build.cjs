@@ -34,13 +34,11 @@ const tracedBuildArtifacts = [
   ".electron-shell",
   ".tmp",
   "dist",
-  "win-unpacked",
-  "builder-debug.yml",
   "tsconfig.tsbuildinfo",
   // Next 的 NFT 全项目追踪会把整个仓库根卷进 `.next/standalone`，
   // 其中就包含 `tauri/` —— 而 `tauri/src-tauri/resources/server/` 正是本次要写出的目录，
   // 于是形成自嵌套：资源树里出现 `resources/server/tauri/src-tauri/resources/server/...`，
-  // 且 `tauri/dist/`（Electron 免安装版，600MB+）被一起拖进来，资源从 33MB 涨到 8.6GB。
+  // 且 `dist/`（Electron/Tauri 打包产物）被一起拖进来，资源从 33MB 涨到 8.6GB。
   // 之前 tsconfig 没排 `tauri` 时必现；现在排了也仍留着这道保险。
   "tauri",
 ]
@@ -304,7 +302,7 @@ async function pruneNonRuntimeFiles(dir) {
 async function pruneVendorTopLevelBuildArtifacts(vendorDir) {
   if (!(await exists(vendorDir))) return
   // 仅这些是构建/缓存产物，不可能是运行时依赖
-  const junk = new Set(["dist", "win-unpacked", ".cache"])
+  const junk = new Set(["dist", ".cache"])
   for (const entry of await fs.readdir(vendorDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue
     if (!junk.has(entry.name.toLowerCase())) continue
@@ -341,7 +339,7 @@ async function prunePnpmStore(vendorDir) {
  * Next 的 NFT 在部分路由上会退化成「追踪整个项目根」，于是 `.next/standalone`
  * 里会带上一份仓库快照。拷贝到 `tauri/src-tauri/resources/server/` 之后，就出现
  * `resources/server/tauri/src-tauri/resources/server/...` 这种自嵌套，
- * 并且把 `tauri/dist/`（Electron 免安装版，600MB+）一起拖进来 ——
+ * 并且把 `dist/`（Electron/Tauri 打包产物）一起拖进来 ——
  * 资源从 33MB 暴涨到 8.6GB，NSIS 打包会直接崩。
  *
  * 正常情形下 `main()` 已经用 `tracedBuildArtifacts` 在拷贝前清理过；
@@ -353,7 +351,6 @@ async function pruneSelfNestedDirs(serverDir) {
     "tauri",
     ".electron-shell",
     "dist",
-    "win-unpacked",
     ".tmp",
     ".data",
   ]
@@ -618,7 +615,7 @@ async function main() {
   await pruneVendor(vendorNm)
 
   // 兜底：NFT 全项目追踪偶尔会把仓库根塞进 standalone，于是资源树里出现
-  // `resources/server/tauri/`（自嵌套，还带着 600MB 的 `tauri/dist`）。
+  // `resources/server/tauri/`（自嵌套，还带着打包产物目录 `dist/`）。
   // 上面 `tracedBuildArtifacts` 已经尽量在拷贝前清理，这里再擦一次地。
   await pruneSelfNestedDirs(targetServerDir)
 

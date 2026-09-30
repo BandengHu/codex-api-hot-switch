@@ -13,9 +13,8 @@ const tracedBuildArtifacts = [
   ".electron-shell",
   ".tmp",
   "dist",
-  "win-unpacked",
-  "builder-debug.yml",
   "tsconfig.tsbuildinfo",
+  "tauri",
 ]
 
 async function exists(filePath) {

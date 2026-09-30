@@ -28,7 +28,6 @@ Tauri 用的是**系统 WebView2**，Electron 自带 Chromium。
 tauri/
 ├─ ui/index.html              引导界面：环境自检 → 一键启动 → 跳转控制台
 ├─ vendor-patches/schemars/   上游补丁（见下）
-├─ dist/                      产出的 NSIS 安装器
 └─ src-tauri/
    ├─ Cargo.toml
    ├─ tauri.conf.json
@@ -90,20 +89,18 @@ tauri/
 
 ## 构建
 
-```bash
-# 1. 准备 Next standalone 产物（复用现有构建）
-NODE_OPTIONS= NEXT_TELEMETRY_DISABLED=1 node node_modules/next/dist/bin/next build
-
-# 2. 准备 Tauri 资源（约 23 分钟：拷贝 + 递归裁剪 vendor）
-NODE_OPTIONS= node scripts/prepare-tauri-build.cjs
-
-# 3. 打包安装器
-#    注意：必须在**非沙箱**环境执行，tauri-build 调 rc.exe 写临时 .res 会被沙箱拒绝
-cd tauri/src-tauri && NODE_OPTIONS= cargo tauri build --bundles nsis
+```powershell
+npm exec --yes pnpm@10.21.0 -- tauri:build
 ```
 
-产物：`tauri/src-tauri/target/release/bundle/nsis/Codex SwitchGate_0.2.11_x64-setup.exe`（**8.63 MiB**）
-免安装：`tauri/src-tauri/target/release/codex-switchgate-tauri.exe`（13MB）+ 同级 `resources/server/`
+该命令依次完成 Next standalone 构建、Tauri 资源准备、NSIS 打包，并把最终安装器移到：
+
+```text
+dist/tauri/Codex SwitchGate_<version>_x64-setup.exe
+```
+
+Cargo 增量编译缓存在 `dist/.tauri-target/`。免安装二进制位于
+`dist/.tauri-target/release/codex-switchgate-tauri.exe`，用于本机调试，不作为发布目录中的交付物。
 
 ## 体积 / 内存对比（实测）
 
@@ -253,7 +250,7 @@ error[E0107]: struct takes 3 generic arguments but 2 supplied
 
 ```
 resources/server/tauri/src-tauri/resources/server/tauri/...
-resources/server/tauri/dist/          ← Electron 免安装版，600MB+
+resources/server/dist/                ← 已被误拷的 Electron/Tauri 打包产物
 ```
 
 实测资源从 **33MB 涨到 8.6GB**，NSIS 打包直接崩（也踩过 safe-delete 阈值中止）。
