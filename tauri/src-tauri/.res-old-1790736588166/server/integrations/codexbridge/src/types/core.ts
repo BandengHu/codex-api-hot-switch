@@ -1,0 +1,378 @@
+import type { InboundAttachmentKind } from './platform.js';
+
+export type PermissionsMode = 'default-permissions' | 'auto-review' | 'full-access' | 'custom';
+
+export type ApprovalsReviewer = 'user' | 'auto_review';
+
+export interface PlatformScopeRef {
+  platform: string;
+  externalScopeId: string;
+}
+
+export interface BridgeSession {
+  id: string;
+  providerProfileId: string;
+  codexThreadId: string;
+  cwd: string | null;
+  title: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SessionSettings {
+  bridgeSessionId: string;
+  model: string | null;
+  reasoningEffort: string | null;
+  serviceTier: string | null;
+  collaborationMode?: 'plan' | 'default' | null;
+  personality?: 'friendly' | 'pragmatic' | 'none' | null;
+  permissionsMode?: PermissionsMode | null;
+  accessPreset?: 'read-only' | 'default' | 'full-access' | null;
+  approvalPolicy?: string | null;
+  sandboxMode?: string | null;
+  approvalsReviewer?: ApprovalsReviewer | null;
+  locale: string | null;
+  metadata: Record<string, unknown>;
+  updatedAt: number;
+}
+
+export interface UploadBatchItem {
+  id: string;
+  kind: InboundAttachmentKind;
+  localPath: string;
+  originalPath: string;
+  fileName: string | null;
+  mimeType: string | null;
+  transcriptText: string | null;
+  durationSeconds: number | null;
+  sizeBytes: number | null;
+  receivedAt: number;
+}
+
+export interface UploadBatchState {
+  active: boolean;
+  batchId: string;
+  startedAt: number;
+  updatedAt: number;
+  items: UploadBatchItem[];
+}
+
+export type AssistantRecordType = 'log' | 'todo' | 'reminder' | 'note' | 'uncategorized';
+
+export type AssistantRecordStatus = 'pending' | 'active' | 'done' | 'cancelled' | 'archived';
+
+export type AssistantRecordPriority = 'low' | 'normal' | 'high';
+
+export type AssistantRecordParseStatus = 'auto' | 'confirmed' | 'edited';
+
+export type AssistantAttachmentKind = 'image' | 'video' | 'audio' | 'document' | 'archive' | 'other';
+
+export interface AssistantAttachment {
+  id: string;
+  recordId: string;
+  originalPath: string;
+  storagePath: string;
+  filename: string;
+  originalFilename: string | null;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  sha256: string | null;
+  kind: AssistantAttachmentKind;
+  createdAt: number;
+}
+
+export interface AssistantRecord {
+  id: string;
+  type: AssistantRecordType;
+  status: AssistantRecordStatus;
+  title: string;
+  content: string;
+  originalText: string;
+  priority: AssistantRecordPriority;
+  project: string | null;
+  tags: string[];
+  dueAt: number | null;
+  remindAt: number | null;
+  recurrence: string | null;
+  timezone: string;
+  source: 'weixin' | 'telegram' | 'manual' | 'import';
+  platform: string;
+  scopeId: string;
+  contextThreadId: string | null;
+  attachments: AssistantAttachment[];
+  parseStatus: AssistantRecordParseStatus;
+  confidence: number;
+  parsedJson: Record<string, unknown> | null;
+  lastRemindedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+  completedAt: number | null;
+  cancelledAt: number | null;
+  archivedAt: number | null;
+}
+
+export interface ThreadMetadata {
+  providerProfileId: string;
+  threadId: string;
+  alias: string | null;
+  archivedAt?: number | null;
+  pinnedAt?: number | null;
+  updatedAt: number;
+}
+
+export interface PluginAlias {
+  platform: string;
+  externalScopeId: string;
+  providerProfileId: string;
+  alias: string;
+  pluginId: string;
+  pluginName: string;
+  marketplaceName: string;
+  marketplacePath: string | null;
+  displayName: string | null;
+  updatedAt: number;
+}
+
+export type AutomationMode = 'standalone' | 'thread';
+
+export type AutomationStatus = 'active' | 'paused';
+
+export type AutomationSchedule =
+  | {
+    kind: 'interval';
+    everySeconds: number;
+    label: string;
+  }
+  | {
+    kind: 'daily';
+    hour: number;
+    minute: number;
+    timeZone: string;
+    label: string;
+  }
+  | {
+    kind: 'cron';
+    expression: string;
+    timeZone: string;
+    label: string;
+  };
+
+export interface AutomationJob {
+  id: string;
+  platform: string;
+  externalScopeId: string;
+  title: string;
+  mode: AutomationMode;
+  providerProfileId: string;
+  bridgeSessionId: string;
+  cwd: string | null;
+  prompt: string;
+  locale: string | null;
+  schedule: AutomationSchedule;
+  status: AutomationStatus;
+  running: boolean;
+  nextRunAt: number;
+  lastRunAt: number | null;
+  lastDeliveredAt: number | null;
+  lastResultPreview: string | null;
+  lastError: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type AgentJobCategory = 'code' | 'research' | 'ops' | 'doc' | 'media' | 'mixed';
+
+export type AgentJobRiskLevel = 'low' | 'medium' | 'high';
+
+export type AgentJobMode = 'codex' | 'agents' | 'hybrid';
+
+export interface AgentJobLoopPolicy {
+  maxAttempts?: number | null;
+  maxTurns?: number | null;
+  maxCycles?: number | null;
+  maxNoProgressCycles?: number | null;
+}
+
+export type AgentJobStatus =
+  | 'awaiting_checklist_confirm'
+  | 'awaiting_prompt_confirm'
+  | 'queued'
+  | 'planning'
+  | 'running'
+  | 'verifying'
+  | 'repairing'
+  | 'waiting_user'
+  | 'needs_human'
+  | 'scope_change_pending'
+  | 'handoff'
+  | 'blocked'
+  | 'max_loops_reached'
+  | 'completed'
+  | 'failed'
+  | 'stopped';
+
+export interface MissionRuntimeStateSnapshot {
+  workItem?: Record<string, unknown> | null;
+  mission: Record<string, unknown> | null;
+  generations?: Record<string, unknown>[];
+  checklistSnapshots?: Record<string, unknown>[];
+  planChangeRequests?: Record<string, unknown>[];
+  environmentStamps?: Record<string, unknown>[];
+  checkpoints?: Record<string, unknown>[];
+  attempts: Record<string, unknown>[];
+  events: Record<string, unknown>[];
+}
+
+export interface MissionAttemptHistoryEntry {
+  attempt: number;
+  status: AgentJobStatus;
+  verifierSummary: string | null;
+  outputPreview: string | null;
+  error: string | null;
+  recordedAt: number;
+}
+
+export type AgentJobMissionRuntimeState = MissionRuntimeStateSnapshot;
+
+export type AgentJobAttemptHistoryEntry = MissionAttemptHistoryEntry;
+
+export interface AgentJob {
+  id: string;
+  platform: string;
+  externalScopeId: string;
+  title: string;
+  originalInput: string;
+  goal: string;
+  expectedOutput: string;
+  acceptanceCriteria?: string[];
+  immutablePrompt?: string | null;
+  loopPolicy?: AgentJobLoopPolicy | null;
+  plan: string[];
+  category: AgentJobCategory;
+  riskLevel: AgentJobRiskLevel;
+  mode: AgentJobMode;
+  providerProfileId: string;
+  bridgeSessionId: string;
+  cwd: string | null;
+  locale: string | null;
+  status: AgentJobStatus;
+  running: boolean;
+  stopRequested: boolean;
+  maxAttempts: number;
+  attemptCount: number;
+  lastRunAt: number | null;
+  completedAt: number | null;
+  lastResultPreview: string | null;
+  resultText?: string | null;
+  resultArtifacts?: TurnArtifactDeliveredItem[] | null;
+  lastError: string | null;
+  verificationSummary: string | null;
+  missionWorkflowPath: string | null;
+  missionWorkflowSourceLabel: string | null;
+  missionWorkpadLatestBlocker: string | null;
+  missionWorkpadLatestVerifierSummary: string | null;
+  missionWorkpadFinalResultSummary: string | null;
+  missionAttemptHistory: AgentJobAttemptHistoryEntry[];
+  missionRuntimeState: AgentJobMissionRuntimeState | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface TurnArtifactIntent {
+  requested: boolean;
+  preferredKind: 'image' | 'file' | 'video' | 'audio' | null;
+  requestedFormat: string | null;
+  requestedExtension: string | null;
+  requestedFileName: string | null;
+  userDescription: string | null;
+  requiresClarification: boolean;
+}
+
+export interface TurnArtifactContext {
+  requestId: string;
+  bridgeSessionId: string;
+  artifactDir: string;
+  spoolDir: string;
+  turnId: string | null;
+  intent: TurnArtifactIntent;
+}
+
+export type DeveloperPromptMode =
+  | 'standard'
+  | 'retry-recovery'
+  | 'command-skill-parser'
+  | 'review-result-localizer'
+  | 'agent-result-verifier';
+
+export interface DeveloperPromptContext {
+  mode: DeveloperPromptMode;
+  title?: string | null;
+  source?: string | null;
+  command?: string | null;
+  subcommand?: string | null;
+  operation?: string | null;
+}
+
+export type TurnArtifactDeliveryStage =
+  | 'pending'
+  | 'ready'
+  | 'fallback_ready'
+  | 'limited'
+  | 'ambiguous'
+  | 'missing';
+
+export type TurnArtifactRejectionReason =
+  | 'path_outside_artifact_dir'
+  | 'missing_file'
+  | 'not_file'
+  | 'symlink'
+  | 'invalid_manifest'
+  | 'size_limit'
+  | 'count_limit'
+  | 'ambiguous_candidates';
+
+export type TurnArtifactNoticeCode =
+  | 'count_limited'
+  | 'size_limited'
+  | 'count_and_size_limited'
+  | 'ambiguous_candidates'
+  | 'missing_deliverable';
+
+export interface TurnArtifactDeliveredItem {
+  kind: 'image' | 'file' | 'video' | 'audio';
+  path: string;
+  displayName: string | null;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  caption: string | null;
+  source: 'provider_native' | 'bridge_declared' | 'bridge_fallback';
+  turnId: string | null;
+}
+
+export interface TurnArtifactRejectedItem {
+  path: string | null;
+  displayName: string | null;
+  sizeBytes: number | null;
+  reason: TurnArtifactRejectionReason;
+}
+
+export interface TurnArtifactDeliveryState {
+  requestId: string;
+  bridgeSessionId: string;
+  turnId: string | null;
+  requestedByUser: boolean;
+  requestedFormat: string | null;
+  preferredKind: 'image' | 'file' | 'video' | 'audio' | null;
+  requestedByText: string | null;
+  artifactDir: string;
+  spoolDir: string;
+  stage: TurnArtifactDeliveryStage;
+  fallbackUsed: boolean;
+  manifestDeclaredCount: number;
+  scannedCandidateCount: number;
+  maxArtifactCount: number;
+  maxArtifactSizeBytes: number;
+  noticeCode: TurnArtifactNoticeCode | null;
+  deliveredArtifacts: TurnArtifactDeliveredItem[];
+  rejectedArtifacts: TurnArtifactRejectedItem[];
+}

@@ -1,0 +1,1038 @@
+import type {
+  Model,
+  ModelReasoningDialect,
+  Provider,
+  ProtocolType,
+  ReasoningDialect,
+} from "@/lib/types"
+import { createProviderEndpoint } from "@/lib/provider-endpoints"
+import {
+  WORKBUDDY_API_BASE_URL,
+  WORKBUDDY_GLOBAL_API_BASE_URL,
+  WORKBUDDY_REASONING_DIALECT,
+  workbuddyPresetModelSpecs,
+  workbuddyStaticHeaders,
+} from "@/lib/workbuddy-provider"
+
+export interface ProviderPresetModel {
+  displayName: string
+  modelId: string
+  capabilities: string[]
+  contextLength: number
+  supportsReasoning: boolean
+  reasoningDialect?: ModelReasoningDialect
+  supportsVision: boolean
+}
+
+export interface ProviderPreset {
+  id: string
+  name: string
+  category: "国内" | "海外" | "聚合"
+  protocol: ProtocolType
+  baseUrl: string
+  timeoutMs: number
+  reasoningDialect: ReasoningDialect
+  promptCacheRouting?: "auto" | "enabled" | "disabled"
+  rawResponsesPassthrough?: boolean
+  headers?: Array<{ key: string; value: string }>
+  apiKeyPlaceholder: string
+  note: string
+  deprecatedModelIds?: string[]
+  replacementModelIds?: Record<string, string>
+  models: ProviderPresetModel[]
+}
+
+export interface ProviderPresetDraft {
+  provider: Provider
+  models: Model[]
+}
+
+const CLAUDE_PRESET_MODELS: ProviderPresetModel[] = [
+  {
+    displayName: "Claude Fable 5",
+    modelId: "claude-fable-5",
+    capabilities: ["chat", "reasoning", "vision", "tools"],
+    contextLength: 272000,
+    supportsReasoning: true,
+    supportsVision: true,
+  },
+  {
+    displayName: "Claude Sonnet 5",
+    modelId: "claude-sonnet-5",
+    capabilities: ["chat", "reasoning", "vision", "tools"],
+    contextLength: 400000,
+    supportsReasoning: true,
+    supportsVision: true,
+  },
+  {
+    displayName: "Claude Opus 4.8",
+    modelId: "claude-opus-4-8",
+    capabilities: ["chat", "reasoning", "vision", "tools"],
+    contextLength: 400000,
+    supportsReasoning: true,
+    supportsVision: true,
+  },
+  {
+    displayName: "Claude Sonnet 4.6",
+    modelId: "claude-sonnet-4-6",
+    capabilities: ["chat", "reasoning", "vision", "tools"],
+    contextLength: 400000,
+    supportsReasoning: true,
+    supportsVision: true,
+  },
+  {
+    displayName: "Claude Haiku 4.5",
+    modelId: "claude-haiku-4-5-20251001",
+    capabilities: ["chat", "vision", "tools"],
+    contextLength: 272000,
+    supportsReasoning: false,
+    supportsVision: true,
+  },
+]
+
+const CLAUDE_DEPRECATED_MODEL_IDS = [
+  "claude-mythos-5",
+  "claude-opus-4-6",
+  "claude-opus-4-7",
+]
+
+const CLAUDE_REPLACEMENT_MODEL_IDS = {
+  "claude-mythos-5": "claude-opus-4-8",
+  "claude-opus-4-6": "claude-opus-4-8",
+  "claude-opus-4-7": "claude-opus-4-8",
+}
+
+const OPENAI_DEPRECATED_MODEL_IDS = [
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.3-codex",
+  "gpt-5.2",
+]
+
+const OPENAI_REPLACEMENT_MODEL_IDS: Record<string, string> = {
+  "gpt-5.4": "gpt-5.6-sol",
+  "gpt-5.4-mini": "gpt-5.6-luna",
+  "gpt-5.3-codex": "gpt-5.6-sol",
+  "gpt-5.2": "gpt-5.6-sol",
+}
+
+const OPENAI_CODEX_PRESET_MODELS: ProviderPresetModel[] = [
+  {
+    displayName: "GPT-5.6 Luna",
+    modelId: "gpt-5.6-luna",
+    capabilities: ["chat", "reasoning", "vision", "tools"],
+    contextLength: 372000,
+    supportsReasoning: true,
+    supportsVision: true,
+  },
+  {
+    displayName: "GPT-5.6 Luna Pro",
+    modelId: "gpt-5.6-luna-pro",
+    capabilities: ["chat", "reasoning", "vision", "tools"],
+    contextLength: 372000,
+    supportsReasoning: true,
+    supportsVision: true,
+  },
+  {
+    displayName: "GPT-5.6 Terra",
+    modelId: "gpt-5.6-terra",
+    capabilities: ["chat", "reasoning", "vision", "tools"],
+    contextLength: 372000,
+    supportsReasoning: true,
+    supportsVision: true,
+  },
+  {
+    displayName: "GPT-5.6 Terra Pro",
+    modelId: "gpt-5.6-terra-pro",
+    capabilities: ["chat", "reasoning", "vision", "tools"],
+    contextLength: 372000,
+    supportsReasoning: true,
+    supportsVision: true,
+  },
+  {
+    displayName: "GPT-5.6 Sol",
+    modelId: "gpt-5.6-sol",
+    capabilities: ["chat", "reasoning", "vision", "tools"],
+    contextLength: 372000,
+    supportsReasoning: true,
+    supportsVision: true,
+  },
+  {
+    displayName: "GPT-5.6 Sol Pro",
+    modelId: "gpt-5.6-sol-pro",
+    capabilities: ["chat", "reasoning", "vision", "tools"],
+    contextLength: 372000,
+    supportsReasoning: true,
+    supportsVision: true,
+  },
+  {
+    displayName: "GPT-5.5",
+    modelId: "gpt-5.5",
+    capabilities: ["chat", "reasoning", "vision", "tools"],
+    contextLength: 272000,
+    supportsReasoning: true,
+    supportsVision: true,
+  },
+]
+
+const OPENAI_COMPATIBLE_PRESET_MODELS: ProviderPresetModel[] = [
+  {
+    displayName: "GPT Image 2",
+    modelId: "gpt-image-2",
+    capabilities: ["image_generation"],
+    contextLength: 0,
+    supportsReasoning: false,
+    supportsVision: false,
+  },
+  ...OPENAI_CODEX_PRESET_MODELS,
+]
+
+const OPENAI_OFFICIAL_PRESET_MODELS: ProviderPresetModel[] = [
+  {
+    displayName: "GPT Image 2",
+    modelId: "gpt-image-2",
+    capabilities: ["image_generation"],
+    contextLength: 0,
+    supportsReasoning: false,
+    supportsVision: false,
+  },
+  ...OPENAI_CODEX_PRESET_MODELS,
+]
+
+/**
+ * WorkBuddy 预设模型。
+ *
+ * 国内站与国际站共用同一份模型规格（`workbuddyPresetModelSpecs()`），上游目录里
+ * 还有别的模型时，控制台「获取模型」会按各自 realm 的目录接口补全。
+ */
+const WORKBUDDY_PRESET_MODELS_FOR_PRESET: ProviderPresetModel[] = workbuddyPresetModelSpecs().map(
+  (spec) => ({
+    displayName: spec.displayName,
+    modelId: spec.modelId,
+    capabilities: [
+      "chat",
+      ...(spec.supportsReasoning ? ["reasoning"] : []),
+      ...(spec.supportsVision ? ["vision"] : []),
+      "tools",
+    ],
+    contextLength: spec.contextLength,
+    supportsReasoning: spec.supportsReasoning,
+    reasoningDialect: WORKBUDDY_REASONING_DIALECT,
+    supportsVision: spec.supportsVision,
+  }),
+)
+
+export const PROVIDER_PRESETS: ProviderPreset[] = [
+  {
+    id: "workbuddy-cn",
+    name: "WorkBuddy 国内账号",
+    category: "国内",
+    protocol: "openai-chat",
+    baseUrl: WORKBUDDY_API_BASE_URL,
+    timeoutMs: 180000,
+    reasoningDialect: WORKBUDDY_REASONING_DIALECT,
+    headers: workbuddyStaticHeaders().map((header) => ({ key: header.key, value: header.value })),
+    apiKeyPlaceholder: "无需填写，请求时自动注入本机/号池登录态",
+    note: "腾讯 CodeBuddy 国内站（www.codebuddy.cn）本机账号。上游是 OpenAI Chat 协议，下游的 /v1/responses 会由本地中转转成 Chat 再转发。凭据按请求从「WorkBuddy 号池」当前生效账号注入，这里不用填 Key。",
+    models: WORKBUDDY_PRESET_MODELS_FOR_PRESET,
+  },
+  {
+    id: "workbuddy-global",
+    name: "WorkBuddy 国际账号",
+    category: "海外",
+    protocol: "openai-chat",
+    baseUrl: WORKBUDDY_GLOBAL_API_BASE_URL,
+    timeoutMs: 180000,
+    reasoningDialect: WORKBUDDY_REASONING_DIALECT,
+    headers: workbuddyStaticHeaders().map((header) => ({ key: header.key, value: header.value })),
+    apiKeyPlaceholder: "无需填写，请求时自动注入国际版号池登录态",
+    note: "WorkBuddy 国际站（www.workbuddy.ai）账号，与国内站相互独立。凭据按请求从「WorkBuddy 国际版号池」当前生效账号注入（可在号池页指定用哪个账号）。模型目录走 /v2/enterprises/personal/models，并补上目录未列出的 deepseek-v4.1-flash / deepseek-v3。",
+    models: WORKBUDDY_PRESET_MODELS_FOR_PRESET,
+  },
+  {
+    id: "sharesai-relay",
+    name: "SharesAI / 白白中转",
+    category: "聚合",
+    protocol: "openai-responses",
+    baseUrl: "https://api.sharesai.xyz/v1",
+    timeoutMs: 600000,
+    reasoningDialect: "openai-reasoning-effort",
+    apiKeyPlaceholder: "SharesAI API Key",
+    note: "SharesAI Codex/OpenAI Responses 兼容中转，已在上游完成协议适配；模型目录已对齐 cc-switch v3.20.4，旧 GPT 模型不再进预设。",
+    deprecatedModelIds: OPENAI_DEPRECATED_MODEL_IDS,
+    replacementModelIds: OPENAI_REPLACEMENT_MODEL_IDS,
+    models: OPENAI_COMPATIBLE_PRESET_MODELS,
+  },
+  {
+    id: "openai-official",
+    name: "OpenAI 官方",
+    category: "海外",
+    protocol: "openai-responses",
+    baseUrl: "https://api.openai.com/v1",
+    timeoutMs: 60000,
+    reasoningDialect: "openai-reasoning-effort",
+    apiKeyPlaceholder: "sk-...",
+    note: "OpenAI 官方 Responses 入口，适合作为 Codex 默认接管出口；保留 GPT-5.5 和 GPT-5.6 系列，旧 GPT 模型不再进预设。",
+    deprecatedModelIds: OPENAI_DEPRECATED_MODEL_IDS,
+    replacementModelIds: OPENAI_REPLACEMENT_MODEL_IDS,
+    models: OPENAI_OFFICIAL_PRESET_MODELS,
+  },
+  {
+    id: "anthropic-official",
+    name: "Anthropic Claude 官方",
+    category: "海外",
+    protocol: "anthropic",
+    baseUrl: "https://api.anthropic.com/v1",
+    timeoutMs: 600000,
+    reasoningDialect: "none",
+    apiKeyPlaceholder: "sk-ant-...",
+    note: "Anthropic Messages 原生协议入口；本地中转会把 Codex/OpenAI Responses 与 Chat 请求转换成 Claude Messages。Fable/Mythos 5 访问已暂停，默认迁移到 Opus 4.8。",
+    deprecatedModelIds: CLAUDE_DEPRECATED_MODEL_IDS,
+    replacementModelIds: CLAUDE_REPLACEMENT_MODEL_IDS,
+    models: CLAUDE_PRESET_MODELS,
+  },
+  {
+    id: "auth2api-claude-oauth",
+    name: "auth2api Claude OAuth",
+    category: "海外",
+    protocol: "openai-responses",
+    baseUrl: "http://127.0.0.1:8317/v1",
+    timeoutMs: 600000,
+    reasoningDialect: "openai-reasoning-effort",
+    apiKeyPlaceholder: "auth2api 配置的 api-key",
+    note: "auth2api 本地 OAuth 网关，Claude 订阅账号登录后可用；它同时支持 /v1/responses、/v1/chat/completions 和 /v1/messages。",
+    deprecatedModelIds: CLAUDE_DEPRECATED_MODEL_IDS,
+    replacementModelIds: CLAUDE_REPLACEMENT_MODEL_IDS,
+    models: CLAUDE_PRESET_MODELS,
+  },
+  {
+    id: "cliproxyapi-claude-oauth",
+    name: "CLIProxyAPI Claude OAuth",
+    category: "聚合",
+    protocol: "openai-responses",
+    baseUrl: "http://127.0.0.1:8317",
+    timeoutMs: 600000,
+    reasoningDialect: "openai-reasoning-effort",
+    apiKeyPlaceholder: "CLIProxyAPI 管理密钥或任意本地 key",
+    note: "CLIProxyAPI 本地多账号网关，默认端口 8317；适合把 Claude Code OAuth、多账号轮询和本项目热切换串起来。",
+    deprecatedModelIds: CLAUDE_DEPRECATED_MODEL_IDS,
+    replacementModelIds: CLAUDE_REPLACEMENT_MODEL_IDS,
+    models: CLAUDE_PRESET_MODELS,
+  },
+  {
+    id: "ccproxy-claude-sdk",
+    name: "CCProxy Claude SDK",
+    category: "聚合",
+    protocol: "openai-responses",
+    baseUrl: "http://127.0.0.1:8000/claude/sdk/v1",
+    timeoutMs: 600000,
+    reasoningDialect: "openai-reasoning-effort",
+    apiKeyPlaceholder: "sk-dummy",
+    note: "CCProxy Claude Code SDK 插件入口，复用本机 Claude Code 登录与 MCP 环境；如使用 Claude API 插件，可把 Base URL 改为 /claude/v1。",
+    deprecatedModelIds: CLAUDE_DEPRECATED_MODEL_IDS,
+    replacementModelIds: CLAUDE_REPLACEMENT_MODEL_IDS,
+    models: CLAUDE_PRESET_MODELS,
+  },
+  {
+    id: "ccproxy-claude-api",
+    name: "CCProxy Claude API",
+    category: "聚合",
+    protocol: "openai-responses",
+    baseUrl: "http://127.0.0.1:8000/claude/v1",
+    timeoutMs: 600000,
+    reasoningDialect: "openai-reasoning-effort",
+    apiKeyPlaceholder: "sk-dummy",
+    note: "CCProxy Claude API 插件入口，提供 OpenAI Chat/Responses 到 Claude 的适配；更偏向 OAuth 后直连 Anthropic API。",
+    deprecatedModelIds: CLAUDE_DEPRECATED_MODEL_IDS,
+    replacementModelIds: CLAUDE_REPLACEMENT_MODEL_IDS,
+    models: CLAUDE_PRESET_MODELS,
+  },
+  {
+    id: "deepseek",
+    name: "DeepSeek",
+    category: "国内",
+    protocol: "openai-responses",
+    baseUrl: "https://api.deepseek.com",
+    timeoutMs: 120000,
+    reasoningDialect: "openai-reasoning-effort",
+    rawResponsesPassthrough: true,
+    apiKeyPlaceholder: "sk-...",
+    note: "DeepSeek 官方 Codex Responses 直连入口；deepseek-flash 是 V4.1 Flash，支持 low/high/max。",
+    deprecatedModelIds: ["deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash"],
+    replacementModelIds: {
+      "deepseek-reasoner": "deepseek-v4-pro",
+      "deepseek-chat": "deepseek-flash",
+      "deepseek-v4-flash": "deepseek-flash",
+    },
+    models: [
+      {
+        displayName: "DeepSeek V4.1 Flash",
+        modelId: "deepseek-flash",
+        capabilities: ["chat", "reasoning", "vision", "tools"],
+        contextLength: 1048576,
+        supportsReasoning: true,
+        supportsVision: true,
+      },
+      {
+        displayName: "DeepSeek V4 Pro",
+        modelId: "deepseek-v4-pro",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 1048576,
+        supportsReasoning: true,
+        supportsVision: false,
+      },
+    ],
+  },
+  {
+    id: "code-plan-grok",
+    name: "Code-Plan Grok",
+    category: "聚合",
+    protocol: "openai-responses",
+    baseUrl: "https://code-plan.site/v1",
+    timeoutMs: 600000,
+    reasoningDialect: "auto",
+    apiKeyPlaceholder: "Code-Plan API Key",
+    note: "Code-Plan OpenAI-compatible 聚合入口；grok-4.5 已实测支持 /v1/responses 文本、流式、reasoning 和 function_call。默认走 Responses，不额外注入 Chat 推理方言。",
+    models: [
+      {
+        displayName: "Grok 4.5",
+        modelId: "grok-4.5",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 500000,
+        supportsReasoning: true,
+        reasoningDialect: "none",
+        supportsVision: false,
+      },
+      {
+        displayName: "Grok 4.3",
+        modelId: "grok-4.3",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 256000,
+        supportsReasoning: true,
+        reasoningDialect: "none",
+        supportsVision: false,
+      },
+      {
+        displayName: "Grok 4.20 Reasoning",
+        modelId: "grok-4.20-0309-reasoning",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 256000,
+        supportsReasoning: true,
+        reasoningDialect: "none",
+        supportsVision: false,
+      },
+      {
+        displayName: "Grok 4.20 Non Reasoning",
+        modelId: "grok-4.20-0309-non-reasoning",
+        capabilities: ["chat", "tools"],
+        contextLength: 256000,
+        supportsReasoning: false,
+        reasoningDialect: "none",
+        supportsVision: false,
+      },
+      {
+        displayName: "Grok 4.20 Multi Agent",
+        modelId: "grok-4.20-multi-agent-0309",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 256000,
+        supportsReasoning: true,
+        reasoningDialect: "none",
+        supportsVision: false,
+      },
+      {
+        displayName: "Grok 3 Mini",
+        modelId: "grok-3-mini",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 131072,
+        supportsReasoning: true,
+        reasoningDialect: "none",
+        supportsVision: false,
+      },
+      {
+        displayName: "Grok 3 Mini Fast",
+        modelId: "grok-3-mini-fast",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 131072,
+        supportsReasoning: true,
+        reasoningDialect: "none",
+        supportsVision: false,
+      },
+      {
+        displayName: "Grok Build 0.1",
+        modelId: "grok-build-0.1",
+        capabilities: ["chat", "tools"],
+        contextLength: 131072,
+        supportsReasoning: false,
+        reasoningDialect: "none",
+        supportsVision: false,
+      },
+      {
+        displayName: "Grok Composer 2.5 Fast",
+        modelId: "grok-composer-2.5-fast",
+        capabilities: ["chat", "tools"],
+        contextLength: 131072,
+        supportsReasoning: false,
+        reasoningDialect: "none",
+        supportsVision: false,
+      },
+    ],
+  },
+  {
+    id: "qwen-bailian",
+    name: "阿里百炼 Qwen",
+    category: "国内",
+    protocol: "openai-responses",
+    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    timeoutMs: 120000,
+    reasoningDialect: "openai-reasoning-effort",
+    rawResponsesPassthrough: true,
+    apiKeyPlaceholder: "sk-...",
+    note: "DashScope compatible-mode 原生 Responses 入口；Qwen3.8 官方档位为 low/medium/xhigh，直连不做旧档位钳制。",
+    deprecatedModelIds: [
+      "qwen-plus",
+      "qwen3-max",
+      "qwen3.5-plus",
+      "qwen3-turbo",
+      "qwen3-coder-plus",
+      "qwen3.6-flash",
+      "qwen3.6-plus",
+      "qwen3.7-plus",
+    ],
+    replacementModelIds: {
+      "qwen-plus": "qwen3.8-max",
+      "qwen3-max": "qwen3.8-max",
+      "qwen3.5-plus": "qwen3.8-max",
+      "qwen3-turbo": "qwen3.8-max",
+      "qwen3-coder-plus": "qwen3.8-max",
+      "qwen3.6-flash": "qwen3.8-max",
+      "qwen3.6-plus": "qwen3.8-max",
+      "qwen3.7-plus": "qwen3.8-max",
+    },
+    models: [
+      {
+        displayName: "Qwen3.8 Max",
+        modelId: "qwen3.8-max",
+        capabilities: ["chat", "reasoning", "vision", "tools"],
+        contextLength: 983616,
+        supportsReasoning: true,
+        supportsVision: true,
+      },
+      {
+        displayName: "Qwen3.8 2.4T A95B",
+        modelId: "qwen3.8-2.4t-a95b",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 983616,
+        supportsReasoning: true,
+        supportsVision: false,
+      },
+      {
+        displayName: "Qwen3.8 27B",
+        modelId: "qwen3.8-27b",
+        capabilities: ["chat", "reasoning", "vision", "tools"],
+        contextLength: 983616,
+        supportsReasoning: true,
+        supportsVision: true,
+      },
+      {
+        displayName: "Qwen3.7 Max",
+        modelId: "qwen3.7-max",
+        capabilities: ["chat", "reasoning", "vision", "tools"],
+        contextLength: 1000000,
+        supportsReasoning: true,
+        supportsVision: true,
+      },
+    ],
+  },
+  {
+    id: "kimi",
+    name: "Kimi / Moonshot",
+    category: "国内",
+    protocol: "openai-responses",
+    baseUrl: "https://api.moonshot.cn/v1",
+    timeoutMs: 120000,
+    reasoningDialect: "openai-reasoning-effort",
+    rawResponsesPassthrough: true,
+    apiKeyPlaceholder: "sk-...",
+    note: "Moonshot 官方 Codex Responses 直连入口；Kimi K3 官方档位为 low/high/max，K2.7 Code 为 high。",
+    deprecatedModelIds: [
+      "kimi-k2-0711-preview",
+      "kimi-k2-0905-preview",
+      "kimi-k2-turbo-preview",
+      "kimi-k2.6",
+      "kimi-k2.5",
+      "moonshot-v1-128k",
+    ],
+    replacementModelIds: {
+      "kimi-k2-0711-preview": "kimi-k3",
+      "kimi-k2-0905-preview": "kimi-k3",
+      "kimi-k2-turbo-preview": "kimi-k3",
+      "kimi-k2.6": "kimi-k3",
+      "kimi-k2.5": "kimi-k3",
+      "moonshot-v1-128k": "kimi-k3",
+    },
+    models: [
+      {
+        displayName: "Kimi K3",
+        modelId: "kimi-k3",
+        capabilities: ["chat", "reasoning", "vision", "tools"],
+        contextLength: 1048576,
+        supportsReasoning: true,
+        supportsVision: true,
+      },
+      {
+        displayName: "Kimi K2.7 Code",
+        modelId: "kimi-k2.7-code",
+        capabilities: ["chat", "reasoning", "vision", "tools"],
+        contextLength: 262144,
+        supportsReasoning: true,
+        supportsVision: true,
+      },
+    ],
+  },
+  {
+    id: "zhipu-glm",
+    name: "智谱 GLM",
+    category: "国内",
+    protocol: "openai-responses",
+    baseUrl: "https://open.bigmodel.cn/api/v1",
+    timeoutMs: 120000,
+    reasoningDialect: "openai-reasoning-effort",
+    rawResponsesPassthrough: true,
+    apiKeyPlaceholder: "sk-...",
+    note: "智谱 Codex Responses 直连入口；必须使用 /api/v1，Coding Plan 的 Chat 端点 /api/coding/paas/v4 不能混用。GLM-5.3 官方档位为 low/high/max。",
+    deprecatedModelIds: ["glm-4.6", "glm-4.5", "glm-4.7", "glm-5", "glm-5.1"],
+    replacementModelIds: {
+      "glm-4.6": "glm-5.3",
+      "glm-4.5": "glm-5-turbo",
+      "glm-4.7": "glm-5.3",
+      "glm-5": "glm-5.3",
+      "glm-5.1": "glm-5.3",
+    },
+    models: [
+      {
+        displayName: "GLM-5.3",
+        modelId: "glm-5.3",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 1048576,
+        supportsReasoning: true,
+        supportsVision: false,
+      },
+      {
+        displayName: "GLM-5.3-Flash",
+        modelId: "glm-5.3-flash",
+        capabilities: ["chat", "reasoning", "vision", "tools"],
+        contextLength: 1048576,
+        supportsReasoning: true,
+        supportsVision: true,
+      },
+      {
+        displayName: "GLM-5-Turbo",
+        modelId: "glm-5-turbo",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 204800,
+        supportsReasoning: true,
+        supportsVision: false,
+      },
+    ],
+  },
+  {
+    id: "siliconflow",
+    name: "硅基流动 SiliconFlow",
+    category: "国内",
+    protocol: "openai-chat",
+    baseUrl: "https://api.siliconflow.cn/v1",
+    timeoutMs: 120000,
+    reasoningDialect: "siliconflow-enable-thinking",
+    apiKeyPlaceholder: "sk-...",
+    note: "硅基流动 OpenAI Chat 入口；对齐 cc-switch v3.20.4，平台 Chat API 只区分 high/max。",
+    deprecatedModelIds: [
+      "deepseek-ai/deepseek-r1",
+      "deepseek-ai/DeepSeek-V4-Pro",
+      "moonshotai/Kimi-K2.6",
+      "zai-org/GLM-5.1",
+      "Qwen/Qwen3.5-397B-A17B",
+      "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+    ],
+    replacementModelIds: {
+      "deepseek-ai/deepseek-r1": "deepseek-ai/DeepSeek-V4-Flash",
+      "deepseek-ai/DeepSeek-V4-Pro": "deepseek-ai/DeepSeek-V4-Flash",
+      "moonshotai/Kimi-K2.6": "deepseek-ai/DeepSeek-V4-Flash",
+      "zai-org/GLM-5.1": "deepseek-ai/DeepSeek-V4-Flash",
+      "Qwen/Qwen3.5-397B-A17B": "deepseek-ai/DeepSeek-V4-Flash",
+      "Qwen/Qwen3-Coder-480B-A35B-Instruct": "deepseek-ai/DeepSeek-V4-Flash",
+    },
+    models: [
+      {
+        displayName: "MiniMax M3",
+        modelId: "MiniMaxAI/MiniMax-M3",
+        capabilities: ["chat", "reasoning", "vision", "tools"],
+        contextLength: 1048576,
+        supportsReasoning: true,
+        supportsVision: true,
+      },
+      {
+        displayName: "DeepSeek V4 Flash",
+        modelId: "deepseek-ai/DeepSeek-V4-Flash",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 1048576,
+        supportsReasoning: true,
+        supportsVision: false,
+      },
+    ],
+  },
+  {
+    id: "volcengine-ark",
+    name: "火山方舟 Ark",
+    category: "国内",
+    protocol: "openai-responses",
+    baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3",
+    timeoutMs: 120000,
+    reasoningDialect: "openai-reasoning-effort",
+    rawResponsesPassthrough: true,
+    apiKeyPlaceholder: "Bearer token",
+    note: "火山 Agent Plan Responses 直连入口；必须使用 /api/plan/v3，按量 /api/v3 不消耗套餐额度。ark-code-latest 官方档位为 low/medium/high。",
+    deprecatedModelIds: [
+      "doubao-seed-1-6",
+      "doubao-seed-1-6-flash-250615",
+      "doubao-seed-2-0-pro-260215",
+      "doubao-seed-2-0-lite-260215",
+      "doubao-seed-2-0-mini-260215",
+      "doubao-seed-2-0-code-preview-latest",
+      "doubao-seed-2-0-code-preview-260215",
+    ],
+    replacementModelIds: {
+      "doubao-seed-1-6": "ark-code-latest",
+      "doubao-seed-1-6-flash-250615": "ark-code-latest",
+      "doubao-seed-2-0-pro-260215": "ark-code-latest",
+      "doubao-seed-2-0-lite-260215": "ark-code-latest",
+      "doubao-seed-2-0-mini-260215": "ark-code-latest",
+      "doubao-seed-2-0-code-preview-latest": "ark-code-latest",
+      "doubao-seed-2-0-code-preview-260215": "ark-code-latest",
+    },
+    models: [
+      {
+        displayName: "Ark Code Latest",
+        modelId: "ark-code-latest",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 256000,
+        supportsReasoning: true,
+        supportsVision: false,
+      },
+    ],
+  },
+  {
+    id: "minimax",
+    name: "MiniMax",
+    category: "国内",
+    protocol: "openai-responses",
+    baseUrl: "https://api.minimax.cn/v1",
+    timeoutMs: 120000,
+    reasoningDialect: "openai-reasoning-effort",
+    rawResponsesPassthrough: true,
+    apiKeyPlaceholder: "sk-...",
+    note: "MiniMax 国内站 Codex Responses 直连入口；国际站 api.minimax.io 与国内站账号不互通，按账号在表单里改 Base URL。M3 官方档位为 none/high。",
+    deprecatedModelIds: [
+      "minimax-text-01",
+      "minimax-m1",
+      "MiniMax-M2.7",
+      "MiniMax-M2.7-highspeed",
+    ],
+    replacementModelIds: {
+      "minimax-text-01": "MiniMax-M3",
+      "minimax-m1": "MiniMax-M3",
+      "MiniMax-M2.7": "MiniMax-M3",
+      "MiniMax-M2.7-highspeed": "MiniMax-M3",
+    },
+    models: [
+      {
+        displayName: "MiniMax M3",
+        modelId: "MiniMax-M3",
+        capabilities: ["chat", "reasoning", "vision", "tools"],
+        contextLength: 1000000,
+        supportsReasoning: true,
+        supportsVision: true,
+      },
+    ],
+  },
+  {
+    id: "stepfun",
+    name: "阶跃星辰 StepFun",
+    category: "国内",
+    protocol: "openai-chat",
+    baseUrl: "https://api.stepfun.com/step_plan/v1",
+    timeoutMs: 120000,
+    reasoningDialect: "stepfun-low-high",
+    apiKeyPlaceholder: "sk-...",
+    note: "StepFun OpenAI-compatible 入口，推理档位会归一到 low/medium/high。",
+    deprecatedModelIds: ["step-3", "step-2-16k"],
+    replacementModelIds: {
+      "step-3": "step-3.7-flash",
+      "step-2-16k": "step-3.5-flash",
+    },
+    models: [
+      {
+        displayName: "Step 3.7 Flash",
+        modelId: "step-3.7-flash",
+        capabilities: ["chat", "reasoning", "vision", "tools"],
+        contextLength: 262144,
+        supportsReasoning: true,
+        supportsVision: true,
+      },
+      {
+        displayName: "Step 3.5 Flash 2603",
+        modelId: "step-3.5-flash-2603",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 262144,
+        supportsReasoning: true,
+        supportsVision: false,
+      },
+      {
+        displayName: "Step 3.5 Flash",
+        modelId: "step-3.5-flash",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 262144,
+        supportsReasoning: true,
+        supportsVision: false,
+      },
+    ],
+  },
+  {
+    id: "baidu-qianfan",
+    name: "百度千帆",
+    category: "国内",
+    protocol: "openai-chat",
+    baseUrl: "https://qianfan.baidubce.com/v2/coding",
+    timeoutMs: 120000,
+    reasoningDialect: "none",
+    apiKeyPlaceholder: "Bearer token",
+    note: "千帆 Coding Plan OpenAI Chat 入口；qianfan-code-latest 支持思考开关，但别名解析到底层模型时能力可能受限。",
+    deprecatedModelIds: [
+      "ernie-x1-32k",
+      "ernie-5.0-thinking-latest",
+      "ernie-x1.1",
+      "ernie-5.1",
+      "ernie-5.0-thinking-preview",
+      "ernie-x1.1-preview",
+      "deepseek-v4-pro",
+      "deepseek-v4-flash",
+      "deepseek-v3.2",
+    ],
+    replacementModelIds: {
+      "ernie-x1-32k": "qianfan-code-latest",
+      "ernie-5.0-thinking-latest": "qianfan-code-latest",
+      "ernie-x1.1": "qianfan-code-latest",
+      "ernie-5.1": "qianfan-code-latest",
+      "ernie-5.0-thinking-preview": "qianfan-code-latest",
+      "ernie-x1.1-preview": "qianfan-code-latest",
+      "deepseek-v4-pro": "qianfan-code-latest",
+      "deepseek-v4-flash": "qianfan-code-latest",
+      "deepseek-v3.2": "qianfan-code-latest",
+    },
+    models: [
+      {
+        displayName: "Qianfan Code Latest",
+        modelId: "qianfan-code-latest",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 131072,
+        supportsReasoning: true,
+        supportsVision: false,
+      },
+    ],
+  },
+  {
+    id: "tencent-hunyuan",
+    name: "腾讯 TokenHub",
+    category: "国内",
+    protocol: "openai-responses",
+    baseUrl: "https://tokenhub.tencentmaas.com/v1",
+    timeoutMs: 120000,
+    reasoningDialect: "openai-reasoning-effort",
+    rawResponsesPassthrough: true,
+    apiKeyPlaceholder: "sk-...",
+    note: "腾讯 TokenHub 按量 Responses 直连入口；须用 TokenHub API Key，订阅 Key 只能走各自 Plan 端点。Hy4 官方档位为 none/high，Hy3 为 low/high。",
+    deprecatedModelIds: [
+      "hunyuan-turbos-latest",
+      "hunyuan-t1-latest",
+      "deepseek-v4-pro",
+      "deepseek-v4-flash",
+    ],
+    replacementModelIds: {
+      "hunyuan-turbos-latest": "hy3-preview",
+      "hunyuan-t1-latest": "hy3-preview",
+      "deepseek-v4-pro": "hy4-preview",
+      "deepseek-v4-flash": "hy4-preview",
+    },
+    models: [
+      {
+        displayName: "Hy3",
+        modelId: "hy3",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 256000,
+        supportsReasoning: true,
+        supportsVision: false,
+      },
+      {
+        displayName: "Hy4 Preview",
+        modelId: "hy4-preview",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 960000,
+        supportsReasoning: true,
+        supportsVision: false,
+      },
+      {
+        displayName: "Hy3 Preview",
+        modelId: "hy3-preview",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 256000,
+        supportsReasoning: true,
+        supportsVision: false,
+      },
+    ],
+  },
+  {
+    id: "modelscope",
+    name: "ModelScope",
+    category: "聚合",
+    protocol: "openai-chat",
+    baseUrl: "https://api-inference.modelscope.cn/v1",
+    timeoutMs: 120000,
+    reasoningDialect: "siliconflow-enable-thinking",
+    apiKeyPlaceholder: "ms-...",
+    note: "ModelScope OpenAI Chat 入口；cc-switch v3.20.4 预设默认使用免费 API-Inference 清单内的 GLM-5.2，不注入平台未证实的思考字段。",
+    deprecatedModelIds: ["ZhipuAI/GLM-5.1"],
+    replacementModelIds: {
+      "ZhipuAI/GLM-5.1": "ZhipuAI/GLM-5.2",
+    },
+    models: [
+      {
+        displayName: "ZhipuAI / GLM-5.2",
+        modelId: "ZhipuAI/GLM-5.2",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 200000,
+        supportsReasoning: true,
+        supportsVision: false,
+      },
+    ],
+  },
+  {
+    id: "longcat",
+    name: "LongCat",
+    category: "国内",
+    protocol: "openai-responses",
+    baseUrl: "https://api.longcat.chat/openai/v1",
+    timeoutMs: 120000,
+    reasoningDialect: "none",
+    rawResponsesPassthrough: true,
+    apiKeyPlaceholder: "sk-...",
+    note: "LongCat 官方 Codex Responses 直连入口；LongCat-2.0 仅保留官方示例的 high 档，关思考走另一字段，不提供 none 假档。",
+    deprecatedModelIds: ["LongCat-Flash-Chat"],
+    replacementModelIds: {
+      "LongCat-Flash-Chat": "LongCat-2.0",
+    },
+    models: [
+      {
+        displayName: "LongCat 2.0",
+        modelId: "LongCat-2.0",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 1048576,
+        supportsReasoning: true,
+        supportsVision: false,
+      },
+    ],
+  },
+  {
+    id: "xiaomi-mimo",
+    name: "小米 MiMo",
+    category: "国内",
+    protocol: "openai-responses",
+    baseUrl: "https://api.xiaomimimo.com/v1",
+    timeoutMs: 120000,
+    reasoningDialect: "openai-reasoning-effort",
+    rawResponsesPassthrough: true,
+    apiKeyPlaceholder: "sk-...",
+    note: "小米 MiMo 官方 Codex Responses 直连入口；官方只保留 none/high 两档，low/medium 与 high 效果一致。",
+    models: [
+      {
+        displayName: "MiMo V2.5 Pro",
+        modelId: "mimo-v2.5-pro",
+        capabilities: ["chat", "reasoning", "tools"],
+        contextLength: 1048576,
+        supportsReasoning: true,
+        supportsVision: false,
+      },
+      {
+        displayName: "MiMo V2.5",
+        modelId: "mimo-v2.5",
+        capabilities: ["chat", "reasoning", "vision", "tools"],
+        contextLength: 1048576,
+        supportsReasoning: true,
+        supportsVision: true,
+      },
+    ],
+  },
+]
+
+function stamp(prefix: string) {
+  return `${prefix}-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`
+}
+
+export function findProviderPreset(id: string) {
+  return PROVIDER_PRESETS.find((preset) => preset.id === id)
+}
+
+export function createProviderPresetDraft(
+  preset: ProviderPreset,
+  existingProvider?: Provider,
+): ProviderPresetDraft {
+  const providerId = existingProvider?.id || stamp(`prov-${preset.id}`)
+  const provider: Provider = {
+    id: providerId,
+    name: preset.name,
+    protocol: preset.protocol,
+    endpoints: existingProvider?.endpoints?.length
+      ? existingProvider.endpoints.map((endpoint, index) =>
+          index === 0
+            ? { ...endpoint, baseUrl: preset.baseUrl }
+            : { ...endpoint },
+        )
+      : [
+          createProviderEndpoint(providerId, {
+            id: `${providerId}-primary`,
+            name: "主用",
+            baseUrl: preset.baseUrl,
+            apiKey: "",
+            enabled: true,
+          }),
+        ],
+    headers: (preset.headers || []).map((header) => ({
+      id: stamp("h"),
+      key: header.key,
+      value: header.value,
+    })),
+    bodyOverride: "",
+    timeoutMs: preset.timeoutMs,
+    reasoningDialect: "auto",
+    promptCacheRouting: preset.promptCacheRouting || "auto",
+    rawResponsesPassthrough: preset.rawResponsesPassthrough === true,
+    enabled: true,
+    isDefault: existingProvider?.isDefault || false,
+    health: existingProvider?.health || "healthy",
+    healthMessage: existingProvider?.healthMessage,
+  }
+
+  return {
+    provider,
+    models: preset.models.map((model) => ({
+      id: stamp(`m-${preset.id}`),
+      providerId,
+      displayName: model.displayName,
+      modelId: model.modelId,
+      capabilities: model.capabilities,
+      contextLength: model.contextLength,
+      supportsReasoning: model.supportsReasoning,
+      reasoningDialect: model.reasoningDialect || preset.reasoningDialect,
+      supportsVision: model.supportsVision,
+      enabled: true,
+    })),
+  }
+}

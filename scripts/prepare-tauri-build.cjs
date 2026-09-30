@@ -48,9 +48,63 @@ async function exists(p) {
   }
 }
 
-async function copyDir(from, to) {
-  await fs.rm(to, { recursive: true, force: true })
-  await fs.cp(from, to, { recursive: true, dereference: true })
+/**
+ * 带重试的删除。
+ *
+ * Windows 上删目录树经常遇到 `EPERM: operation not permitted, rmdir ...`：
+ * 子项刚删完、父目录句柄还没释放（杀毒软件实时扫描、索引服务都会加剧），
+ * 这时直接 rmdir 会被拒。Node 的 fs.rm 自带重试，但对这类瞬时占用仍可能失败，
+ * 而一次失败就会让整个 23 分钟的资源准备白跑。这里显式重试并逐步加大间隔。
+ */
+async function rmRetry(target) {
+  if (!(await exists(target))) return
+  const delays = [0, 120, 300, 700, 1500]
+  let lastError = null
+  for (const delay of delays) {
+    if (delay) await new Promise((r) => setTimeout(r, delay))
+    try {
+      await fs.rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+      return
+    } catch (error) {
+      lastError = error
+      if (error && (error.code === "ENOENT" || error.code === "ENOTEMPTY" || error.code === "EPERM" || error.code === "EBUSY")) {
+        continue
+      }
+      throw error
+    }
+  }
+  // 最后一次仍失败：如果目标已经不在，就当作成功（并发清理 / 已释放）
+  if (!(await exists(target))) return
+  throw lastError
+}
+
+/**
+ * 拷贝目录树。
+ *
+ * `filter` 用来在拷贝阶段就剪掉整棵子树（比拷完再删快得多，也避开大量文件带来的瞬时错误）。
+ * `maxRetries` 是必须的：Node 的 `fs.cp` 在多文件并发拷贝时，
+ * 偶尔会因为 Windows 上的瞬时占用（杀软扫描、索引）报 ENOENT/EPERM，
+ * 而源文件其实好端端地在原地 —— 实测遇到过
+ * `ENOENT: copyfile '...\.next\standalone\node_modules\.pnpm\...\ZodError.cjs'`，
+ * 同一文件单独 copyFile 完全成功。
+ */
+async function copyDir(from, to, filter) {
+  await rmRetry(to)
+  await fs.cp(from, to, {
+    recursive: true,
+    dereference: true,
+    force: true,
+    errorOnExist: false,
+    maxRetries: 8,
+    retryDelay: 150,
+    ...(filter ? { filter } : {}),
+  })
+}
+
+/// 拷贝 standalone 时跳过 `.pnpm`：反正最后要删（见 prunePnpmStore），
+/// 提前剪掉能少拷几万个文件，既快又避开超长路径。
+function skipPnpmFilter(src) {
+  return !/[\\/]node_modules[\\/]\.pnpm([\\/]|$)/.test(src)
 }
 
 const STATIC_TOOL_PACKAGE_NAMES = new Set(["ffprobe-static", "ffmpeg-static"])
@@ -73,7 +127,7 @@ async function removeChildrenExcept(dir, keepNames) {
   const keep = new Set(keepNames.map((n) => n.toLowerCase()))
   for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
     if (keep.has(entry.name.toLowerCase())) continue
-    await fs.rm(path.join(dir, entry.name), { recursive: true, force: true })
+    await rmRetry(path.join(dir, entry.name), { recursive: true, force: true })
   }
 }
 
@@ -106,7 +160,7 @@ async function pruneNonRuntimeFiles(dir) {
       if (
         ["test", "tests", "__tests__", "example", "examples", "benchmark", "benchmarks", "docs"].includes(lower)
       ) {
-        await fs.rm(full, { recursive: true, force: true })
+        await rmRetry(full, { recursive: true, force: true })
         continue
       }
       await pruneNonRuntimeFiles(full)
@@ -122,22 +176,25 @@ async function pruneNonRuntimeFiles(dir) {
       lower === "readme" ||
       lower.startsWith("readme.")
     ) {
-      await fs.rm(full, { recursive: true, force: true })
+      await rmRetry(full, { recursive: true, force: true })
     }
   }
 }
 
 /**
- * vendor 顶层包多是 .pnpm 内容的重复拷贝；保留 tsx（企业微信启动器会读
- * vendor/tsx/dist/loader.mjs 作为 --import loader）。
+ * vendor 顶层包多是 .pnpm 内容的重复拷贝；只保留 tsx
+ * （企业微信启动器会读 `vendor/tsx/dist/loader.mjs` 作为 --import loader）。
+ *
+ * 注意：拷贝阶段已经用 `skipPnpmFilter` 把 .pnpm 剪掉了，所以这里不再以
+ * 「.pnpm 是否存在」作为前置条件 —— 那会导致函数直接短路、顶层重复包不被清理。
  */
 async function pruneDuplicatedTopLevelVendorPackages(vendorDir) {
-  if (!(await exists(path.join(vendorDir, ".pnpm")))) return
+  if (!(await exists(vendorDir))) return
   const keep = new Set([".pnpm", "tsx"])
   for (const entry of await fs.readdir(vendorDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue
     if (keep.has(entry.name.toLowerCase())) continue
-    await fs.rm(path.join(vendorDir, entry.name), { recursive: true, force: true })
+    await rmRetry(path.join(vendorDir, entry.name), { recursive: true, force: true })
   }
 }
 
@@ -161,7 +218,7 @@ async function pruneDuplicatedTopLevelVendorPackages(vendorDir) {
 async function prunePnpmStore(vendorDir) {
   const store = path.join(vendorDir, ".pnpm")
   if (!(await exists(store))) return
-  await fs.rm(store, { recursive: true, force: true })
+  await rmRetry(store, { recursive: true, force: true })
 }
 
 async function pruneVendor(vendorDir) {
@@ -176,7 +233,7 @@ async function pruneVendor(vendorDir) {
     ["better-sqlite3", "build", "Release", "sqlite3.lib"],
     ["better-sqlite3", "build", "deps"],
   ]) {
-    await fs.rm(path.join(vendorDir, ...rel), { recursive: true, force: true })
+    await rmRetry(path.join(vendorDir, ...rel), { recursive: true, force: true })
   }
   await pruneDuplicatedTopLevelVendorPackages(vendorDir)
   await prunePnpmStore(vendorDir)
@@ -220,16 +277,78 @@ async function assertNoLongPaths(root, limit = 250) {
   return maxLen
 }
 
+/**
+ * 打包前的护栏：确认资源树里该有的东西都在。
+ *
+ * 起因是一次真实事故——脚本因为上级目录被句柄占住，`copyDir` 中途失败，
+ * 但流程吞掉了错误继续跑完，最后打出一个只剩个别目录的包；装到机器上表现为
+ * “找不到 server.js”，排查成本极高。与其信任“脚本退出码为 0”，
+ * 不如在这里把运行时的关键路径逐个 stat 一遍，缺一个就立刻报错。
+ */
+const REQUIRED_RESOURCE_PATHS = [
+  "server.js",
+  "package.json",
+  ".next/BUILD_ID",
+  ".next/server",
+  ".next/static",
+]
+
+async function assertResourcesComplete(dir) {
+  const missing = []
+  for (const rel of REQUIRED_RESOURCE_PATHS) {
+    const full = path.join(dir, rel)
+    let ok = false
+    try {
+      await fs.stat(full)
+      ok = true
+    } catch {
+      ok = false
+    }
+    if (!ok) missing.push(rel)
+  }
+
+  // 路由目录至少要有若干个子项，空目录同样意味着打包不完整。
+  const apiDir = path.join(dir, ".next", "server", "app", "api")
+  let apiCount = 0
+  try {
+    apiCount = (await fs.readdir(apiDir)).length
+  } catch {
+    apiCount = 0
+  }
+
+  // chunks 数量太少同样意味着构建产物没拷全（正常约 190 项）。
+  let chunks = 0
+  try {
+    chunks = (await fs.readdir(path.join(dir, ".next", "server", "chunks"))).length
+  } catch {
+    chunks = 0
+  }
+
+  const problems = [...missing.map((m) => `  缺失：${m}`)]
+  if (apiCount < 5) problems.push(`  .next/server/app/api 下只有 ${apiCount} 项（预期 >= 5）`)
+  if (chunks < 20) problems.push(`  .next/server/chunks 只有 ${chunks} 项（预期 >= 20）`)
+
+  if (problems.length > 0) {
+    throw new Error(
+      `资源树不完整，打包会得到一个跑不起来的安装包：\n${problems.join("\n")}\n` +
+        `目录：${dir}\n` +
+        `常见原因：上一次构建残留 / 目录被句柄占用导致拷贝中断。` +
+        `请删掉该目录后重新运行本脚本。`,
+    )
+  }
+  return { apiRoutes: apiCount, chunks }
+}
+
 async function main() {
   if (!(await exists(path.join(standaloneDir, "server.js")))) {
     throw new Error("缺少 .next/standalone/server.js，请先运行 next build")
   }
 
-  await fs.rm(tauriResourcesDir, { recursive: true, force: true })
+  await rmRetry(tauriResourcesDir, { recursive: true, force: true })
   await fs.mkdir(tauriResourcesDir, { recursive: true })
 
   for (const artifact of tracedBuildArtifacts) {
-    await fs.rm(path.join(standaloneDir, artifact), { recursive: true, force: true })
+    await rmRetry(path.join(standaloneDir, artifact), { recursive: true, force: true })
   }
   await copyDir(
     path.join(root, ".next", "server", "chunks"),
@@ -238,7 +357,9 @@ async function main() {
   await copyDir(path.join(root, ".next", "static"), path.join(standaloneDir, ".next", "static"))
   await copyDir(path.join(root, "public"), path.join(standaloneDir, "public"))
 
-  await copyDir(standaloneDir, targetServerDir)
+  // 拷贝 standalone 时跳过 .pnpm（最终要删，提前剪掉可少拷几万文件）。
+  // 其余三次拷贝目标都在 .next/ 下，不会碰到 .pnpm，不加过滤。
+  await copyDir(standaloneDir, targetServerDir, skipPnpmFilter)
 
   // 脚本与 integrations（与 Electron 链路一致）
   await fs.mkdir(path.join(targetServerDir, "scripts"), { recursive: true })
@@ -271,10 +392,12 @@ async function main() {
   await pruneVendor(vendor)
 
   const maxLen = await assertNoLongPaths(targetServerDir)
+  const check = await assertResourcesComplete(targetServerDir)
 
   const size = await dirSize(targetServerDir)
   console.log(`Tauri 资源已就绪：tauri/src-tauri/resources/server`)
   console.log(`  体积 ${(size / 1024 / 1024).toFixed(0)}MB，最长路径 ${maxLen} 字符`)
+  console.log(`  关键路径自检通过（api 路由 ${check.apiRoutes} 项，chunks ${check.chunks} 项）`)
 }
 
 async function dirSize(dir) {

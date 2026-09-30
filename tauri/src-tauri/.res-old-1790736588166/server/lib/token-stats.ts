@@ -1,0 +1,116 @@
+import type { RequestLog, TokenStatEntry, TokenUsage } from "@/lib/types"
+
+export interface TokenTotals {
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  cachedInputTokens: number
+  cacheCreationInputTokens: number
+  cacheMeasuredCachedInputTokens: number
+  cacheMeasuredInputTokens: number
+  cacheMeasuredRequests: number
+  reasoningTokens: number
+  requests: number
+}
+
+export function emptyTokenTotals(): TokenTotals {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cachedInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheMeasuredCachedInputTokens: 0,
+    cacheMeasuredInputTokens: 0,
+    cacheMeasuredRequests: 0,
+    reasoningTokens: 0,
+    requests: 0,
+  }
+}
+
+export function tokenUsageTotal(usage: TokenUsage | undefined) {
+  if (!usage) return 0
+  return usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
+}
+
+export function tokenStatFromLog(
+  log: RequestLog,
+  resetAt?: string,
+): TokenStatEntry | undefined {
+  if (!log.tokenUsage) return undefined
+  return {
+    id: `token-${log.id}`,
+    timestamp: log.timestamp,
+    providerId: log.finalProviderId,
+    modelId: log.finalModelId,
+    codexModel: log.codexModel,
+    statusCode: log.statusCode,
+    inputTokens: log.tokenUsage.inputTokens ?? 0,
+    outputTokens: log.tokenUsage.outputTokens ?? 0,
+    totalTokens: tokenUsageTotal(log.tokenUsage),
+    cachedInputTokens: log.tokenUsage.cachedInputTokens ?? 0,
+    cacheCreationInputTokens: log.tokenUsage.cacheCreationInputTokens ?? 0,
+    cacheMeasuredCachedInputTokens:
+      log.tokenUsage.cacheUsageReported === true
+        ? (log.tokenUsage.cachedInputTokens ?? 0)
+        : 0,
+    cacheMeasuredInputTokens:
+      log.tokenUsage.cacheUsageReported === true ? (log.tokenUsage.inputTokens ?? 0) : 0,
+    cacheMeasuredRequests: log.tokenUsage.cacheUsageReported === true ? 1 : 0,
+    reasoningTokens: log.tokenUsage.reasoningTokens ?? 0,
+    requestCount: 1,
+    aggregation: "request",
+    ...(resetAt?.trim() ? { resetAt } : {}),
+  }
+}
+
+export function tokenStatRequestCount(entry: TokenStatEntry) {
+  const count = Number(entry.requestCount)
+  return Number.isFinite(count) && count >= 1 ? Math.round(count) : 1
+}
+
+export function addTokenEntry(total: TokenTotals, entry: TokenStatEntry): TokenTotals {
+  return {
+    inputTokens: total.inputTokens + entry.inputTokens,
+    outputTokens: total.outputTokens + entry.outputTokens,
+    totalTokens: total.totalTokens + entry.totalTokens,
+    cachedInputTokens: total.cachedInputTokens + entry.cachedInputTokens,
+    cacheCreationInputTokens:
+      total.cacheCreationInputTokens + entry.cacheCreationInputTokens,
+    cacheMeasuredCachedInputTokens:
+      total.cacheMeasuredCachedInputTokens + entry.cacheMeasuredCachedInputTokens,
+    cacheMeasuredInputTokens:
+      total.cacheMeasuredInputTokens + entry.cacheMeasuredInputTokens,
+    cacheMeasuredRequests: total.cacheMeasuredRequests + entry.cacheMeasuredRequests,
+    reasoningTokens: total.reasoningTokens + entry.reasoningTokens,
+    requests: total.requests + tokenStatRequestCount(entry),
+  }
+}
+
+export function sumTokenStats(entries: TokenStatEntry[]): TokenTotals {
+  return entries.reduce(addTokenEntry, emptyTokenTotals())
+}
+
+export function cacheHitRate(params: {
+  cachedInputTokens: number
+  cacheMeasuredInputTokens: number
+}) {
+  if (params.cacheMeasuredInputTokens <= 0) return undefined
+  return Math.max(
+    0,
+    Math.min(1, params.cachedInputTokens / params.cacheMeasuredInputTokens),
+  )
+}
+
+export function tokenStatsSince(
+  entries: TokenStatEntry[],
+  resetAt: string | undefined,
+) {
+  const resetTime = Date.parse(resetAt || "")
+  if (!Number.isFinite(resetTime)) return entries
+  return entries.filter((entry) => {
+    if (entry.resetAt) return entry.resetAt === resetAt
+    const timestamp = Date.parse(entry.timestamp)
+    return Number.isFinite(timestamp) && timestamp >= resetTime
+  })
+}

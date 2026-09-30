@@ -1,0 +1,30 @@
+{
+  "name": "@codexbridge/codex-gateway",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Protocol gateway that lets Codex run on OpenAI-compatible model providers.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "codex-gateway-server": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "serve": "node ./dist/cli.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

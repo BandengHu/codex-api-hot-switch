@@ -1,0 +1,1860 @@
+import http, { type IncomingMessage, type ServerResponse } from 'node:http';
+import net from 'node:net';
+import { Readable } from 'node:stream';
+import {
+  chatCompletionsResponseToResponses,
+  inspectOpenAICompatiblePayloadCompatibility,
+  responsesRequestToCompactionResponse,
+  responsesRequestToChatCompletions,
+  translateChatCompletionsSseStreamToResponsesSse,
+} from '../converters/responses_adapter.js';
+import {
+  buildOpenAICompatibleCapabilityCatalogMetadata,
+} from '../capabilities/capability_presets.js';
+import {
+  getOpenAICompatibleThinkingPolicy,
+  getProviderThinkingSupport,
+  resolveOpenAICompatibleProviderCapabilitiesForModel,
+  type OpenAICompatibleModelCapabilities,
+  OpenAICompatibleProviderCapabilities,
+  OpenAICompatibleRetryCapabilities,
+} from '../capabilities/thinking_policy.js';
+
+type JsonRecord = Record<string, any>;
+type AdapterRoute = 'responses' | 'responses.compact';
+type GatewayErrorCategory =
+  | 'authentication'
+  | 'rate_limit'
+  | 'transient_upstream'
+  | 'unsupported_feature'
+  | 'not_found'
+  | 'invalid_request'
+  | 'malformed_upstream'
+  | 'upstream_failure';
+type GatewayRetryHint =
+  | 'check_api_key_or_access'
+  | 'respect_retry_after'
+  | 'retry_with_backoff'
+  | 'remove_or_downgrade_unsupported_feature'
+  | 'check_model_or_route'
+  | 'fix_request'
+  | 'retry_or_inspect_upstream';
+
+type CodexGatewayRequestAdjustment =
+  | {
+    kind: 'field_filtered' | 'tool_choice_dropped' | 'model_overridden';
+    path: string;
+    reason: string;
+    before: unknown;
+    after?: unknown;
+  }
+  | {
+    kind: 'tools_dropped' | 'image_input_downgraded' | 'file_input_downgraded';
+    path: string;
+    reason: string;
+    requestedCount: number;
+    forwardedCount: number;
+    strategy?: string | null;
+  }
+  | {
+    kind: 'max_output_tokens_capped';
+    path: 'max_output_tokens';
+    reason: 'model_limit';
+    before: number;
+    after: number;
+  };
+
+export type CodexGatewayTraceEvent =
+  | {
+    type: 'request.received';
+    route: AdapterRoute;
+    model: string;
+    stream: boolean;
+    request: JsonRecord;
+  }
+  | {
+    type: 'request.translated';
+    route: 'responses';
+    model: string;
+    stream: boolean;
+    request: JsonRecord;
+    upstreamRequest: JsonRecord;
+  }
+  | {
+    type: 'request.adjusted';
+    route: 'responses';
+    model: string;
+    stream: boolean;
+    adjustments: CodexGatewayRequestAdjustment[];
+  }
+  | {
+    type: 'response.translated';
+    route: 'responses';
+    model: string;
+    stream: false;
+    response: JsonRecord;
+  }
+  | {
+    type: 'response.compaction_fallback';
+    route: 'responses.compact';
+    model: string;
+    reason: 'compact_not_supported';
+    response: JsonRecord;
+  }
+  | {
+    type: 'upstream.retry';
+    route: AdapterRoute;
+    attempt: number;
+    nextAttempt: number;
+    status: number | null;
+    reason: 'network' | 'status';
+    delayMs: number;
+  }
+  | {
+    type: 'upstream.error';
+    route: AdapterRoute;
+    status: number;
+    error: JsonRecord;
+  }
+  | {
+    type: 'stream.event';
+    route: 'responses';
+    event: JsonRecord;
+  }
+  | {
+    type: 'stream.completed';
+    route: 'responses';
+    eventCount: number;
+  };
+
+export type CodexGatewayTraceSink = (event: CodexGatewayTraceEvent) => void;
+
+export interface OpenAICompatibleResponsesAdapterServerOptions {
+  apiKey: string;
+  upstreamBaseUrl?: string | null;
+  defaultModel?: string | null;
+  models?: Array<Record<string, any> & { id?: string; model?: string; slug?: string; object?: string; created?: number; owned_by?: string }>;
+  fetchImpl?: typeof fetch;
+  host?: string;
+  port?: number;
+  providerKind?: string | null;
+  providerName?: string | null;
+  providerCapabilities?: OpenAICompatibleProviderCapabilities | null;
+  upstreamResponsesPath?: string | null;
+  upstreamChatCompletionsPath?: string | null;
+  ownedBy?: string | null;
+  traceSink?: CodexGatewayTraceSink | null;
+}
+
+const DEFAULT_UPSTREAM_BASE_URL = 'https://api.openai.com/v1';
+const DEFAULT_MODEL = 'gpt-5.4';
+const MAX_BODY_BYTES = 16 * 1024 * 1024;
+const DEFAULT_RETRY_STATUSES = [403, 408, 429, 500, 502, 503, 504];
+
+export class OpenAICompatibleResponsesAdapterServer {
+  private readonly apiKey: string;
+
+  private readonly upstreamBaseUrl: string;
+
+  private readonly defaultModel: string;
+
+  private readonly models: Array<{ id: string; slug: string; object: string; created: number; owned_by: string }>;
+
+  private readonly fetchImpl: typeof fetch;
+
+  private readonly host: string;
+
+  private readonly requestedPort: number;
+
+  private readonly providerKind: string;
+
+  private readonly providerName: string;
+
+  private readonly providerCapabilities: OpenAICompatibleProviderCapabilities | null;
+
+  private readonly upstreamResponsesPath: string | null;
+
+  private readonly upstreamChatCompletionsPath: string;
+
+  private readonly ownedBy: string;
+
+  private readonly traceSink: CodexGatewayTraceSink | null;
+
+  private server: http.Server | null;
+
+  private startedUrl: string | null;
+
+  constructor({
+    apiKey,
+    upstreamBaseUrl = DEFAULT_UPSTREAM_BASE_URL,
+    defaultModel = DEFAULT_MODEL,
+    models = [],
+    fetchImpl = fetch,
+    host = '127.0.0.1',
+    port = 0,
+    providerKind = 'openai-compatible',
+    providerName = 'OpenAI Compatible',
+    providerCapabilities = null,
+    upstreamResponsesPath = null,
+    upstreamChatCompletionsPath = '/chat/completions',
+    ownedBy = 'openai-compatible',
+    traceSink = null,
+  }: OpenAICompatibleResponsesAdapterServerOptions) {
+    const normalizedKey = normalizeString(apiKey);
+    if (!normalizedKey) {
+      throw new Error(`${normalizeString(providerName) || 'OpenAI-compatible'} adapter requires an API key.`);
+    }
+    this.apiKey = normalizedKey;
+    this.upstreamBaseUrl = normalizeString(upstreamBaseUrl) || DEFAULT_UPSTREAM_BASE_URL;
+    this.defaultModel = normalizeString(defaultModel) || DEFAULT_MODEL;
+    this.providerKind = normalizeString(providerKind) || 'openai-compatible';
+    this.providerName = normalizeString(providerName) || 'OpenAI Compatible';
+    this.providerCapabilities = providerCapabilities && typeof providerCapabilities === 'object'
+      ? JSON.parse(JSON.stringify(providerCapabilities))
+      : null;
+    this.upstreamResponsesPath = normalizePath(upstreamResponsesPath)
+      || normalizePath(this.providerCapabilities?.upstreamResponsesPath)
+      || null;
+    this.upstreamChatCompletionsPath = normalizePath(upstreamChatCompletionsPath) || '/chat/completions';
+    this.ownedBy = normalizeString(ownedBy) || this.providerKind;
+    this.traceSink = typeof traceSink === 'function' ? traceSink : null;
+    this.models = normalizeModels(
+      models,
+      this.defaultModel,
+      this.ownedBy,
+      this.providerKind,
+      this.providerCapabilities,
+    );
+    this.fetchImpl = fetchImpl;
+    this.host = host;
+    this.requestedPort = port;
+    this.server = null;
+    this.startedUrl = null;
+  }
+
+  get baseUrl(): string {
+    if (!this.startedUrl) {
+      throw new Error(`${this.providerName} adapter server has not been started.`);
+    }
+    return this.startedUrl;
+  }
+
+  async start(): Promise<void> {
+    if (this.server && this.startedUrl) {
+      return;
+    }
+    this.server = http.createServer((request, response) => {
+      this.handleRequest(request, response).catch((error) => {
+        writeJson(response, 500, {
+          error: {
+            message: error instanceof Error ? error.message : String(error),
+            type: 'adapter_error',
+          },
+        });
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      const onError = (error: Error) => {
+        this.server?.off('listening', onListening);
+        reject(error);
+      };
+      const onListening = () => {
+        this.server?.off('error', onError);
+        const address = this.server?.address();
+        const port = typeof address === 'object' && address ? address.port : this.requestedPort;
+        this.startedUrl = `http://${this.host}:${port}`;
+        resolve();
+      };
+      this.server?.once('error', onError);
+      this.server?.once('listening', onListening);
+      this.server?.listen(this.requestedPort, this.host);
+    });
+  }
+
+  async stop(): Promise<void> {
+    const server = this.server;
+    this.server = null;
+    this.startedUrl = null;
+    if (!server) {
+      return;
+    }
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    }).catch(() => {});
+  }
+
+  private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    if (request.method === 'GET' && isModelsPath(url.pathname)) {
+      writeJson(response, 200, {
+        object: 'list',
+        data: this.models,
+        models: this.models,
+        meta: buildModelsResponseMetadata({
+          defaultModel: this.defaultModel,
+          ownedBy: this.ownedBy,
+          providerKind: this.providerKind,
+          providerName: this.providerName,
+          providerCapabilities: this.providerCapabilities,
+          upstreamChatCompletionsPath: this.upstreamChatCompletionsPath,
+        }),
+      });
+      return;
+    }
+    if (request.method === 'POST' && isResponsesPath(url.pathname)) {
+      const body = await readJsonBody(request);
+      await this.handleResponses(body, response, {
+        compact: isResponsesCompactPath(url.pathname),
+      });
+      return;
+    }
+    writeJson(response, 404, {
+      error: {
+        message: `Unsupported ${this.providerName} adapter route: ${request.method} ${url.pathname}`,
+        type: 'not_found',
+      },
+    });
+  }
+
+  private async handleResponses(
+    requestBody: JsonRecord,
+    response: ServerResponse,
+    { compact = false }: { compact?: boolean } = {},
+  ): Promise<void> {
+    const route: AdapterRoute = compact ? 'responses.compact' : 'responses';
+    const requestedModel = normalizeString(requestBody?.model) || this.defaultModel;
+    const effectiveCapabilities = resolveOpenAICompatibleProviderCapabilitiesForModel(
+      this.providerCapabilities,
+      requestedModel,
+    );
+    const stream = Boolean(requestBody?.stream);
+    this.emitTrace({
+      type: 'request.received',
+      route,
+      model: requestedModel,
+      stream,
+      request: requestBody,
+    });
+    if (compact) {
+      await this.handleCompactResponses(requestBody, response, effectiveCapabilities);
+      return;
+    }
+    if (this.upstreamResponsesPath) {
+      await this.handleDirectResponsesProxy(
+        requestBody,
+        response,
+        requestedModel,
+        stream,
+        route,
+        effectiveCapabilities,
+      );
+      return;
+    }
+    const chatBody = responsesRequestToChatCompletions(requestBody, {
+      model: requestedModel,
+      stream,
+      providerKind: this.providerKind,
+      providerCapabilities: effectiveCapabilities,
+    });
+    this.emitTrace({
+      type: 'request.translated',
+      route: 'responses',
+      model: requestedModel,
+      stream,
+      request: requestBody,
+      upstreamRequest: chatBody,
+    });
+    const adjustments = summarizeRequestAdjustments({
+      request: requestBody,
+      upstreamRequest: chatBody,
+      providerCapabilities: effectiveCapabilities,
+    });
+    if (adjustments.length > 0) {
+      this.emitTrace({
+        type: 'request.adjusted',
+        route: 'responses',
+        model: requestedModel,
+        stream,
+        adjustments,
+      });
+    }
+    if (stream) {
+      chatBody.stream_options = {
+        ...(chatBody.stream_options && typeof chatBody.stream_options === 'object' ? chatBody.stream_options : {}),
+        include_usage: true,
+      };
+    }
+    const upstreamUrl = buildChatCompletionsUrl(this.upstreamBaseUrl, this.upstreamChatCompletionsPath);
+    const buildUpstreamInit = (body: JsonRecord): RequestInit => ({
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json',
+        Accept: stream ? 'text/event-stream' : 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    let upstream = await this.fetchUpstreamWithRetry(
+      upstreamUrl,
+      buildUpstreamInit(chatBody),
+      'responses',
+      effectiveCapabilities,
+    );
+    if (shouldRetryWithoutForcedToolChoice(chatBody, upstream)) {
+      const downgradedChatBody = {
+        ...chatBody,
+      };
+      const before = downgradedChatBody.tool_choice;
+      delete downgradedChatBody.tool_choice;
+      this.emitTrace({
+        type: 'request.adjusted',
+        route: 'responses',
+        model: requestedModel,
+        stream,
+        adjustments: [{
+          kind: 'tool_choice_dropped',
+          path: 'tool_choice',
+          reason: 'upstream_rejected_forced_tool_choice',
+          before,
+        }],
+      });
+      this.emitTrace({
+        type: 'upstream.retry',
+        route: 'responses',
+        attempt: 1,
+        nextAttempt: 2,
+        status: upstream.response.status || null,
+        reason: 'status',
+        delayMs: 0,
+      });
+      upstream = await this.fetchUpstreamWithRetry(
+        upstreamUrl,
+        buildUpstreamInit(downgradedChatBody),
+        'responses',
+        effectiveCapabilities,
+      );
+    }
+    if (!upstream.response.ok) {
+      const error = normalizeUpstreamError(
+        upstream.errorText ?? '',
+        this.providerName,
+        upstream.response.status,
+        upstream.response.headers,
+      );
+      this.emitTrace({
+        type: 'upstream.error',
+        route: 'responses',
+        status: upstream.response.status || 502,
+        error,
+      });
+      writeJson(response, upstream.response.status || 502, { error });
+      return;
+    }
+    if (stream) {
+      await this.writeStreamingResponse(requestBody, effectiveCapabilities, upstream.response, response);
+      return;
+    }
+    const json = await upstream.response.json() as JsonRecord;
+    if (!json || typeof json !== 'object') {
+      const error = buildMalformedUpstreamPayloadError(
+        this.providerName,
+        'non_object_json_response',
+      );
+      this.emitTrace({
+        type: 'upstream.error',
+        route: 'responses',
+        status: 502,
+        error,
+      });
+      writeJson(response, 502, { error });
+      return;
+    }
+    try {
+      const modelMetadata = resolveModelMetadata(
+        this.models,
+        normalizeString(requestBody?.model) || normalizeString(json?.model) || this.defaultModel,
+      );
+      const adaptedResponse = chatCompletionsResponseToResponses(json, {
+        request: requestBody,
+        providerCapabilities: effectiveCapabilities,
+        modelMetadata,
+      });
+      this.emitTrace({
+        type: 'response.translated',
+        route: 'responses',
+        model: requestedModel,
+        stream: false,
+        response: adaptedResponse,
+      });
+      writeJson(response, 200, adaptedResponse);
+    } catch (error) {
+      const malformedError = buildMalformedUpstreamPayloadError(
+        this.providerName,
+        error instanceof Error ? error.message : String(error),
+      );
+      this.emitTrace({
+        type: 'upstream.error',
+        route: 'responses',
+        status: 502,
+        error: malformedError,
+      });
+      writeJson(response, 502, { error: malformedError });
+    }
+  }
+
+  private async handleDirectResponsesProxy(
+    requestBody: JsonRecord,
+    response: ServerResponse,
+    requestedModel: string,
+    stream: boolean,
+    route: AdapterRoute,
+    providerCapabilities: OpenAICompatibleProviderCapabilities | null,
+  ): Promise<void> {
+    this.emitTrace({
+      type: 'request.translated',
+      route: 'responses',
+      model: requestedModel,
+      stream,
+      request: requestBody,
+      upstreamRequest: requestBody,
+    });
+    const upstream = await this.fetchUpstreamWithRetry(
+      buildChatCompletionsUrl(this.upstreamBaseUrl, this.upstreamResponsesPath),
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+          Accept: stream ? 'text/event-stream' : 'application/json',
+        },
+        body: JSON.stringify(requestBody),
+      },
+      route,
+      providerCapabilities,
+    );
+    if (!upstream.response.ok) {
+      const error = normalizeUpstreamError(
+        upstream.errorText ?? '',
+        this.providerName,
+        upstream.response.status,
+        upstream.response.headers,
+      );
+      this.emitTrace({
+        type: 'upstream.error',
+        route,
+        status: upstream.response.status || 502,
+        error,
+      });
+      writeJson(response, upstream.response.status || 502, { error });
+      return;
+    }
+    if (stream) {
+      await this.pipeUpstreamStream(upstream.response, response);
+      return;
+    }
+    const text = await upstream.response.text();
+    const contentType = upstream.response.headers.get('Content-Type') || 'application/json; charset=utf-8';
+    try {
+      const json = JSON.parse(text) as JsonRecord;
+      this.emitTrace({
+        type: 'response.translated',
+        route: 'responses',
+        model: requestedModel,
+        stream: false,
+        response: json,
+      });
+      writeJson(response, 200, json);
+      return;
+    } catch {
+      response.writeHead(200, {
+        'Content-Type': contentType,
+      });
+      response.end(text);
+    }
+  }
+
+  private async handleCompactResponses(
+    requestBody: JsonRecord,
+    response: ServerResponse,
+    providerCapabilities: OpenAICompatibleProviderCapabilities | null,
+  ): Promise<void> {
+    if (Boolean(requestBody?.stream)) {
+      writeJson(response, 400, {
+        error: {
+          message: 'Streaming not supported for compact responses',
+          type: 'invalid_request_error',
+        },
+      });
+      return;
+    }
+    const compactBody = { ...requestBody };
+    delete compactBody.stream;
+
+    if (!providerCapabilities?.supportsResponsesCompact) {
+      const modelMetadata = resolveModelMetadata(
+        this.models,
+        normalizeString(compactBody?.model) || this.defaultModel,
+      );
+      const compactResponse = responsesRequestToCompactionResponse(compactBody, {
+        request: compactBody,
+        providerCapabilities,
+        modelMetadata,
+      });
+      this.emitTrace({
+        type: 'response.compaction_fallback',
+        route: 'responses.compact',
+        model: normalizeString(compactBody?.model) || this.defaultModel,
+        reason: 'compact_not_supported',
+        response: compactResponse,
+      });
+      writeJson(response, 200, compactResponse);
+      return;
+    }
+
+    const compactPath = normalizePath(providerCapabilities.upstreamResponsesCompactPath) || '/responses/compact';
+    const upstream = await this.fetchUpstreamWithRetry(
+      buildChatCompletionsUrl(this.upstreamBaseUrl, compactPath),
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify(compactBody),
+      },
+      'responses.compact',
+      providerCapabilities,
+    );
+    if (!upstream.response.ok) {
+      const error = normalizeUpstreamError(
+        upstream.errorText ?? '',
+        this.providerName,
+        upstream.response.status,
+        upstream.response.headers,
+      );
+      this.emitTrace({
+        type: 'upstream.error',
+        route: 'responses.compact',
+        status: upstream.response.status || 502,
+        error,
+      });
+      writeJson(response, upstream.response.status || 502, { error });
+      return;
+    }
+    const text = await upstream.response.text();
+    response.writeHead(200, {
+      'Content-Type': upstream.response.headers.get('Content-Type') || 'application/json; charset=utf-8',
+    });
+    response.end(text);
+  }
+
+  private async fetchUpstreamWithRetry(
+    url: string,
+    init: RequestInit,
+    route: AdapterRoute,
+    providerCapabilities: OpenAICompatibleProviderCapabilities | null,
+  ): Promise<{
+    response: Response;
+    errorText: string | null;
+  }> {
+    const retry = normalizeRetryCapabilities(providerCapabilities?.retry);
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= retry.maxAttempts; attempt += 1) {
+      let upstream: Response;
+      try {
+        upstream = await this.fetchImpl(url, init);
+      } catch (error) {
+        lastError = error;
+        if (attempt < retry.maxAttempts && retry.retryNetworkErrors) {
+          const delayMs = resolveRetryDelayMs(null, '', attempt, retry);
+          this.emitTrace({
+            type: 'upstream.retry',
+            route,
+            attempt,
+            nextAttempt: attempt + 1,
+            status: null,
+            reason: 'network',
+            delayMs,
+          });
+          await sleep(delayMs);
+          continue;
+        }
+        throw error;
+      }
+      if (upstream.ok || attempt >= retry.maxAttempts || !retry.retryStatuses.has(upstream.status)) {
+        return {
+          response: upstream,
+          errorText: upstream.ok ? null : await upstream.text().catch(() => ''),
+        };
+      }
+      const text = await upstream.text().catch(() => '');
+      const delayMs = resolveRetryDelayMs(upstream.headers, text, attempt, retry);
+      this.emitTrace({
+        type: 'upstream.retry',
+        route,
+        attempt,
+        nextAttempt: attempt + 1,
+        status: upstream.status,
+        reason: 'status',
+        delayMs,
+      });
+      await sleep(delayMs);
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError ?? 'OpenAI-compatible upstream retry failed.'));
+  }
+
+  private async pipeUpstreamStream(
+    upstreamResponse: Response,
+    response: ServerResponse,
+  ): Promise<void> {
+    response.writeHead(200, {
+      'Content-Type': upstreamResponse.headers.get('Content-Type') || 'text/event-stream; charset=utf-8',
+      'Cache-Control': upstreamResponse.headers.get('Cache-Control') || 'no-cache',
+      Connection: upstreamResponse.headers.get('Connection') || 'keep-alive',
+    });
+    if (!upstreamResponse.body) {
+      response.end();
+      return;
+    }
+    const readable = Readable.fromWeb(upstreamResponse.body as any);
+    for await (const chunk of readable) {
+      response.write(chunk);
+    }
+    response.end();
+  }
+
+  private async writeStreamingResponse(
+    requestBody: JsonRecord,
+    providerCapabilities: OpenAICompatibleProviderCapabilities | null,
+    upstream: Response,
+    response: ServerResponse,
+  ): Promise<void> {
+    if (!upstream.body) {
+      writeJson(response, 502, {
+        error: {
+          message: `${this.providerName} upstream returned no stream body.`,
+          type: 'upstream_error',
+        },
+      });
+      return;
+    }
+    response.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+    let eventCount = 0;
+    for await (const event of translateChatCompletionsSseStreamToResponsesSse(
+      readSseDataLines(upstream.body),
+      {
+        request: requestBody,
+        providerCapabilities,
+        modelMetadata: resolveModelMetadata(
+          this.models,
+          normalizeString(requestBody?.model) || this.defaultModel,
+        ),
+        traceEvent: (traceEvent) => {
+          eventCount += 1;
+          this.emitTrace({
+            type: 'stream.event',
+            route: 'responses',
+            event: traceEvent,
+          });
+        },
+      },
+    )) {
+      response.write(event);
+    }
+    this.emitTrace({
+      type: 'stream.completed',
+      route: 'responses',
+      eventCount,
+    });
+    response.end();
+  }
+
+  private emitTrace(event: CodexGatewayTraceEvent): void {
+    if (!this.traceSink) {
+      return;
+    }
+    try {
+      this.traceSink(event);
+    } catch {
+      // Ignore trace sink failures so protocol serving stays unaffected.
+    }
+  }
+}
+
+async function readJsonBody(request: IncomingMessage): Promise<JsonRecord> {
+  let size = 0;
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    size += buffer.length;
+    if (size > MAX_BODY_BYTES) {
+      throw new Error('Request body is too large.');
+    }
+    chunks.push(buffer);
+  }
+  const text = Buffer.concat(chunks).toString('utf8').trim();
+  if (!text) {
+    return {};
+  }
+  return JSON.parse(text);
+}
+
+async function* readSseDataLines(stream: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      let splitIndex = findSseFrameBoundary(buffer);
+      while (splitIndex >= 0) {
+        const frame = buffer.slice(0, splitIndex);
+        buffer = buffer.slice(buffer[splitIndex] === '\r' ? splitIndex + 4 : splitIndex + 2);
+        const data = extractSseData(frame);
+        if (data !== null) {
+          yield data;
+        }
+        splitIndex = findSseFrameBoundary(buffer);
+      }
+    }
+    buffer += decoder.decode();
+    const data = extractSseData(buffer);
+    if (data !== null) {
+      yield data;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function findSseFrameBoundary(buffer: string): number {
+  const lf = buffer.indexOf('\n\n');
+  const crlf = buffer.indexOf('\r\n\r\n');
+  if (lf < 0) {
+    return crlf;
+  }
+  if (crlf < 0) {
+    return lf;
+  }
+  return Math.min(lf, crlf);
+}
+
+function extractSseData(frame: string): string | null {
+  const lines = frame.split(/\r?\n/u);
+  const eventName = lines
+    .find((line) => line.startsWith('event:'))
+    ?.slice(6)
+    .trim();
+  const dataLines = lines
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).trimStart());
+  if (dataLines.length === 0) {
+    return null;
+  }
+  const data = dataLines.join('\n');
+  if (eventName === 'error' && data.trim() !== '[DONE]') {
+    try {
+      const parsed = JSON.parse(data);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return JSON.stringify({
+          type: 'error',
+          ...parsed,
+        });
+      }
+    } catch {
+      // Fall through to a normalized top-level error payload below.
+    }
+    return JSON.stringify({
+      type: 'error',
+      message: data,
+    });
+  }
+  return data;
+}
+
+function writeJson(response: ServerResponse, status: number, body: unknown) {
+  response.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+  });
+  response.end(`${JSON.stringify(body)}\n`);
+}
+
+export function buildOpenAICompatibleChatCompletionsUrl(
+  baseUrl: string,
+  pathname = '/chat/completions',
+): string {
+  const normalizedPath = normalizePath(pathname) || '/chat/completions';
+  return buildOpenAICompatibleEndpointUrl(baseUrl, normalizedPath);
+}
+
+export function buildOpenAICompatibleModelsUrl(baseUrl: string): string {
+  const base = stripChatCompletionsSuffix(normalizeEndpointBaseUrl(baseUrl));
+  return buildOpenAICompatibleEndpointUrl(base, '/models');
+}
+
+function buildChatCompletionsUrl(baseUrl: string, pathname: string): string {
+  return buildOpenAICompatibleChatCompletionsUrl(baseUrl, pathname);
+}
+
+function buildOpenAICompatibleEndpointUrl(baseUrl: string, endpointPath: string): string {
+  const endpoint = normalizePath(endpointPath) || '/chat/completions';
+  const skipVersionPrefix = normalizeString(baseUrl).endsWith('#');
+  const base = endpoint === '/models'
+    ? stripChatCompletionsSuffix(normalizeEndpointBaseUrl(baseUrl))
+    : normalizeEndpointBaseUrl(baseUrl);
+  if (base.toLowerCase().endsWith(endpoint.toLowerCase())) {
+    return base;
+  }
+  const originOnly = isOriginOnlyBaseUrl(base);
+  let url = skipVersionPrefix || hasVersionSuffix(base) || !originOnly
+    ? `${base}${endpoint}`
+    : `${base}/v1${endpoint}`;
+  while (url.includes('/v1/v1')) {
+    url = url.replace('/v1/v1', '/v1');
+  }
+  return url;
+}
+
+function normalizeEndpointBaseUrl(baseUrl: string): string {
+  return normalizeString(baseUrl)
+    .replace(/#+$/u, '')
+    .replace(/\/+$/u, '');
+}
+
+function stripChatCompletionsSuffix(baseUrl: string): string {
+  return baseUrl.toLowerCase().endsWith('/chat/completions')
+    ? baseUrl.slice(0, -'/chat/completions'.length)
+    : baseUrl;
+}
+
+function isOriginOnlyBaseUrl(baseUrl: string): boolean {
+  const parts = baseUrl.split('://', 2);
+  return parts.length === 2
+    ? !parts[1].includes('/')
+    : !baseUrl.includes('/');
+}
+
+function hasVersionSuffix(baseUrl: string): boolean {
+  return /\/v\d+(?:beta)?$/iu.test(baseUrl);
+}
+
+function isResponsesPath(pathname: string): boolean {
+  const canonical = canonicalProxyRoutePath(pathname);
+  return canonical === '/responses' || isResponsesCompactPath(pathname);
+}
+
+function isResponsesCompactPath(pathname: string): boolean {
+  return canonicalProxyRoutePath(pathname) === '/responses/compact';
+}
+
+function isModelsPath(pathname: string): boolean {
+  return isOpenAICompatibleModelsProxyPath(pathname);
+}
+
+export function isOpenAICompatibleResponsesProxyPath(pathname: string): boolean {
+  return isResponsesPath(pathname);
+}
+
+export function isOpenAICompatibleChatCompletionsProxyPath(pathname: string): boolean {
+  return canonicalProxyRoutePath(pathname) === '/chat/completions';
+}
+
+export function isOpenAICompatibleModelsProxyPath(pathname: string): boolean {
+  return canonicalProxyRoutePath(pathname) === '/models';
+}
+
+function canonicalProxyRoutePath(pathname: string): string {
+  const [pathOnly] = normalizeString(pathname).split('?', 1);
+  let path = normalizePath(pathOnly) || '/';
+  while (path.startsWith('/v1/v1/')) {
+    path = `/v1${path.slice('/v1/v1'.length)}`;
+  }
+  if (path === '/codex/v1') {
+    return '/';
+  }
+  if (path.startsWith('/codex/v1/')) {
+    path = path.slice('/codex/v1'.length);
+  }
+  if (path.startsWith('/v1/')) {
+    path = path.slice('/v1'.length);
+  }
+  return path;
+}
+
+function normalizeModels(
+  models: OpenAICompatibleResponsesAdapterServerOptions['models'],
+  defaultModel: string,
+  ownedBy: string,
+  providerKind: string,
+  providerCapabilities: OpenAICompatibleProviderCapabilities | null,
+) {
+  const now = Math.floor(Date.now() / 1000);
+  const entries = (Array.isArray(models) ? models : [])
+    .map((model) => {
+      const id = normalizeString(model?.id) || normalizeString(model?.model);
+      if (!id) {
+        return null;
+      }
+      return {
+        ...model,
+        id,
+        slug: normalizeString(model?.slug) || id,
+        object: normalizeString(model?.object) || 'model',
+        created: Number.isFinite(Number(model?.created)) ? Number(model.created) : now,
+        owned_by: normalizeString(model?.owned_by) || ownedBy,
+        displayName: normalizeString(model?.displayName) || normalizeString(model?.display_name) || id,
+        display_name: normalizeString(model?.display_name) || normalizeString(model?.displayName) || id,
+        capabilityCatalog: model?.capabilityCatalog && typeof model.capabilityCatalog === 'object'
+          ? model.capabilityCatalog
+          : buildOpenAICompatibleCapabilityCatalogMetadata({
+            modelId: id,
+            providerKind,
+            providerCapabilities,
+            modelCapabilities: model?.capabilities && typeof model.capabilities === 'object'
+              ? model.capabilities as OpenAICompatibleModelCapabilities
+              : null,
+          }),
+        protocol: buildProtocolMetadataForModel({
+          modelId: id,
+          modelEntry: model,
+          providerKind,
+          providerCapabilities,
+        }),
+      };
+    })
+    .filter(Boolean);
+  if (entries.length > 0) {
+    const seen = new Set<string>();
+    return entries.filter((entry) => {
+      if (!entry || seen.has(entry.id)) {
+        return false;
+      }
+      seen.add(entry.id);
+      return true;
+    });
+  }
+  return [{
+    id: defaultModel,
+    slug: defaultModel,
+    object: 'model',
+    created: now,
+    owned_by: ownedBy,
+    capabilityCatalog: buildOpenAICompatibleCapabilityCatalogMetadata({
+      modelId: defaultModel,
+      providerKind,
+      providerCapabilities,
+      modelCapabilities: null,
+    }),
+    protocol: buildProtocolMetadataForModel({
+      modelId: defaultModel,
+      modelEntry: null,
+      providerKind,
+      providerCapabilities,
+    }),
+  }];
+}
+
+function buildProtocolMetadataForModel({
+  modelId,
+  modelEntry,
+  providerKind,
+  providerCapabilities,
+}: {
+  modelId: string;
+  modelEntry: Record<string, any> | null | undefined;
+  providerKind: string;
+  providerCapabilities: OpenAICompatibleProviderCapabilities | null;
+}): JsonRecord {
+  const modelCapabilities = modelEntry?.capabilities && typeof modelEntry.capabilities === 'object'
+    ? modelEntry.capabilities as OpenAICompatibleModelCapabilities
+    : null;
+  const effectiveCapabilities = resolveOpenAICompatibleProviderCapabilitiesForModel(
+    modelCapabilities
+      ? {
+        ...(providerCapabilities ?? {}),
+        modelCapabilities: {
+          ...(providerCapabilities?.modelCapabilities ?? {}),
+          [modelId]: modelCapabilities,
+        },
+      }
+      : providerCapabilities,
+    modelId,
+  );
+  const reasoning = getProviderThinkingSupport(providerKind, effectiveCapabilities);
+  const thinkingPolicy = getOpenAICompatibleThinkingPolicy(providerKind, effectiveCapabilities);
+  const multimodal = effectiveCapabilities?.multimodal ?? null;
+  const payloadCompatibility = inspectOpenAICompatiblePayloadCompatibility({
+    model: modelId,
+    protocol: providerKind,
+    providerCapabilities: effectiveCapabilities,
+  });
+
+  return {
+    tools: {
+      supported: effectiveCapabilities?.supportsTools !== false,
+      builtinWebSearch: effectiveCapabilities?.supportsBuiltinWebSearchTool !== false,
+      parallelToolCalls: typeof modelCapabilities?.parallelToolCalls === 'boolean'
+        ? modelCapabilities.parallelToolCalls
+        : !payloadBlocksPath(effectiveCapabilities?.payload, 'parallel_tool_calls'),
+    },
+    multimodal: {
+      imageInput: normalizeNullableBoolean(multimodal?.supportsImageInput),
+      imageUrlInput: normalizeNullableBoolean(multimodal?.supportsImageUrlInput),
+      imageBase64Input: normalizeNullableBoolean(multimodal?.supportsImageBase64Input),
+      fileInput: normalizeNullableBoolean(multimodal?.supportsFileInput),
+      pdfInput: normalizeNullableBoolean(multimodal?.supportsPdfInput)
+        ?? (normalizeNullableBoolean(multimodal?.supportsFileInput) === false ? false : null),
+      fileDataInput: normalizeNullableBoolean(multimodal?.supportsFileDataInput),
+      fileIdInput: normalizeNullableBoolean(multimodal?.supportsFileIdInput),
+      fileUrlInput: normalizeNullableBoolean(multimodal?.supportsFileUrlInput),
+      unsupportedInputPartStrategy: normalizeString(multimodal?.unsupportedInputPartStrategy) || null,
+    },
+    reasoning: {
+      supported: reasoning.supportedReasoningEfforts.length > 0,
+      supportedReasoningEfforts: reasoning.supportedReasoningEfforts,
+      defaultReasoningEffort: reasoning.defaultReasoningEffort,
+      transport: {
+        mode: thinkingPolicy.mode,
+        booleanField: normalizeString(thinkingPolicy.booleanField) || null,
+        strippedFields: [...thinkingPolicy.stripFields],
+      },
+    },
+    retry: buildNormalizedRetryMetadata(effectiveCapabilities?.retry),
+    structuredOutput: {
+      jsonSchema: typeof modelCapabilities?.jsonSchema === 'boolean'
+        ? modelCapabilities.jsonSchema
+        : !payloadBlocksPath(effectiveCapabilities?.payload, 'response_format'),
+    },
+    responses: {
+      supportsCompact: effectiveCapabilities?.supportsResponsesCompact === true,
+    },
+    routing: {
+      upstreamModel: payloadCompatibility.upstreamModel,
+      requiresModelAlias: payloadCompatibility.upstreamModel !== modelId,
+    },
+    limits: {
+      maxOutputTokens: normalizePositiveNumber(modelCapabilities?.maxOutputTokens),
+    },
+  };
+}
+
+function buildModelsResponseMetadata({
+  defaultModel,
+  ownedBy,
+  providerKind,
+  providerName,
+  providerCapabilities,
+  upstreamChatCompletionsPath,
+}: {
+  defaultModel: string;
+  ownedBy: string;
+  providerKind: string;
+  providerName: string;
+  providerCapabilities: OpenAICompatibleProviderCapabilities | null;
+  upstreamChatCompletionsPath: string;
+}): JsonRecord {
+  return {
+    provider: {
+      kind: providerKind,
+      name: providerName,
+      ownedBy,
+    },
+    defaults: {
+      model: defaultModel,
+    },
+    retry: buildNormalizedRetryMetadata(providerCapabilities?.retry),
+    routes: {
+      primary: {
+        models: '/models',
+        responses: '/responses',
+        responsesCompact: '/responses/compact',
+      },
+      compatibility: {
+        models: '/v1/models',
+        responses: '/v1/responses',
+        responsesCompact: '/v1/responses/compact',
+      },
+      upstream: {
+        chatCompletions: upstreamChatCompletionsPath,
+        responsesCompact: providerCapabilities?.supportsResponsesCompact === true
+          ? normalizePath(providerCapabilities.upstreamResponsesCompactPath) || '/responses/compact'
+          : null,
+      },
+    },
+  };
+}
+
+function payloadBlocksPath(
+  payload: OpenAICompatibleProviderCapabilities['payload'] | null | undefined,
+  path: string,
+): boolean {
+  const normalizedPath = normalizeString(path);
+  if (!normalizedPath) {
+    return false;
+  }
+  return Boolean(payload?.filter?.some((rule) => (
+    Array.isArray(rule?.paths)
+    && rule.paths.some((entry) => normalizeString(entry) === normalizedPath)
+  )));
+}
+
+function summarizeRequestAdjustments({
+  request,
+  upstreamRequest,
+  providerCapabilities,
+}: {
+  request: JsonRecord;
+  upstreamRequest: JsonRecord;
+  providerCapabilities: OpenAICompatibleProviderCapabilities | null;
+}): CodexGatewayRequestAdjustment[] {
+  const adjustments: CodexGatewayRequestAdjustment[] = [];
+  const requestedModel = normalizeString(request?.model);
+  const upstreamModel = normalizeString(upstreamRequest?.model);
+  if (requestedModel && upstreamModel && requestedModel !== upstreamModel) {
+    adjustments.push({
+      kind: 'model_overridden',
+      path: 'model',
+      reason: 'payload_override',
+      before: requestedModel,
+      after: upstreamModel,
+    });
+  }
+
+  const requestedMaxOutputTokens = normalizePositiveNumber(request?.max_output_tokens);
+  const upstreamMaxTokens = normalizePositiveNumber(upstreamRequest?.max_tokens);
+  if (
+    requestedMaxOutputTokens !== null
+    && upstreamMaxTokens !== null
+    && upstreamMaxTokens < requestedMaxOutputTokens
+  ) {
+    adjustments.push({
+      kind: 'max_output_tokens_capped',
+      path: 'max_output_tokens',
+      reason: 'model_limit',
+      before: requestedMaxOutputTokens,
+      after: upstreamMaxTokens,
+    });
+  }
+
+  if (request?.parallel_tool_calls !== undefined && upstreamRequest?.parallel_tool_calls === undefined) {
+    adjustments.push({
+      kind: 'field_filtered',
+      path: 'parallel_tool_calls',
+      reason: 'payload_filter',
+      before: request.parallel_tool_calls,
+    });
+  }
+
+  if (request?.text?.format !== undefined && upstreamRequest?.response_format === undefined) {
+    adjustments.push({
+      kind: 'field_filtered',
+      path: 'text.format',
+      reason: 'payload_filter_or_unsupported_format',
+      before: request.text.format,
+    });
+  }
+
+  const requestedTools = normalizeArray(request?.tools);
+  if (requestedTools.length > 0) {
+    const requestedFunctionTools = requestedTools.filter((tool) => normalizeString(tool?.type) === 'function').length;
+    const requestedBuiltinTools = requestedTools.filter((tool) => isBuiltinWebSearchToolType(tool?.type)).length;
+    const upstreamTools = normalizeArray(upstreamRequest?.tools);
+    const forwardedFunctionTools = upstreamTools.filter((tool) => normalizeString(tool?.type) === 'function').length;
+    const forwardedBuiltinTools = upstreamTools.filter((tool) => isBuiltinWebSearchToolType(tool?.type)).length;
+
+    if (requestedFunctionTools > forwardedFunctionTools) {
+      adjustments.push({
+        kind: 'tools_dropped',
+        path: 'tools',
+        reason: providerCapabilities?.supportsTools === false
+          ? 'tool_calling_disabled'
+          : 'unsupported_or_invalid_tools',
+        requestedCount: requestedFunctionTools,
+        forwardedCount: forwardedFunctionTools,
+      });
+    }
+    if (requestedBuiltinTools > forwardedBuiltinTools) {
+      adjustments.push({
+        kind: 'tools_dropped',
+        path: 'tools',
+        reason: providerCapabilities?.supportsBuiltinWebSearchTool === false
+          ? 'builtin_web_search_unsupported'
+          : 'unsupported_or_invalid_tools',
+        requestedCount: requestedBuiltinTools,
+        forwardedCount: forwardedBuiltinTools,
+      });
+    }
+  }
+
+  if (request?.tool_choice !== undefined && upstreamRequest?.tool_choice === undefined) {
+    adjustments.push({
+      kind: 'tool_choice_dropped',
+      path: 'tool_choice',
+      reason: 'unsupported_or_filtered',
+      before: request.tool_choice,
+    });
+  }
+
+  const requestedParts = countRequestedInputParts(request?.input);
+  const forwardedParts = countForwardedInputParts(upstreamRequest?.messages);
+  const strategy = normalizeString(providerCapabilities?.multimodal?.unsupportedInputPartStrategy) || null;
+  if (requestedParts.image > forwardedParts.image) {
+    adjustments.push({
+      kind: 'image_input_downgraded',
+      path: 'input.image',
+      reason: 'unsupported_input_part_strategy',
+      requestedCount: requestedParts.image,
+      forwardedCount: forwardedParts.image,
+      strategy,
+    });
+  }
+  if (requestedParts.file > forwardedParts.file) {
+    adjustments.push({
+      kind: 'file_input_downgraded',
+      path: 'input.file',
+      reason: 'unsupported_input_part_strategy',
+      requestedCount: requestedParts.file,
+      forwardedCount: forwardedParts.file,
+      strategy,
+    });
+  }
+
+  return adjustments;
+}
+
+function countRequestedInputParts(input: unknown): { image: number; file: number } {
+  const counts = { image: 0, file: 0 };
+  for (const item of normalizeArray(input)) {
+    const contents = typeof item?.content === 'string' ? [] : normalizeArray(item?.content);
+    for (const part of contents) {
+      const type = normalizeString(part?.type);
+      if (type === 'input_image' || type === 'image') {
+        counts.image += 1;
+      } else if (type === 'input_file' || type === 'file') {
+        counts.file += 1;
+      }
+    }
+  }
+  return counts;
+}
+
+function countForwardedInputParts(messages: unknown): { image: number; file: number } {
+  const counts = { image: 0, file: 0 };
+  for (const message of normalizeArray(messages)) {
+    if (typeof message?.content === 'string') {
+      continue;
+    }
+    for (const part of normalizeArray(message?.content)) {
+      const type = normalizeString(part?.type);
+      if (type === 'image_url') {
+        counts.image += 1;
+      } else if (type === 'file') {
+        counts.file += 1;
+      }
+    }
+  }
+  return counts;
+}
+
+function resolveModelMetadata(
+  models: Array<Record<string, any> & { id?: string; slug?: string; model?: string }>,
+  modelId: string,
+): JsonRecord | null {
+  const normalizedModelId = normalizeString(modelId);
+  if (!normalizedModelId) {
+    return null;
+  }
+  return models.find((model) => (
+    normalizeString(model?.id) === normalizedModelId
+    || normalizeString(model?.slug) === normalizedModelId
+    || normalizeString(model?.model) === normalizedModelId
+  )) ?? null;
+}
+
+function extractUpstreamError(text: string): string | null {
+  const trimmed = normalizeString(text);
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    return normalizeString(parsed?.error?.message)
+      || normalizeString(parsed?.message)
+      || trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
+function normalizeUpstreamError(
+  text: string,
+  providerName: string,
+  status: number,
+  headers?: Headers | null,
+): JsonRecord {
+  const trimmed = normalizeString(text);
+  const retryAfterMs = parseRetryAfterMs(headers?.get('retry-after') ?? null) ?? parseRetryAfterMsFromBody(trimmed);
+  const metadata = buildUpstreamErrorMetadata(headers);
+  const fallbackCode = upstreamErrorCode(status);
+  const fallbackCategory = classifyGatewayErrorCategory({
+    status,
+    code: fallbackCode,
+    type: 'upstream_error',
+    message: trimmed,
+  });
+  const fallbackRetry = buildGatewayRetryMetadata(fallbackCategory, retryAfterMs);
+  if (trimmed) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed?.error && typeof parsed.error === 'object') {
+        const message = normalizeString(parsed.error.message) || `${providerName} upstream returned HTTP ${status}`;
+        const type = normalizeString(parsed.error.type) || 'upstream_error';
+        const code = parsed.error.code ?? fallbackCode;
+        const category = classifyGatewayErrorCategory({
+          status,
+          code,
+          type,
+          message,
+        });
+        return omitUndefined({
+          message,
+          type,
+          code,
+          category,
+          retry: buildGatewayRetryMetadata(category, retryAfterMs),
+          param: parsed.error.param,
+          retry_after_ms: retryAfterMs,
+          metadata,
+        });
+      }
+      const message = normalizeString(parsed?.message) || trimmed;
+      const type = normalizeString(parsed?.type) || 'upstream_error';
+      const code = parsed?.code ?? fallbackCode;
+      const category = classifyGatewayErrorCategory({
+        status,
+        code,
+        type,
+        message,
+      });
+      return omitUndefined({
+        message,
+        type,
+        code,
+        category,
+        retry: buildGatewayRetryMetadata(category, retryAfterMs),
+        retry_after_ms: retryAfterMs,
+        metadata,
+      });
+    } catch {
+      return omitUndefined({
+        message: trimmed,
+        type: 'upstream_error',
+        code: fallbackCode,
+        category: fallbackCategory,
+        retry: fallbackRetry,
+        retry_after_ms: retryAfterMs,
+        metadata,
+      });
+    }
+  }
+  return omitUndefined({
+    message: `${providerName} upstream returned HTTP ${status}`,
+    type: 'upstream_error',
+    code: fallbackCode,
+    category: fallbackCategory,
+    retry: fallbackRetry,
+    retry_after_ms: retryAfterMs,
+    metadata,
+  });
+}
+
+function buildMalformedUpstreamPayloadError(
+  providerName: string,
+  detail: string,
+): JsonRecord {
+  const message = normalizeString(detail)
+    ? `${providerName} upstream returned a malformed success payload: ${normalizeString(detail)}`
+    : `${providerName} upstream returned a malformed success payload.`;
+  return {
+    message,
+    type: 'upstream_error',
+    code: 'malformed_upstream_payload',
+    category: 'malformed_upstream',
+    retry: buildGatewayRetryMetadata('malformed_upstream', null),
+  };
+}
+
+function buildUpstreamErrorMetadata(headers?: Headers | null): JsonRecord | undefined {
+  if (!headers) {
+    return undefined;
+  }
+  const requestId = normalizeString(headers.get('x-request-id') ?? headers.get('request-id'));
+  const region = normalizeString(headers.get('x-ms-region') ?? headers.get('openai-processing-ms'));
+  const rateLimitHeaders = collectRateLimitHeaders(headers);
+  if (!requestId && !region && !rateLimitHeaders) {
+    return undefined;
+  }
+  return omitUndefined({
+    request_id: requestId || undefined,
+    region: region || undefined,
+    rate_limit_headers: rateLimitHeaders ?? undefined,
+  });
+}
+
+function collectRateLimitHeaders(headers: Headers): JsonRecord | undefined {
+  const values: JsonRecord = {};
+  for (const [key, value] of headers.entries()) {
+    const normalizedKey = key.toLowerCase();
+    if (!normalizedKey.startsWith('x-ratelimit-') && !normalizedKey.startsWith('ratelimit-')) {
+      continue;
+    }
+    const normalizedValue = normalizeString(value);
+    if (!normalizedValue) {
+      continue;
+    }
+    values[normalizedKey] = normalizedValue;
+  }
+  return Object.keys(values).length > 0 ? values : undefined;
+}
+
+function normalizeRetryCapabilities(capabilities: OpenAICompatibleRetryCapabilities | null | undefined): {
+  maxAttempts: number;
+  retryStatuses: Set<number>;
+  baseDelayMs: number;
+  maxDelayMs: number;
+  retryAfterMaxMs: number;
+  retryNetworkErrors: boolean;
+} {
+  if (!capabilities || typeof capabilities !== 'object') {
+    return {
+      maxAttempts: 1,
+      retryStatuses: new Set(DEFAULT_RETRY_STATUSES),
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+      retryAfterMaxMs: 0,
+      retryNetworkErrors: false,
+    };
+  }
+  const maxAttempts = clampInteger(capabilities.maxAttempts, 1, 5, 1);
+  return {
+    maxAttempts,
+    retryStatuses: new Set(normalizeRetryStatuses(capabilities.retryStatuses) ?? DEFAULT_RETRY_STATUSES),
+    baseDelayMs: clampInteger(capabilities.baseDelayMs, 0, 30_000, 250),
+    maxDelayMs: clampInteger(capabilities.maxDelayMs, 0, 60_000, 2_000),
+    retryAfterMaxMs: clampInteger(capabilities.retryAfterMaxMs, 0, 300_000, 30_000),
+    retryNetworkErrors: Boolean(capabilities.retryNetworkErrors),
+  };
+}
+
+function buildNormalizedRetryMetadata(
+  capabilities: OpenAICompatibleRetryCapabilities | null | undefined,
+): JsonRecord {
+  const normalized = normalizeRetryCapabilities(capabilities);
+  const enabled = normalized.maxAttempts > 1;
+  return {
+    enabled,
+    maxAttempts: normalized.maxAttempts,
+    retryStatuses: enabled ? [...normalized.retryStatuses].sort((left, right) => left - right) : [],
+    baseDelayMs: enabled ? normalized.baseDelayMs : 0,
+    maxDelayMs: enabled ? normalized.maxDelayMs : 0,
+    retryAfterMaxMs: enabled ? normalized.retryAfterMaxMs : 0,
+    retryNetworkErrors: enabled ? normalized.retryNetworkErrors : false,
+  };
+}
+
+function normalizeRetryStatuses(value: unknown): number[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const statuses = value
+    .map((entry) => Number(entry))
+    .filter((entry) => Number.isInteger(entry) && entry >= 100 && entry <= 599);
+  return statuses.length > 0 ? [...new Set(statuses)] : null;
+}
+
+function shouldRetryWithoutForcedToolChoice(
+  chatBody: JsonRecord,
+  upstream: {
+    response: Response;
+    errorText: string | null;
+  },
+): boolean {
+  if (upstream.response.ok || upstream.response.status < 400 || upstream.response.status >= 500) {
+    return false;
+  }
+  if (!isForcedChatToolChoice(chatBody?.tool_choice) || normalizeArray(chatBody?.tools).length === 0) {
+    return false;
+  }
+  const errorText = normalizeString(upstream.errorText).toLowerCase();
+  if (!errorText.includes('tool_choice')) {
+    return false;
+  }
+  return errorText.includes('not support')
+    || errorText.includes('does not support')
+    || errorText.includes('unsupported')
+    || errorText.includes('invalidparameter')
+    || errorText.includes('invalid parameter');
+}
+
+function isForcedChatToolChoice(value: unknown): boolean {
+  if (value && typeof value === 'object') {
+    return true;
+  }
+  const normalized = normalizeString(value).toLowerCase();
+  if (!normalized || normalized === 'auto' || normalized === 'none') {
+    return false;
+  }
+  return true;
+}
+
+function resolveRetryDelayMs(
+  headers: Headers | null,
+  text: string,
+  attempt: number,
+  retry: ReturnType<typeof normalizeRetryCapabilities>,
+): number {
+  const retryAfter = parseRetryAfterMs(headers?.get('retry-after') ?? null)
+    ?? parseRetryAfterMsFromBody(text);
+  if (retryAfter !== null) {
+    return retry.retryAfterMaxMs > 0 ? Math.min(retryAfter, retry.retryAfterMaxMs) : retryAfter;
+  }
+  if (retry.baseDelayMs <= 0 || retry.maxDelayMs <= 0) {
+    return 0;
+  }
+  return Math.min(retry.maxDelayMs, retry.baseDelayMs * (2 ** Math.max(0, attempt - 1)));
+}
+
+function parseRetryAfterMs(value: string | null): number | null {
+  const normalized = normalizeString(value);
+  if (!normalized) {
+    return null;
+  }
+  const seconds = Number(normalized);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.round(seconds * 1000);
+  }
+  const timestamp = Date.parse(normalized);
+  if (Number.isFinite(timestamp)) {
+    return Math.max(0, timestamp - Date.now());
+  }
+  return null;
+}
+
+function parseRetryAfterMsFromBody(text: string): number | null {
+  const trimmed = normalizeString(text);
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parseRetryAfterMs(
+      parsed?.retry_after
+        ?? parsed?.retryAfter
+        ?? parsed?.error?.retry_after
+        ?? parsed?.error?.retryAfter
+        ?? null,
+    );
+  } catch {
+    return null;
+  }
+}
+
+async function sleep(ms: number): Promise<void> {
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return;
+  }
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function upstreamErrorCode(status: number): string {
+  switch (status) {
+    case 401:
+      return 'invalid_api_key';
+    case 403:
+      return 'insufficient_quota';
+    case 404:
+      return 'model_not_found';
+    case 408:
+      return 'request_timeout';
+    case 429:
+      return 'rate_limit_exceeded';
+    default:
+      if (status >= 500) {
+        return 'internal_server_error';
+      }
+      if (status >= 400) {
+        return 'invalid_request_error';
+      }
+      return 'unknown_error';
+  }
+}
+
+function classifyGatewayErrorCategory({
+  status,
+  code,
+  type,
+  message,
+}: {
+  status: number;
+  code: unknown;
+  type: unknown;
+  message: unknown;
+}): GatewayErrorCategory {
+  const normalizedCode = normalizeString(code).toLowerCase();
+  const normalizedType = normalizeString(type).toLowerCase();
+  const normalizedMessage = normalizeString(message).toLowerCase();
+  if (
+    status === 401
+    || normalizedCode.includes('invalid_api_key')
+    || normalizedCode.includes('authentication')
+    || normalizedType.includes('authentication')
+    || normalizedMessage.includes('invalid api key')
+    || normalizedMessage.includes('unauthorized')
+  ) {
+    return 'authentication';
+  }
+  if (
+    status === 429
+    || normalizedCode.includes('rate_limit')
+    || normalizedType.includes('rate_limit')
+    || normalizedMessage.includes('rate limit')
+    || normalizedMessage.includes('too many requests')
+  ) {
+    return 'rate_limit';
+  }
+  if (
+    normalizedCode.includes('unsupported')
+    || normalizedType.includes('unsupported')
+    || normalizedMessage.includes('not support')
+    || normalizedMessage.includes('unsupported')
+    || normalizedMessage.includes('does not support')
+  ) {
+    return 'unsupported_feature';
+  }
+  if (status === 404 || normalizedCode.includes('not_found') || normalizedMessage.includes('not found')) {
+    return 'not_found';
+  }
+  if (status === 408 || status >= 500) {
+    return 'transient_upstream';
+  }
+  if (status >= 400 && status < 500) {
+    return 'invalid_request';
+  }
+  return 'upstream_failure';
+}
+
+function buildGatewayRetryMetadata(
+  category: GatewayErrorCategory,
+  retryAfterMs: number | null,
+): { retryable: boolean; hint: GatewayRetryHint; retry_after_ms?: number } {
+  switch (category) {
+    case 'authentication':
+      return omitUndefined({
+        retryable: false,
+        hint: 'check_api_key_or_access',
+      });
+    case 'rate_limit':
+      return omitUndefined({
+        retryable: true,
+        hint: 'respect_retry_after',
+        retry_after_ms: retryAfterMs ?? undefined,
+      });
+    case 'transient_upstream':
+      return omitUndefined({
+        retryable: true,
+        hint: 'retry_with_backoff',
+        retry_after_ms: retryAfterMs ?? undefined,
+      });
+    case 'unsupported_feature':
+      return {
+        retryable: false,
+        hint: 'remove_or_downgrade_unsupported_feature',
+      };
+    case 'not_found':
+      return {
+        retryable: false,
+        hint: 'check_model_or_route',
+      };
+    case 'invalid_request':
+      return {
+        retryable: false,
+        hint: 'fix_request',
+      };
+    case 'malformed_upstream':
+    case 'upstream_failure':
+    default:
+      return omitUndefined({
+        retryable: true,
+        hint: 'retry_or_inspect_upstream',
+        retry_after_ms: retryAfterMs ?? undefined,
+      });
+  }
+}
+
+function clampInteger(value: unknown, min: number, max: number, fallback: number): number {
+  const number = Number(value);
+  if (!Number.isInteger(number)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, number));
+}
+
+function normalizeString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizePositiveNumber(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function normalizeNullableBoolean(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
+function normalizeArray(value: unknown): any[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function isBuiltinWebSearchToolType(type: unknown): boolean {
+  const normalized = normalizeString(type);
+  return normalized === 'web_search'
+    || normalized === 'web_search_preview'
+    || normalized === 'web_search_preview_2025_03_11';
+}
+
+function normalizePath(value: unknown): string {
+  const normalized = normalizeString(value);
+  if (!normalized) {
+    return '';
+  }
+  return normalized.startsWith('/') ? normalized : `/${normalized}`;
+}
+
+function omitUndefined<T extends JsonRecord>(value: T): T {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry !== undefined),
+  ) as T;
+}
+
+export async function reserveLocalPort(): Promise<number> {
+  const server = net.createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.once('listening', resolve);
+    server.listen(0, '127.0.0.1');
+  });
+  const address = server.address();
+  const port = typeof address === 'object' && address ? address.port : 0;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return port;
+}
