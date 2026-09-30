@@ -35,15 +35,6 @@ import type {
 } from "./types"
 import { initialSnapshot } from "./mock-data"
 
-declare global {
-  interface Window {
-    codexHotSwitchFloating?: {
-      send: (channel: string, message: unknown) => void
-      onDesktopMessage?: (callback: (message: unknown) => void) => () => void
-    }
-  }
-}
-
 interface ConsoleState extends ConsoleSnapshot {
   loading: boolean
   saving: boolean
@@ -201,26 +192,6 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
     return () => {
       window.removeEventListener("focus", handleFocus)
       document.removeEventListener("visibilitychange", handleVisibilityChange)
-    }
-  }, [refresh])
-
-  useEffect(() => {
-    const unsubscribe = window.codexHotSwitchFloating?.onDesktopMessage?.(
-      (message) => {
-        if (
-          message &&
-          typeof message === "object" &&
-          (message as { type?: unknown }).type === "console-changed"
-        ) {
-          void refresh()
-        }
-      },
-    )
-    window.codexHotSwitchFloating?.send("codex-hot-switch-console", {
-      type: "request-desktop-state",
-    })
-    return () => {
-      unsubscribe?.()
     }
   }, [refresh])
 

@@ -1,10 +1,9 @@
 // Codex SwitchGate — Tauri 外壳
 //
-// 设计要点（与 Electron 外壳的关键差异）：
+// 设计要点：
 //
-// 1. **不再自带 Node 运行时**。Electron 外壳是拿 `electron.exe` + `ELECTRON_RUN_AS_NODE=1`
-//    当 Node 跑 `server.js`，代价是包里背着一整个 Chromium（约 140MB）。
-//    Tauri 外壳改成探测宿主机的 Node，WebView 用系统 WebView2，内存量级完全不同。
+// 1. **复用宿主机 Node**。外壳探测宿主机 Node 运行 `server.js`，WebView 使用系统
+//    WebView2，不随应用分发 Chromium。
 //
 // 2. **不碰原生模块**。`lib/server/codex-session-sync/sqlite.ts` 优先用 Node 内置的
 //    `node:sqlite`（Node >= 22.5 可用），`better-sqlite3` 只是 Node 20 的兜底。
@@ -25,7 +24,7 @@ use tauri::{Manager, RunEvent, State};
 use tauri_plugin_opener::OpenerExt;
 
 /// `node:sqlite` 自 Node 22.5 起可用；低于这个版本会回退到 better-sqlite3，
-/// 而那份 .node 是按 Electron ABI 编的，在真 Node 上加载不了。所以这是硬门槛。
+/// 而仓库里的原生模块可能与当前 Node ABI 不匹配。所以这是硬门槛。
 const MIN_NODE_MAJOR: u32 = 22;
 const MIN_NODE_MINOR: u32 = 5;
 
@@ -822,8 +821,8 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
-        // 前端 `selectDesktopDirectory()` 在 Tauri 侧走
-        // `invoke("plugin:dialog|open")`（Electron 侧仍是 preload 的 selectDirectory）。
+        // 前端 `selectDesktopDirectory()` 通过
+        // `invoke("plugin:dialog|open")` 打开系统目录选择器。
         .plugin(tauri_plugin_dialog::init())
         .manage(ServerRuntime::default())
         .invoke_handler(tauri::generate_handler![

@@ -1,12 +1,8 @@
-# Tauri 引导层外壳（实验）
-
-与 `electron/` 平级、完全隔离的独立外壳，**Electron 链路不受任何影响**。
+# Tauri 引导层外壳
 
 ## 为什么存在
 
-Electron 外壳把整个 Chromium 打进包（安装包 141MB，运行内存 200MB+），
-而 Clash Verge 这类 Tauri 应用只要十几 MB。差异不是配置能追上的——
-Tauri 用的是**系统 WebView2**，Electron 自带 Chromium。
+Tauri 使用系统 WebView2，不随安装包分发 Chromium，安装体积和空闲内存都明显更低。
 
 ## 关键前提（实测确认）
 
@@ -16,9 +12,7 @@ Tauri 用的是**系统 WebView2**，Electron 自带 Chromium。
   `better-sqlite3` 只是 Node 20 的兜底。
 - 只要宿主 Node **>= 22.5**（`node:sqlite` 引入版本），就零原生依赖，
   不需要 node-gyp / VS Build Tools。
-- 包内那份 `better_sqlite3.node` 编译于 NODE_MODULE_VERSION 115（Electron 37 代 ABI），
-  与 Electron 42（146）和 Node 22（127）都对不上——说明它从未被真正加载过，
-  是个睡着的坑，不是活的问题。
+- 仓库里的 `better_sqlite3.node` 只作为 Node 20 的兜底；Node 22.5+ 不会加载它。
 
 实测：`cd .next/standalone && node server.js` → `✓ Ready`，`/api/console` 返回 200。
 
@@ -56,21 +50,12 @@ tauri/
 - **引导界面**：检测 → 启动 → 轮询健康检查 → 自动跳转
 - **capabilities**：`src-tauri/capabilities/default.json` 授权主窗口调用本应用命令，
   并用 `remote.urls` 放行 `http://127.0.0.1:*`，让 WebView 能导航到本地控制台
-- **前端桌面桥分派**：`lib/desktop-open-external.ts` 与 `lib/desktop-directory-picker.ts`
-  现在同时认两条桥 —— Electron 的 `window.codexHotSwitchFloating` 优先，
-  其次是 Tauri 的 `window.__TAURI__`：
+- **前端桌面桥**：`lib/desktop-open-external.ts` 与 `lib/desktop-directory-picker.ts`
+  通过 Tauri 的 `window.__TAURI__`：
   - 打开外链 → `__TAURI__.opener.openUrl`（`tauri-plugin-opener` + `opener:allow-open-url`）
   - 选择文件夹 → `invoke("plugin:dialog|open", { options: { directory: true } })`
     （`tauri-plugin-dialog` + `dialog:allow-open`）
 - **安装包中文化**：NSIS `SimpChinese`（tauri-bundler 内置译文）
-
-### 尚未实现
-
-- **浮球窗口**：`floating-ball-view` / `floating-panel-view` / `settings-view` / `console-store`
-  里那 5 处 `window.codexHotSwitchFloating.send(...)` 是 Electron **独立透明 BrowserWindow**
-  的 IPC。Tauri 外壳是单窗口（引导页 + 主 WebView），没有浮球窗口，
-  调用走 `?.` 静默跳过 —— **不崩，但浮球功能在 Tauri 版不可用**。
-  要补齐需在 Tauri 侧另建 `transparent: true` 的窗口并实现对应 IPC 协议。
 
 ## 已知问题
 
@@ -104,15 +89,14 @@ Cargo 增量编译缓存在 `dist/.tauri-target/`。免安装二进制位于
 
 ## 体积 / 内存对比（实测）
 
-| | Electron 外壳 | Tauri 外壳（release） |
-|---|---|---|
-| **安装包** | **141.31 MB** | **36.94 MB**（-74%） |
-| 外壳 exe | 172MB+（含 Chromium） | 13 MB |
-| 随包服务端 | — | ~237 MB（vendor ~192MB，其中 next 161MB 必须保留） |
-| 空闲内存 | 200MB+ | **31 MB** |
+| 项目 | Tauri 外壳（release） |
+|---|---|
+| **安装包** | **约 37 MB** |
+| 外壳 exe | 约 13 MB |
+| 随包服务端 | 约 237 MB（vendor 约 192MB，其中 next 161MB 必须保留） |
+| 空闲内存 | 约 31 MB |
 
-安装包骤降的原因：不再内嵌 Chromium（省 ~120MB）。
-服务端资源 237MB 经 NSIS 压缩后只让安装包涨了约 24MB —— NSIS 对 `.exe` / 少量大文件的
+服务端资源经 NSIS 压缩后只让安装包增长约 24MB，NSIS 对 `.exe` / 少量大文件的
 压缩率远高于对成千上万个小文件。
 
 ⚠️ **别拿资源体积当「越小越好」的指标**：曾经把 vendor 顶层包删光掉到 46MB，
@@ -250,7 +234,7 @@ error[E0107]: struct takes 3 generic arguments but 2 supplied
 
 ```
 resources/server/tauri/src-tauri/resources/server/tauri/...
-resources/server/dist/                ← 已被误拷的 Electron/Tauri 打包产物
+resources/server/dist/                ← 已被误拷的打包产物
 ```
 
 实测资源从 **33MB 涨到 8.6GB**，NSIS 打包直接崩（也踩过 safe-delete 阈值中止）。
@@ -315,9 +299,7 @@ standalone 顶层那些**指向 `.pnpm` 的符号链接**会被解引成实体�
 「顶层实体 + `.pnpm` 实体」两份并存，体积翻倍。
 所以 `main()` 里先对 `.next/standalone/node_modules` 摊平一次，再整体 copy，目标侧 `pruneVendor` 再兜底一次（幂等）。
 
-对照：Electron 版没这个问题，因为 `electron/main.cjs` 的 `packagedNodePath()` 会把
-`[vendor, ...vendor/.pnpm/*/node_modules]` 全塞进 NODE_PATH；Tauri 因 NSIS 不能保留
-`.pnpm`，只能摊平。两者效果等价。
+Tauri 因 NSIS 不能保留带校验和的 `.pnpm` 长路径，只能先摊平再打包。
 
 ## 排查手段（GUI 程序没有控制台）
 

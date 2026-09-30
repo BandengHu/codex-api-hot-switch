@@ -52,7 +52,6 @@ function fakeSettings(): Settings {
     webSearchMode: "builtin",
     alphaSearchMode: "auto",
     keyStorage: "file",
-    floatingBallEnabled: false,
     tokenStatsResetAt: "",
   }
 }

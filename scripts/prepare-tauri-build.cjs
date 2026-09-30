@@ -2,17 +2,8 @@
 /**
  * 为 Tauri 外壳准备随包资源。
  *
- * 与 Electron 那条链路（scripts/prepare-electron-build.cjs）的核心差异：
- *
- * - Electron 把 server 塞进 app.asar，再把必须真实落盘的条目通过 asarUnpack 解出来；
- *   Tauri 没有 asar 概念，resources 目录天然就是真实文件，所以这里**只需要拷贝**，
- *   不需要 asarUnpack 那套断言与映射。
- * - Electron 里 `electron.exe` 兼任 Node，所以 vendor 可以留在 asar 内靠 NODE_PATH 解析；
- *   Tauri 用的是宿主机 Node，路径解析没有任何特殊机制，同样走 NODE_PATH 即可。
- *
- * 复用 prepare-electron-build.cjs 里的裁剪逻辑（语言包不适用，但 vendor 裁剪适用），
- * 因此这里直接 require 它导出的函数 —— 但那个文件是「执行即跑」的脚本，
- * 所以下面把需要的裁剪步骤按同样顺序复刻一遍，保持两边行为一致。
+ * Tauri 没有 asar 概念，resources 目录天然就是真实文件，因此这里只负责拷贝、
+ * 裁剪运行时依赖并做完整性检查。外壳使用宿主机 Node，vendor 通过 NODE_PATH 解析。
  */
 
 const fs = require("node:fs/promises")
@@ -28,17 +19,16 @@ const tauriResourcesDir = process.env.TAURI_RESOURCES_DIR
   : path.join(root, "tauri", "src-tauri", "resources")
 const targetServerDir = path.join(tauriResourcesDir, "server")
 
-// 与 Electron 链路保持一致：构建产物本身不能进包
+// 构建产物本身不能进包。
 const tracedBuildArtifacts = [
   ".data",
-  ".electron-shell",
   ".tmp",
   "dist",
   "tsconfig.tsbuildinfo",
   // Next 的 NFT 全项目追踪会把整个仓库根卷进 `.next/standalone`，
   // 其中就包含 `tauri/` —— 而 `tauri/src-tauri/resources/server/` 正是本次要写出的目录，
   // 于是形成自嵌套：资源树里出现 `resources/server/tauri/src-tauri/resources/server/...`，
-  // 且 `dist/`（Electron/Tauri 打包产物）被一起拖进来，资源从 33MB 涨到 8.6GB。
+  // 且 `dist/`（打包产物）被一起拖进来，资源从 33MB 涨到 8.6GB。
   // 之前 tsconfig 没排 `tauri` 时必现；现在排了也仍留着这道保险。
   "tauri",
 ]
@@ -313,13 +303,12 @@ async function pruneVendorTopLevelBuildArtifacts(vendorDir) {
 /**
  * 删掉 .pnpm 链接农场。
  *
- * 为什么 Tauri 链路能删、Electron 链路不能：
+ * 为什么可以删除：
  *
  * - **超长路径**。pnpm 的目录名把 peer 依赖校验和嵌了进去，例如
  *   `.pnpm/next@16.2.6_@babel+core@7.2_40a7effce8bcad24669d45809ebe449e/node_modules/@swc/helpers/...`。
  *   实测本包里有 **146 个条目**的绝对路径超过 Windows 的 260 字符上限（最长 291），
- *   NSIS 的 makensis 遇到就打不开文件并**整体中止**打包。Electron 走 asar，不展开真实路径，
- *   所以从来没暴露过这个问题。
+ *   NSIS 的 makensis 遇到就打不开文件并**整体中止**打包。
  * - **它其实是冗余的**。实测把 .pnpm 整个移走后，`node server.js` 照常启动，
  *   16 个 API 路由全部返回 200/405，0 个 5xx，日志里还能看到
  *   `ExperimentalWarning: SQLite is an experimental feature`（说明 node:sqlite 真的加载了）。
@@ -339,7 +328,7 @@ async function prunePnpmStore(vendorDir) {
  * Next 的 NFT 在部分路由上会退化成「追踪整个项目根」，于是 `.next/standalone`
  * 里会带上一份仓库快照。拷贝到 `tauri/src-tauri/resources/server/` 之后，就出现
  * `resources/server/tauri/src-tauri/resources/server/...` 这种自嵌套，
- * 并且把 `dist/`（Electron/Tauri 打包产物）一起拖进来 ——
+ * 并且把 `dist/`（打包产物）一起拖进来 ——
  * 资源从 33MB 暴涨到 8.6GB，NSIS 打包会直接崩。
  *
  * 正常情形下 `main()` 已经用 `tracedBuildArtifacts` 在拷贝前清理过；
@@ -349,7 +338,6 @@ async function pruneSelfNestedDirs(serverDir) {
   const suspicious = [
     // 最坑的一个：资源树里套着 tauri/，而 tauri/src-tauri/resources/server 就是自己
     "tauri",
-    ".electron-shell",
     "dist",
     ".tmp",
     ".data",
@@ -573,7 +561,7 @@ async function main() {
   }
   await copyDir(standaloneDir, targetServerDir)
 
-  // 脚本与 integrations（与 Electron 链路一致）
+  // 补入运行时脚本与 integrations。
   await fs.mkdir(path.join(targetServerDir, "scripts"), { recursive: true })
   for (const runner of [
     "codex-desktop-plugins-runner.cjs",
@@ -634,7 +622,7 @@ async function main() {
     throw new Error(
       `资源树异常膨胀：${(size / 1024 / 1024).toFixed(0)}MB（正常约 237MB）。\n` +
         `通常是有构建产物被 NFT 追踪卷了进来。请检查 ${targetServerDir} 下是否残留 ` +
-        `tauri/ 、dist/ 、.electron-shell/ 等目录。`,
+        `tauri/ 、dist/ 等构建产物目录。`,
     )
   }
   console.log(`Tauri 资源已就绪：tauri/src-tauri/resources/server`)

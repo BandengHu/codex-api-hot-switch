@@ -263,9 +263,6 @@ function webSearchMcpEnvBlock(command: string, settings: Settings) {
     CODEX_HOME: codexHome(),
     SWITCHGATE_WEB_API_URL: webSearchApiUrl(settings),
   }
-  if (process.execPath === command && process.versions.electron) {
-    env.ELECTRON_RUN_AS_NODE = "1"
-  }
   if (process.env.NODE_PATH) env.NODE_PATH = process.env.NODE_PATH.split(delimiter).join(delimiter)
   const entries = Object.entries(env)
   if (!entries.length) return ""

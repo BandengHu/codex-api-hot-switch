@@ -245,11 +245,6 @@ export interface RuntimeConfig {
   reasoning: ReasoningEffort
 }
 
-export interface FloatingBallPosition {
-  x: number
-  y: number
-}
-
 export interface Settings {
   listenAddress: string
   port: number
@@ -269,8 +264,6 @@ export interface Settings {
   webSearchMode: WebSearchMode
   alphaSearchMode: AlphaSearchMode
   keyStorage: string
-  floatingBallEnabled: boolean
-  floatingBallPosition?: FloatingBallPosition
   tokenStatsResetAt: string
 }
 

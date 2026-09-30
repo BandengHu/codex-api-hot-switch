@@ -25,7 +25,6 @@ import { appendTelemetryLog, importLegacyTelemetry } from "@/lib/server/telemetr
 import { REASONING_DIALECTS } from "@/lib/types"
 import type {
   ConsoleSnapshot,
-  FloatingBallPosition,
   Model,
   ModelMapping,
   Provider,
@@ -231,14 +230,6 @@ function clampWorkbuddyModelContexts(models: Model[], providers: Provider[]): Mo
   )
 }
 
-function normalizeFloatingBallPosition(value: unknown): FloatingBallPosition | undefined {
-  if (!value || typeof value !== "object") return undefined
-  const position = value as Partial<FloatingBallPosition>
-  return Number.isFinite(position.x) && Number.isFinite(position.y)
-    ? { x: Number(position.x), y: Number(position.y) }
-    : undefined
-}
-
 function normalizeWebSearchMode(value: unknown, fallback: WebSearchMode): WebSearchMode {
   return value === "builtin" || value === "mcp" || value === "disabled"
     ? value
@@ -300,11 +291,6 @@ function normalizeSettings(
       settings.imageGenerationModelId.trim()
         ? settings.imageGenerationModelId
         : seed.imageGenerationModelId,
-    floatingBallEnabled:
-      typeof settings.floatingBallEnabled === "boolean"
-        ? settings.floatingBallEnabled
-        : seed.floatingBallEnabled,
-    floatingBallPosition: normalizeFloatingBallPosition(settings.floatingBallPosition),
     tokenStatsResetAt:
       typeof settings.tokenStatsResetAt === "string" && settings.tokenStatsResetAt.trim()
         ? settings.tokenStatsResetAt

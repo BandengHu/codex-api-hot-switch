@@ -136,24 +136,6 @@ export async function resetProviderEndpointRuntime(
   )
 }
 
-export async function updateFloatingBallSettings(
-  body: {
-    floatingBallEnabled?: boolean
-    floatingBallPosition?: { x: number; y: number }
-  },
-): Promise<ConsoleSnapshot> {
-  return parseResponse<ConsoleSnapshot>(
-    await fetch("/api/settings/floating-ball", {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        enabled: body.floatingBallEnabled,
-        position: body.floatingBallPosition,
-      }),
-    }),
-  )
-}
-
 export async function resetTokenStats(): Promise<ConsoleSnapshot> {
   return parseResponse<ConsoleSnapshot>(
     await fetch("/api/token-stats/reset", { method: "POST" }),

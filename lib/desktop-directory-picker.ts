@@ -1,14 +1,5 @@
 "use client"
 
-type DirectoryPickerResult = {
-  canceled?: boolean
-  path?: string
-}
-
-type DesktopBridge = {
-  selectDirectory?: (initialPath?: string) => Promise<DirectoryPickerResult>
-}
-
 /** Tauri 的全局对象（`app.withGlobalTauri: true` 时由外壳注入）。 */
 type TauriGlobal = {
   core?: {
@@ -22,26 +13,10 @@ type TauriDialogResult = string | string[] | null
 /**
  * 弹系统「选择文件夹」对话框，返回绝对路径；用户取消则返回空串。
  *
- * 两条桥都支持：
- * 1. Electron：preload 暴露的 `window.codexHotSwitchFloating.selectDirectory`
- *    → 主进程 `dialog.showOpenDialog`。
- * 2. Tauri：`invoke("plugin:dialog|open")`（需要 `dialog:allow-open` 权限）。
- *
- * 浏览器里没有桥，抛错提示仅在安装版可用。
+ * Tauri 通过 `invoke("plugin:dialog|open")` 打开系统对话框；浏览器里没有桥，
+ * 抛错提示仅安装版可用。
  */
 export async function selectDesktopDirectory(initialPath = "") {
-  const bridge = (
-    window as unknown as {
-      codexHotSwitchFloating?: DesktopBridge
-    }
-  ).codexHotSwitchFloating
-
-  if (bridge?.selectDirectory) {
-    const result = await bridge.selectDirectory(initialPath)
-    if (result?.canceled) return ""
-    return typeof result?.path === "string" ? result.path.trim() : ""
-  }
-
   const invoke = (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__?.core
     ?.invoke
   if (invoke) {

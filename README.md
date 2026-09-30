@@ -15,28 +15,15 @@ npm exec --yes pnpm@10.21.0 -- install --frozen-lockfile
 npm exec --yes pnpm@10.21.0 -- dev
 ```
 
-桌面壳开发模式：
-
-```powershell
-npm exec --yes pnpm@10.21.0 -- desktop
-```
-
-Electron 安装包：
-
-```powershell
-npm exec --yes pnpm@10.21.0 -- desktop:build
-```
-
 Tauri 安装包：
 
 ```powershell
 npm exec --yes pnpm@10.21.0 -- tauri:build
 ```
 
-最终安装包统一输出到：
+最终安装包输出到：
 
 ```text
-dist/electron/Codex SwitchGate Setup <version>.exe
 dist/tauri/Codex SwitchGate_<version>_x64-setup.exe
 ```
 
@@ -64,7 +51,7 @@ Tauri 的 Cargo 增量编译缓存在 `dist/.tauri-target/`，与发布包分开
 - 控制台 API：`/api/console`
 - 配置导入/导出：`/api/console/import`、`/api/console/export`
 - 供应商健康检查：`/api/providers/test`
-- Electron 桌面壳：窗口、系统托盘、开机自启、启动/复用本地服务
+- Tauri 桌面壳：系统托盘、开机自启、启动/复用本地服务
 - OpenAI 兼容入口：`/v1/models`、`/v1/chat/completions`、`/v1/responses`
 - Codex 客户端模型列表：`/v1/models?client_version=...`
   - `自动`：按 SwitchGate 当前热切换配置转发

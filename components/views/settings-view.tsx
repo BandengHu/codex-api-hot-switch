@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { CircleDot, Download, ImageIcon, LifeBuoy, RefreshCw, Upload, Save } from "lucide-react"
+import { Download, ImageIcon, LifeBuoy, RefreshCw, Upload, Save } from "lucide-react"
 import {
   Card,
   CardContent,
@@ -36,7 +36,6 @@ import {
 import {
   exportConsoleConfig,
   importConsoleConfig,
-  updateFloatingBallSettings,
 } from "@/lib/console-api"
 import {
   REASONING_LABELS,
@@ -47,15 +46,6 @@ import {
 import { toast } from "sonner"
 
 const REASONING_OPTIONS: ReasoningEffort[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "auto"]
-
-declare global {
-  interface Window {
-    codexHotSwitchFloating?: {
-      send: (channel: string, message: unknown) => void
-      onDesktopMessage?: (callback: (message: unknown) => void) => () => void
-    }
-  }
-}
 
 export function SettingsView() {
   const { settings, providers, modelsByProvider, updateSettings, replaceSnapshot } =
@@ -138,37 +128,25 @@ export function SettingsView() {
     toast.success("设置已保存。监听地址或端口会在重启服务后生效。")
   }
 
-  async function handleFloatingBallChange(enabled: boolean) {
-    setDraft((d) => ({ ...d, floatingBallEnabled: enabled }))
-    try {
-      const next = await updateFloatingBallSettings({ floatingBallEnabled: enabled })
-      replaceSnapshot(next)
-      setDraft((d) => ({
-        ...d,
-        floatingBallEnabled: next.settings.floatingBallEnabled,
-        floatingBallPosition: next.settings.floatingBallPosition,
-      }))
-      window.codexHotSwitchFloating?.send("codex-hot-switch-console", {
-        type: "console-changed",
-        payload: { source: "settings-floating-ball" },
-      })
-      toast.success(enabled ? "悬浮球已开启" : "悬浮球已关闭")
-    } catch (error) {
-      setDraft(settings)
-      toast.error(error instanceof Error ? error.message : String(error))
-    }
-  }
-
-  function handleRestartServer() {
-    const bridge = window.codexHotSwitchFloating
-    if (!bridge) {
+  async function handleRestartServer() {
+    const invoke = (
+      window as unknown as {
+        __TAURI__?: { core?: { invoke?: <T>(cmd: string) => Promise<T> } }
+      }
+    ).__TAURI__?.core?.invoke
+    if (!invoke) {
       toast.error("只能在安装版桌面壳里重启本地服务")
       return
     }
     setRestartingServer(true)
-    bridge.send("codex-hot-switch-console", { type: "restart-server" })
-    toast.success("正在重启本地中转服务")
-    window.setTimeout(() => setRestartingServer(false), 2500)
+    try {
+      await invoke("restart_server")
+      toast.success("本地中转服务已重启")
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error))
+    } finally {
+      setRestartingServer(false)
+    }
   }
 
   function handleExport() {
@@ -341,31 +319,6 @@ export function SettingsView() {
               </FieldDescription>
             </Field>
           </FieldGroup>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <CircleDot className="size-4" />
-            桌面悬浮球
-          </CardTitle>
-          <CardDescription>在 EXE 运行时显示桌面热切换入口</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Field orientation="horizontal">
-            <div className="flex flex-col gap-0.5">
-              <FieldLabel htmlFor="s-floating-ball">显示桌面悬浮球</FieldLabel>
-              <FieldDescription>
-                悬浮球可右键隐藏；重新开启后会恢复到上次拖放的位置。
-              </FieldDescription>
-            </div>
-            <Switch
-              id="s-floating-ball"
-              checked={draft.floatingBallEnabled}
-              onCheckedChange={(value) => void handleFloatingBallChange(value)}
-            />
-          </Field>
         </CardContent>
       </Card>
 

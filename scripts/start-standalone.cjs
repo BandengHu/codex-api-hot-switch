@@ -1,6 +1,6 @@
 const fs = require("node:fs")
 const path = require("node:path")
-const { resolveServerRuntimeConfig } = require("../electron/server-runtime-config.cjs")
+const { resolveServerRuntimeConfig } = require("./server-runtime-config.cjs")
 
 const root = path.resolve(__dirname, "..")
 const standaloneDir = path.join(root, ".next", "standalone")
