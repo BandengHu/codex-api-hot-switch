@@ -29,8 +29,24 @@
 2. `NODE_OPTIONS= cargo tauri build --bundles nsis`（~4m46s）
    - **必须 `dangerouslyDisableSandbox: true`**：`tauri-build` 用 `rc.exe` 编译 icon.ico 写临时 `.res` 被沙箱拦，
      报 `failed to compile icons/icon.ico into a Windows Resource file: 拒绝访问。 (os error 5)`
-3. 产物：`tauri/src-tauri/target/release/bundle/nsis/Codex SwitchGate_0.2.12_x64-setup.exe` = **4.98 MiB**
+3. 产物：`tauri/src-tauri/target/release/bundle/nsis/Codex SwitchGate_0.2.12_x64-setup.exe` = **8.74 MiB**
    （`tauri/dist/` 被 .gitignore 忽略，安装包不入库）
+   - **体积是可靠信号**：正常 **8.74MB**；偏小（如 4.98MB）几乎必然是资源缺失（出过空包事故）。
+   - 打包前**必须**确认资源完整：脚本有 `assertResourcesComplete(dir)` 护栏，
+     核验 `server.js` / `.next/BUILD_ID` / `.next/server` / `.next/static` / `package.json`
+     + `.next/server/app/api` >= 5 项 + `.next/server/chunks` >= 20 项。
+   - `target/release/nsis` 或 `bundle/nsis` 被占用时报 `os error 32` / EPERM
+     → **改名挪走**再重跑（别 `rm -rf`，会超 safe-delete 阈值被 SIGTERM）。
+
+### 验证手段（沙箱内可用，务必用）
+- **7-Zip 解包是 NSIS 包最可靠的端到端校验**：
+  `"/c/Program Files/7-Zip/7z.exe" x <Setup.exe> -o<dir> -y`
+  然后确认 `resources\server\server.js`、`.next\BUILD_ID`、`required-server-files.json` 都在。
+- 解包目录里直接 `node server.js` 实跑 → 应输出 `✓ Ready in 0ms`；
+  再打 `/`、`/api/console`、`/api/codex-config`、`/api/workbuddy-pool`、`/v1/models` 应全 200/405、0 个 5xx。
+  （`/api/providers/models` 返回 405 是正常的 —— GET 不允许。）
+- **NSIS 静默安装到指定目录不可靠**：`/S /D=<含中文或空格的路径>` 会静默失败 → 改用 7z 解包验证。
+- 冷启动时串行打多个路由容易误判 TIMEOUT（前一个慢路由还没结束），要逐个等结果或轮询等 `Ready`。
 
 ## NFT「全项目被追踪」不阻塞打包（别重复排查）
 - 不止加了 `outputFileTracingExcludes` 的路由。`providers/models`、`providers/test`、`models/test`、
