@@ -38,3 +38,6 @@ coverage/
 tauri/src-tauri/target/
 tauri/src-tauri/resources/
 tauri/src-tauri/gen/schemas/
+tauri/src-tauri/.res-old-*/
+tauri/src-tauri/.nsis-stale-*/
+tauri/src-tauri/resources-broken/
