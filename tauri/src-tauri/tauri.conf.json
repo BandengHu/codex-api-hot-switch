@@ -22,14 +22,15 @@
     ],
     "security": {
       "csp": null,
-      "dangerousDisableAssetCspModification": true
+      "dangerousDisableAssetCspModification": true,
+      "capabilities": ["default"]
     }
   },
   "bundle": {
     "active": true,
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
-    "resources": ["../../.electron-shell/server/**/*"],
+    "resources": ["resources/server/**/*"],
     "windows": {
       "nsis": {
         "installMode": "currentUser"

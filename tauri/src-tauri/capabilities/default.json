@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "主窗口：引导页需要调用本应用注册的命令（probe_node / start_server 等）；remote 段额外放行本地中转服务地址，让 WebView 能直接导航到控制台页面并继续使用 IPC。",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*", "http://localhost:*"]
+  },
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-unminimize",
+    "core:webview:allow-internal-toggle-devtools",
+    "shell:allow-open",
+    "opener:allow-open-url"
+  ]
+}

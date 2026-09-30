@@ -136,7 +136,32 @@ async function pruneDuplicatedTopLevelVendorPackages(vendorDir) {
   }
 }
 
+/**
+ * 删掉 .pnpm 链接农场。
+ *
+ * 为什么 Tauri 链路能删、Electron 链路不能：
+ *
+ * - **超长路径**。pnpm 的目录名把 peer 依赖校验和嵌了进去，例如
+ *   `.pnpm/next@16.2.6_@babel+core@7.2_40a7effce8bcad24669d45809ebe449e/node_modules/@swc/helpers/...`。
+ *   实测本包里有 **146 个条目**的绝对路径超过 Windows 的 260 字符上限（最长 291），
+ *   NSIS 的 makensis 遇到就打不开文件并**整体中止**打包。Electron 走 asar，不展开真实路径，
+ *   所以从来没暴露过这个问题。
+ * - **它其实是冗余的**。实测把 .pnpm 整个移走后，`node server.js` 照常启动，
+ *   16 个 API 路由全部返回 200/405，0 个 5xx，日志里还能看到
+ *   `ExperimentalWarning: SQLite is an experimental feature`（说明 node:sqlite 真的加载了）。
+ *   Next standalone 已经把运行时依赖 bundle 进了 `.next/server/chunks`，
+ *   .pnpm 只是 pnpm 布局的残留。
+ * - 保留顶层 `tsx`（企业微信启动器会读 `vendor/tsx/dist/loader.mjs` 当 --import loader）。
+ */
+async function prunePnpmStore(vendorDir) {
+  const store = path.join(vendorDir, ".pnpm")
+  if (!(await exists(store))) return
+  await fs.rm(store, { recursive: true, force: true })
+}
+
 async function pruneVendor(vendorDir) {
+  // 注意顺序：先清顶层重复包（此时 .pnpm 还在，函数内依赖它判断），
+  // 再删 .pnpm 链接农场，否则 pruneDuplicatedTopLevelVendorPackages 会直接短路。
   await pruneAllStaticToolBinaries(vendorDir)
   await pruneNonRuntimeFiles(vendorDir)
   for (const rel of [
@@ -149,6 +174,45 @@ async function pruneVendor(vendorDir) {
     await fs.rm(path.join(vendorDir, ...rel), { recursive: true, force: true })
   }
   await pruneDuplicatedTopLevelVendorPackages(vendorDir)
+  await prunePnpmStore(vendorDir)
+}
+
+/**
+ * 打包前的护栏：确认资源树里没有超过 Windows 260 字符上限的路径。
+ *
+ * NSIS 的 makensis 打不开超长路径的文件时会直接中止整个打包，报错信息还很隐晦
+ * （“failed opening file ... -- aborting creation process”）。与其等打包跑十几分钟
+ * 再失败，不如在这里秒级拦下来并打印最长的几个 offender。
+ */
+async function assertNoLongPaths(root, limit = 250) {
+  const offenders = []
+  let maxLen = 0
+
+  async function walk(dir) {
+    let entries
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name)
+      if (full.length > maxLen) maxLen = full.length
+      if (full.length > limit && offenders.length < 10) {
+        offenders.push(`${full.length}  ${path.relative(root, full)}`)
+      }
+      if (entry.isDirectory()) await walk(full)
+    }
+  }
+
+  await walk(root)
+  if (offenders.length > 0) {
+    throw new Error(
+      `检测到超长路径（> ${limit} 字符），NSIS 打包会失败。最长 ${maxLen}。\n` +
+        offenders.map((o) => `  ${o}`).join("\n"),
+    )
+  }
+  return maxLen
 }
 
 async function main() {
@@ -201,7 +265,34 @@ async function main() {
   if (await exists(nm)) await fs.rename(nm, vendor)
   await pruneVendor(vendor)
 
-  console.log("Tauri 资源已就绪：tauri/src-tauri/resources/server")
+  const maxLen = await assertNoLongPaths(targetServerDir)
+
+  const size = await dirSize(targetServerDir)
+  console.log(`Tauri 资源已就绪：tauri/src-tauri/resources/server`)
+  console.log(`  体积 ${(size / 1024 / 1024).toFixed(0)}MB，最长路径 ${maxLen} 字符`)
+}
+
+async function dirSize(dir) {
+  let total = 0
+  let entries
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true })
+  } catch {
+    return 0
+  }
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      total += await dirSize(full)
+    } else {
+      try {
+        total += (await fs.stat(full)).size
+      } catch {
+        // 忽略读不到的文件（断链、权限）
+      }
+    }
+  }
+  return total
 }
 
 main().catch((error) => {

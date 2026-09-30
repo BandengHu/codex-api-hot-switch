@@ -19,6 +19,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, RunEvent, State};
 use tauri_plugin_opener::OpenerExt;
 
@@ -236,11 +238,17 @@ fn health_ok(endpoint: &str) -> bool {
     .is_ok()
 }
 
-/// standalone 的 node_modules 里只有结构，真正跑起来要靠 vendor。
-/// 这里把 vendor 与 .pnpm/*/node_modules 全部拼进 NODE_PATH —— 与 Electron 外壳同策略。
+/// 把 vendor 拼进 NODE_PATH。
+///
+/// 注意：这里**不再**扫 `.pnpm/*/node_modules`。打包脚本已经删掉整个 .pnpm 链接农场
+/// （原因见 scripts/prepare-tauri-build.cjs 的 prunePnpmStore：pnpm 的目录名把 peer
+/// 依赖校验和嵌进去了，实测有 146 个条目的绝对路径超过 Windows 260 字符上限，
+/// NSIS 打包会整体中止；而实测删掉它之后服务与 16 个 API 路由全部正常）。
+/// 现在 vendor 下只有 `tsx`（企业微信启动器的 --import loader），一个目录足够。
 fn build_node_path(server_root: &Path) -> String {
     let vendor = server_root.join("vendor");
     let mut entries: Vec<String> = vec![vendor.to_string_lossy().to_string()];
+    // 兼容旧布局：万一以后又把 .pnpm 放回来，这段会自动带上
     let pnpm = vendor.join(".pnpm");
     if let Ok(read) = std::fs::read_dir(&pnpm) {
         for entry in read.flatten() {
@@ -462,6 +470,90 @@ fn attach_kill_on_close_job(child: &Child) {
     }
 }
 
+// ---------------------------------------------------------------- 托盘
+
+/// 托盘图标：关窗只隐藏不退出，所以必须有托盘作为「回到窗口」的入口，
+/// 否则用户点一次 X 就再也叫不出界面了（服务还在跑，进程还活着）。
+fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let show = MenuItemBuilder::with_id("show", "显示主窗口").build(app)?;
+    let restart = MenuItemBuilder::with_id("restart", "重启中转服务").build(app)?;
+    let quit = MenuItemBuilder::with_id("quit", "退出").build(app)?;
+
+    let menu = MenuBuilder::new(app)
+        .item(&show)
+        .separator()
+        .item(&restart)
+        .separator()
+        .item(&quit)
+        .build()?;
+
+    let mut builder = TrayIconBuilder::with_id("main-tray")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .tooltip("Codex SwitchGate");
+
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+
+    builder
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "show" => reveal_main_window(app),
+            "restart" => {
+                // 托盘菜单里没有 State 参数，这里手动取
+                if let Some(state) = app.try_state::<ServerRuntime>() {
+                    if let Ok(mut child) = state.child.lock().map(|mut g| g.take()).map_err(|_| ()) {
+                        if let Some(mut c) = child.take() {
+                            let _ = c.kill();
+                            let _ = c.wait();
+                        }
+                    }
+                    let _ = helper_start(app.clone(), state);
+                }
+            }
+            "quit" => {
+                if let Some(state) = app.try_state::<ServerRuntime>() {
+                    if let Ok(mut guard) = state.child.lock() {
+                        if let Some(mut child) = guard.take() {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                        }
+                    }
+                }
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            // 左键单击托盘图标 -> 把窗口叫回来
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                reveal_main_window(tray.app_handle());
+            }
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
+fn reveal_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+/// 供托盘「重启服务」复用：把 start_server 的 State 版本包一层，避免菜单回调里
+/// 拿不到 State 泛型。
+fn helper_start(app: tauri::AppHandle, state: State<'_, ServerRuntime>) -> Result<ServerStatus, String> {
+    start_server(app, state, StartOptions { host: None, port: None, data_dir: None })
+}
+
 // ---------------------------------------------------------------- 入口
 
 pub fn run() {
@@ -504,9 +596,19 @@ pub fn run() {
             open_external,
         ])
         .setup(|app| {
-            // 允许 WebView 直接指向本地中转服务（默认同源策略只放行 tauri:// 与 devUrl）
+            let handle = app.handle().clone();
+            setup_tray(&handle).expect("创建托盘失败");
+
+            // 窗口在配置里是 visible: false。放一个小延迟再显示，让引导页先完成首帧，
+            // 免得窗口一闪出来是块白底。WebView2 冷启通常几百毫秒，600ms 够用。
+            // （不用 on_page_load：Tauri 2 的 WebviewWindow 上已无此方法。）
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
+                let w = window.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(600));
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                });
             }
             Ok(())
         })
