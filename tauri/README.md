@@ -20,7 +20,7 @@ Tauri 使用系统 WebView2，不随安装包分发 Chromium，安装体积和�
 
 ```
 tauri/
-├─ ui/index.html              引导界面：环境自检 → 一键启动 → 跳转控制台
+├─ ui/index.html              欢迎页：自动启动 → 跳转控制台；失败时才显示错误详情
 ├─ vendor-patches/schemars/   上游补丁（见下）
 └─ src-tauri/
    ├─ Cargo.toml
@@ -47,7 +47,8 @@ tauri/
   不再「无报错地一直显示正在启动」
 - **托盘图标**：关窗只隐藏、进程常驻，所以必须有托盘作为回窗口的入口。
   菜单提供「显示主窗口 / 重启中转服务 / 退出」，左键单击图标唤回窗口
-- **引导界面**：检测 → 启动 → 轮询健康检查 → 自动跳转
+- **引导界面**：欢迎页自动检测并启动 → 轮询健康检查 → 自动跳转；
+  失败时切换到错误页，展示可直接复制的诊断信息
 - **capabilities**：`src-tauri/capabilities/default.json` 授权主窗口调用本应用命令，
   并用 `remote.urls` 放行 `http://127.0.0.1:*`，让 WebView 能导航到本地控制台
 - **前端桌面桥**：`lib/desktop-open-external.ts` 与 `lib/desktop-directory-picker.ts`
