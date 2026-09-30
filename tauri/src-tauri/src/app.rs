@@ -90,8 +90,15 @@ impl Default for ServerRuntime {
 
 /// 开发态：仓库根目录。发布态：随包资源目录下的 `server/`。
 ///
-/// Tauri 的 `resource_dir()` 在 Windows 上指向 exe 同级目录，
-/// 我们把 standalone 产物以 `server/` 为前缀塞进 resources。
+/// 关于发布态的路径：`bundle.resources` 配的是 `resources/server/**/*`，
+/// Tauri 打包时会把这条相对路径**原样保留**到安装目录下，于是最终落在
+///   <install>\resources\server\server.js
+/// 但 `resource_dir()` 在 Windows NSIS（currentUser 模式）下返回的是**安装根目录**
+/// <install>，不是 <install>\resources。所以必须自己补上 `resources` 这一层。
+///
+/// 实测踩过：只 join("server") 会得到 `<install>\server`，直接报
+/// “找不到 server.js：\\?\C:\Users\...\AppData\Local\Codex SwitchGate\server”。
+/// 这里把两种布局都试一遍，免得以后调整 resources 前缀时又炸。
 fn server_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if cfg!(debug_assertions) {
         // 开发时直接指向仓库里已构建好的 standalone，省去每次拷贝
@@ -104,15 +111,26 @@ fn server_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
             return Ok(dev);
         }
     }
+
     let res = app
         .path()
         .resource_dir()
         .map_err(|e| format!("无法定位资源目录：{e}"))?;
-    let packaged = res.join("server");
-    if packaged.join("server.js").exists() {
-        return Ok(packaged);
+
+    // 候选顺序：<res>/resources/server（当前打包布局）、<res>/server（旧布局）
+    let candidates = [res.join("resources").join("server"), res.join("server")];
+
+    for candidate in &candidates {
+        if candidate.join("server.js").exists() {
+            return Ok(candidate.clone());
+        }
     }
-    Err(format!("找不到 server.js：{}", packaged.display()))
+
+    Err(format!(
+        "找不到 server.js，已尝试：\n  {}\n  {}\n请确认安装包完整（resources/server 应存在）。",
+        candidates[0].display(),
+        candidates[1].display()
+    ))
 }
 
 fn default_data_dir() -> PathBuf {
@@ -166,18 +184,45 @@ fn candidate_node_paths() -> Vec<PathBuf> {
 
 /// 跑一次 `<node> -e "console.log(process.versions.node)"` 拿版本。
 /// 返回 (可执行路径, 版本字符串)。
+///
+/// 带超时：候选路径里可能有挂在网络盘 / 已损坏的 node.exe，
+/// 无超时的 `output()` 会让整个探测永久卡住，界面就一直停在「正在检测」。
 fn probe_node_version(exe: &Path) -> Option<(PathBuf, String)> {
-    let output = Command::new(exe)
+    let mut child = Command::new(exe)
         .arg("-e")
         .arg("process.stdout.write(process.versions.node)")
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .output()
+        .spawn()
         .ok()?;
-    if !output.status.success() {
-        return None;
+
+    // 轮询等待，最多 4 秒
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return None;
+                }
+                break;
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(_) => return None,
+        }
     }
-    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    let mut buf = String::new();
+    use std::io::Read;
+    child.stdout.as_mut()?.read_to_string(&mut buf).ok()?;
+    let version = buf.trim().to_string();
     if version.is_empty() {
         return None;
     }
@@ -418,6 +463,48 @@ fn open_external(app: tauri::AppHandle, url: String) -> Result<(), String> {
         .map_err(|e| format!("打开浏览器失败：{e}"))
 }
 
+/// 引导页把状态/错误写进 `logs/guide.log`。
+///
+/// 为什么要这个：外壳是 `windows_subsystem = "windows"` 的 GUI 程序，
+/// 没有控制台，引导页里的报错（Node 探测失败、server.js 找不到、invoke 被 capability 拦）
+/// 在界面上只能看到一行字，出了问题很难定位。落盘之后就有一个稳定的排查入口。
+#[tauri::command]
+fn guide_log(level: String, message: String) {
+    let dir = default_data_dir()
+        .parent()
+        .map(|p| p.join("logs"))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("guide.log"))
+    {
+        use std::io::Write;
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(f, "[{ts}] {level}  {message}");
+        let _ = f.flush();
+    }
+}
+
+/// 给引导页排查用：返回外壳实际解析到的资源路径，界面可以显示出来。
+#[tauri::command]
+fn debug_paths(app: tauri::AppHandle) -> serde_json::Value {
+    let res = app.path().resource_dir().ok();
+    let resolved = server_root(&app).ok();
+    serde_json::json!({
+        "resourceDir": res.as_ref().map(|p| p.display().to_string()),
+        "serverRoot": resolved.as_ref().map(|p| p.display().to_string()),
+        "serverJsExists": resolved.as_ref().map(|p| p.join("server.js").exists()).unwrap_or(false),
+        "exeDir": std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.display().to_string())),
+        "dataDir": default_data_dir().display().to_string(),
+        "debugBuild": cfg!(debug_assertions),
+    })
+}
+
 // ---------------------------------------------------------------- 孤儿进程防护
 
 /// 把子进程加入一个 Job Object，并设置 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`。
@@ -565,6 +652,30 @@ pub fn run() {
         .unwrap_or_else(|| PathBuf::from("."));
     let _ = std::fs::create_dir_all(&log_dir);
     let panic_log = log_dir.join("tauri-shell.log");
+
+    // 启动痕迹：GUI 程序没有控制台，进程若在 build/run 阶段静默退出，
+    // 没有这两行就完全无从判断死在哪一步。
+    {
+        use std::io::Write;
+        let trace = log_dir.join("boot.log");
+        #[allow(unused_mut)]
+        let write = |msg: &str| {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&trace)
+            {
+                let _ = writeln!(f, "[{}] {}", std::process::id(), msg);
+                let _ = f.flush();
+            }
+        };
+        write(&format!(
+            "run() enter; exe={:?}; data_dir={:?}",
+            std::env::current_exe().ok(),
+            default_data_dir()
+        ));
+    }
+
     std::panic::set_hook(Box::new(move |info| {
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
@@ -594,10 +705,27 @@ pub fn run() {
             stop_server,
             restart_server,
             open_external,
+            guide_log,
+            debug_paths,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
-            setup_tray(&handle).expect("创建托盘失败");
+            // 托盘失败不该让整个应用起不来 —— 记一笔继续。
+            if let Err(e) = setup_tray(&handle) {
+                let dir = default_data_dir()
+                    .parent()
+                    .map(|p| p.join("logs"))
+                    .unwrap_or_else(|| PathBuf::from("."));
+                let _ = std::fs::create_dir_all(&dir);
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(dir.join("tauri-shell.log"))
+                {
+                    use std::io::Write;
+                    let _ = writeln!(f, "[setup] 托盘创建失败：{e}");
+                }
+            }
 
             // 窗口在配置里是 visible: false。放一个小延迟再显示，让引导页先完成首帧，
             // 免得窗口一闪出来是块白底。WebView2 冷启通常几百毫秒，600ms 够用。

@@ -138,6 +138,14 @@ const invoke = window.__TAURI__.core.invoke;
 
 const el = (id) => document.getElementById(id);
 
+// 引导页的所有关键状态都落盘到 logs/guide.log。
+// 外壳是没有控制台的 GUI 程序，出问题时界面上只能看到一行字，日志是唯一稳定的排查入口。
+function log(level, message) {
+  try {
+    invoke("guide_log", { level, message: String(message) }).catch(() => {});
+  } catch (_) {}
+}
+
 function setNode(state, label, detail) {
   el("node-dot").className = "dot " + (state || "");
   el("node-label").textContent = label;
@@ -158,6 +166,7 @@ async function checkNode() {
     const probe = await invoke("probe_node");
     if (probe.supported) {
       setNode("ok", "Node " + probe.version, probe.path);
+      log("INFO", "node ok " + probe.version + " @" + probe.path);
       el("hint").innerHTML = "";
       return true;
     }
@@ -166,6 +175,7 @@ async function checkNode() {
       "Node 版本过低：" + probe.version,
       probe.path + "　（需要 >= " + MIN + "）"
     );
+    log("WARN", "node too old " + probe.version);
     el("hint").innerHTML =
       "需要 Node " + MIN + " 或更高版本（依赖内置 <code>node:sqlite</code>）。当前 " +
       probe.version + " 会回退到 better-sqlite3，而那份二进制是按 Electron ABI 编译的，无法加载。" +
@@ -173,6 +183,7 @@ async function checkNode() {
     return false;
   } catch (e) {
     setNode("err", "未找到 Node", String(e));
+    log("ERROR", "probe_node failed: " + e);
     el("hint").innerHTML =
       "请先安装 Node " + MIN + " 或更高版本：<br>" +
       "· 官网 https://nodejs.org/<br>" +
@@ -187,6 +198,7 @@ async function startService() {
   setSvc("warn", "正在启动…", "");
   try {
     const status = await invoke("start_server", { options: {} });
+    log("INFO", "start_server -> " + JSON.stringify(status));
     setSvc(status.owned === false ? "ok" : "warn", status.message, status.endpoint);
     // 轮询等健康检查通过
     for (let i = 0; i < 60; i++) {
@@ -194,13 +206,26 @@ async function startService() {
       const s = await invoke("server_status");
       setSvc(s.state === "running" ? "ok" : "warn", s.message, s.endpoint);
       if (s.state === "running") {
+        log("INFO", "ready, navigating to " + s.endpoint);
         location.replace(s.endpoint);
         return;
       }
     }
-    setSvc("err", "启动超时", "请查看日志：%APPDATA%/codex-api-hot-switch/logs/");
+    setSvc("err", "启动超时", "详情见 %APPDATA%/codex-api-hot-switch/logs/guide.log");
+    log("ERROR", "startup timeout after 30s");
   } catch (e) {
     setSvc("err", "启动失败", String(e));
+    log("ERROR", "start_server failed: " + e);
+    // 启动失败时把实际路径打出来，方便判断是不是资源没装全
+    try {
+      const p = await invoke("debug_paths");
+      log("ERROR", "debug_paths: " + JSON.stringify(p));
+      el("hint").innerHTML =
+        "启动失败，路径信息：<br><code>" +
+        "resourceDir: " + (p.resourceDir || "(null)") + "<br>" +
+        "serverRoot: " + (p.serverRoot || "(null)") + "<br>" +
+        "server.js: " + p.serverJsExists + "</code>";
+    } catch (_) {}
   } finally {
     el("start").disabled = false;
   }
@@ -214,6 +239,7 @@ el("recheck").addEventListener("click", async () => {
 el("start").addEventListener("click", startService);
 
 (async () => {
+  log("INFO", "guide page loaded");
   const ok = await checkNode();
   el("start").disabled = !ok;
   if (ok) startService();

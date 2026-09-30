@@ -97,7 +97,28 @@ NSIS 对 `.exe` 与 `.asar` 类内容的压缩率高于对成千上万个小文�
 
 ## 踩过的坑
 
-### 1. 超长路径会让 NSIS 打包整体中止
+### 1. `resource_dir()` 在 Windows 上**不加 `resources` 层**（首次装完打不开的元凶）
+
+首次打包装好后启动直接报：
+
+```
+找不到 server.js：\\?\C:\Users\...\AppData\Local\Codex Switch Gate\server
+```
+
+注意报错路径里**没有 `resources`**。根因在 Tauri 源码 `tauri-utils/src/platform.rs` 的
+`resource_dir_from()`：它只有 `linux` / `macOS` / `iOS` 三个分支，
+**Windows 分支无条件 `return Ok(exe_dir)`**（exe 同级目录，不追加任何子目录）。
+
+所以正确路径是 `exe_dir/resources/server/server.js`，而 `resource_dir()` 只给到 `exe_dir`。
+**必须自己补 `resources` 这一层。**
+
+现在 `server_root()` 会把两种布局都试一遍，失败时打印全部尝试过的路径：
+
+```rust
+let candidates = [res.join("resources").join("server"), res.join("server")];
+```
+
+### 2. 超长路径会让 NSIS 打包整体中止
 
 pnpm 的目录名把 peer 依赖校验和嵌了进去：
 
@@ -121,7 +142,7 @@ Next standalone 已把运行时依赖 bundle 进 `.next/server/chunks`，`.pnpm`
 `scripts/prepare-tauri-build.cjs` 末尾有 `assertNoLongPaths()` 护栏，
 超过 250 字符就立刻报错并列出 offender，不用等打包跑十几分钟才失败。
 
-### 2. tauri-build 需要非沙箱环境
+### 3. tauri-build 需要非沙箱环境
 
 ```
 failed to compile `icons/icon.ico` into a Windows Resource file during tauri-build: 拒绝访问。 (os error 5)
@@ -129,12 +150,28 @@ failed to compile `icons/icon.ico` into a Windows Resource file during tauri-bui
 
 `icon.ico` 本身没问题，是 `rc.exe` 写临时 `.res` 被沙箱拦了。在非沙箱下重跑即可通过。
 
-### 3. `[lib]` 必须配 `src/lib.rs`
+### 4. `[lib]` 必须配 `src/lib.rs`
 
 `Cargo.toml` 声明 `[lib]` 就必须有 `src/lib.rs`，否则 `cargo build` 直接报
 "can't find library"。已改为 `lib.rs` 声明 `mod app` + `main.rs` 薄调用。
 
-### 4. 上游依赖补丁：schemars 0.8.22
+### 5. NSIS 配置字段的取值必须精确
+
+`NsisConfig` 是 `deny_unknown_fields`，写错一个字段整份配置就报
+`is not valid under any of the schemas listed in the 'anyOf' keyword`（看不出是哪个字段错）。
+
+实测踩过：
+- `compression` 的合法值是**全小写** `"lzma"` / `"zlib"` / `"bzip2"` / `"none"`（不是 `"Lzma"`）
+- 没有 `shortcutName` 字段，正确名是 `startMenuFolder`
+- `installMode` 是 `"currentUser"` / `"perMachine"` / `"both"`
+
+查证方法：`tauri-cli` 自带 schema，可直接查：
+```bash
+node -e "const s=require('~/.cargo/registry/src/*/tauri-cli-2.12.0/config.schema.json'); \
+  console.log(JSON.stringify(s.definitions.NsisConfig,null,2))"
+```
+
+### 6. 上游依赖补丁：schemars 0.8.22
 
 `tauri-build 2.7.0 → tauri-utils 2.10 → schemars 0.8.22`，在 Rust 1.94 下编译失败：
 
@@ -152,3 +189,21 @@ error[E0107]: struct takes 3 generic arguments but 2 supplied
 `vendor-patches/schemars/` 是本地修补版，改动两处：
 - `Map` / `MapEntry` 统一退化为 `BTreeMap` / `btree_map::Entry`（放弃保序，对构建无影响）
 - `preserve_order = []`（不再级联 `indexmap` feature，避免编译 `json_schema_impls/indexmap.rs`）
+
+## 排查手段（GUI 程序没有控制台）
+
+引导页的关键状态会落盘到 `%APPDATA%/codex-api-hot-switch/logs/guide.log`：
+
+| 文件 | 内容 |
+|---|---|
+| `boot.log` | `run()` 进入记录 + exe 路径 + 数据目录（判断进程是否启动） |
+| `tauri-shell.log` | panic 与托盘创建失败 |
+| `guide.log` | 引导页状态机：node 探测结果、启动成功/失败、ready 跳转 |
+| `server.out.log` / `server.err.log` | 被拉起的 node 服务输出 |
+
+另有 `debug_paths` 命令返回外壳实际解析到的路径（`resourceDir` / `serverRoot` /
+`serverJsExists` / `exeDir`），引导页启动失败时会自动写进 `guide.log`。
+
+**注意**：探测 Node 版本时会 spawn 子进程。实测沙箱环境里 `spawn node` 直接返回
+`EBUSY`，所以引导页在沙箱内只能走到 `guide page loaded` 就停住——**这不是代码问题**，
+在正常桌面环境下可以走完整个流程。

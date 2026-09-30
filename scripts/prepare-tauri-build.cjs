@@ -20,7 +20,12 @@ const path = require("node:path")
 
 const root = path.resolve(__dirname, "..")
 const standaloneDir = path.join(root, ".next", "standalone")
-const tauriResourcesDir = path.join(root, "tauri", "src-tauri", "resources")
+// 允许用环境变量换个输出目录。
+// 用途：万一 resources 目录被外部句柄占住（EPERM / ENOTEMPTY 清不掉），
+// 可以直接指到新目录继续打包，不必先去跟残留文件较劲。
+const tauriResourcesDir = process.env.TAURI_RESOURCES_DIR
+  ? path.resolve(process.env.TAURI_RESOURCES_DIR)
+  : path.join(root, "tauri", "src-tauri", "resources")
 const targetServerDir = path.join(tauriResourcesDir, "server")
 
 // 与 Electron 链路保持一致：构建产物本身不能进包
