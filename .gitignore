@@ -43,3 +43,10 @@ tauri/src-tauri/.nsis-stale-*/
 tauri/src-tauri/resources-broken/
 .trash-*/
 .tmp-trash-*/
+
+# Temp trash (本环境清理残留)
+.tmp-trash-*/
+.trash-*/
+.tmp-verify/
+.tmp-extract/
+.tmp-install-test/
