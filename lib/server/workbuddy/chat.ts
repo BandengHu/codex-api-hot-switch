@@ -1,5 +1,6 @@
 import "server-only"
 
+import { fetchProvider } from "@/lib/server/proxy/provider-fetch"
 import type { WorkbuddyAccount } from "./account"
 import {
  DESKTOP_UA,
@@ -69,7 +70,7 @@ export async function runWorkbuddyChat(
  const controller = new AbortController()
  const timeout = setTimeout(() => controller.abort(),120_000)
  try {
- const response = await fetch(`${base.chat}/v2/chat/completions`, {
+ const response = await fetchProvider(`${base.chat}/v2/chat/completions`, {
  method: "POST",
  headers,
  cache: "no-store",
@@ -149,4 +150,3 @@ export async function runNightChats(
  }
  return ok
 }
-

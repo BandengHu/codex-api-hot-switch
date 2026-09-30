@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import test from "node:test"
 import type { Model, Provider } from "@/lib/types"
 import type { ProxyTarget } from "./proxy/common"
+import { setProviderFetchForTesting } from "./proxy/provider-fetch"
 
 const dataDir = join(
   tmpdir(),
@@ -418,10 +419,9 @@ test("quota and authentication errors do not disable the only endpoint", async (
 test("endpoint failover keeps the first three failures on the primary and switches on the fourth", async () => {
   const value = provider("request-flow")
   const target = proxyTarget(value)
-  const originalFetch = globalThis.fetch
   let primaryCalls = 0
   let fallbackCalls = 0
-  globalThis.fetch = async (_input, init) => {
+  const previousFetch = setProviderFetchForTesting(async (_input, init) => {
     const headers = new Headers(init?.headers)
     if (headers.get("authorization") === `Bearer ${value.endpoints[0].apiKey}`) {
       primaryCalls += 1
@@ -436,7 +436,7 @@ test("endpoint failover keeps the first three failures on the primary and switch
       object: "response",
       output: [],
     })
-  }
+  })
 
   try {
     for (let count = 1; count <= 3; count += 1) {
@@ -468,17 +468,16 @@ test("endpoint failover keeps the first three failures on the primary and switch
     assert.equal(primaryCalls, 4)
     assert.equal(fallbackCalls, 1)
   } finally {
-    globalThis.fetch = originalFetch
+    setProviderFetchForTesting(previousFetch)
   }
 })
 
 test("quota switches immediately while plain 403 stays on the current endpoint", async () => {
   const value = provider("classification-flow")
   const target = proxyTarget(value)
-  const originalFetch = globalThis.fetch
   let mode: "quota" | "forbidden" = "quota"
   let calls = 0
-  globalThis.fetch = async (_input, init) => {
+  const previousFetch = setProviderFetchForTesting(async (_input, init) => {
     calls += 1
     const headers = new Headers(init?.headers)
     const primary =
@@ -495,7 +494,7 @@ test("quota switches immediately while plain 403 stays on the current endpoint",
           { error: { message: "forbidden" } },
           { status: 403 },
         )
-  }
+  })
 
   try {
     const quota = await fetchWithEndpointFailover({
@@ -525,7 +524,7 @@ test("quota switches immediately while plain 403 stays on the current endpoint",
     ])
     assert.equal(calls, 1)
   } finally {
-    globalThis.fetch = originalFetch
+    setProviderFetchForTesting(previousFetch)
   }
 })
 
@@ -543,9 +542,8 @@ test("model test uses the same endpoint failover path", async () => {
     supportsVision: false,
     enabled: true,
   }
-  const originalFetch = globalThis.fetch
   let calls = 0
-  globalThis.fetch = async (_input, init) => {
+  const previousFetch = setProviderFetchForTesting(async (_input, init) => {
     calls += 1
     const headers = new Headers(init?.headers)
     if (headers.get("authorization") === `Bearer ${value.endpoints[0].apiKey}`) {
@@ -564,7 +562,7 @@ test("model test uses the same endpoint failover path", async () => {
         },
       ],
     })
-  }
+  })
 
   try {
     const result = await runModelTest({ provider: value, model })
@@ -572,7 +570,7 @@ test("model test uses the same endpoint failover path", async () => {
     assert.equal(result.outputText, "OK")
     assert.equal(calls, 2)
   } finally {
-    globalThis.fetch = originalFetch
+    setProviderFetchForTesting(previousFetch)
   }
 })
 

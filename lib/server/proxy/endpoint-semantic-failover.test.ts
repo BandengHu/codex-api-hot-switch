@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import test from "node:test"
 import type { Provider } from "@/lib/types"
 import type { ProxyTarget } from "./common"
+import { setProviderFetchForTesting } from "./provider-fetch"
 
 const dataDir = join(
   tmpdir(),
@@ -76,10 +77,9 @@ function isPrimary(init: RequestInit | undefined, value: Provider) {
 
 test("2xx failure envelopes count as transient failures and switch on the fourth request", async () => {
   const value = provider("semantic-json")
-  const originalFetch = globalThis.fetch
   let primaryCalls = 0
   let fallbackCalls = 0
-  globalThis.fetch = async (_input, init) => {
+  const previousFetch = setProviderFetchForTesting(async (_input, init) => {
     if (isPrimary(init, value)) {
       primaryCalls += 1
       return Response.json({
@@ -95,7 +95,7 @@ test("2xx failure envelopes count as transient failures and switch on the fourth
       error: null,
       output: [],
     })
-  }
+  })
 
   try {
     for (let count = 1; count <= 3; count += 1) {
@@ -127,13 +127,12 @@ test("2xx failure envelopes count as transient failures and switch on the fourth
     assert.equal(primaryCalls, 4)
     assert.equal(fallbackCalls, 1)
   } finally {
-    globalThis.fetch = originalFetch
+    setProviderFetchForTesting(previousFetch)
   }
 })
 
 test("pre-output streaming failures switch, including gateways without an SSE content type", async () => {
   const value = provider("semantic-stream")
-  const originalFetch = globalThis.fetch
   let primaryCalls = 0
   let fallbackCalls = 0
   const failure = [
@@ -145,14 +144,14 @@ test("pre-output streaming failures switch, including gateways without an SSE co
     "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\n",
     "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
   ].join("")
-  globalThis.fetch = async (_input, init) => {
+  const previousFetch = setProviderFetchForTesting(async (_input, init) => {
     if (isPrimary(init, value)) {
       primaryCalls += 1
       return new Response(failure)
     }
     fallbackCalls += 1
     return new Response(success)
-  }
+  })
 
   try {
     for (let count = 1; count <= 3; count += 1) {
@@ -178,24 +177,23 @@ test("pre-output streaming failures switch, including gateways without an SSE co
     assert.equal(primaryCalls, 4)
     assert.equal(fallbackCalls, 1)
   } finally {
-    globalThis.fetch = originalFetch
+    setProviderFetchForTesting(previousFetch)
   }
 })
 
 test("a failure after visible output is replayed and never switches endpoints", async () => {
   const value = provider("semantic-late-failure")
-  const originalFetch = globalThis.fetch
   let fallbackCalls = 0
   const stream = [
     "event: response.created\ndata: {\"type\":\"response.created\"}\n\n",
     "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"started\"}\n\n",
     "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"late failure\"}}}\n\n",
   ].join("")
-  globalThis.fetch = async (_input, init) => {
+  const previousFetch = setProviderFetchForTesting(async (_input, init) => {
     if (isPrimary(init, value)) return new Response(stream)
     fallbackCalls += 1
     return new Response("unexpected fallback")
-  }
+  })
 
   try {
     const result = await fetchWithEndpointFailover({
@@ -209,16 +207,15 @@ test("a failure after visible output is replayed and never switches endpoints", 
     assert.equal(await result.response.text(), stream)
     assert.equal(fallbackCalls, 0)
   } finally {
-    globalThis.fetch = originalFetch
+    setProviderFetchForTesting(previousFetch)
   }
 })
 
 test("2xx authentication errors switch immediately while invalid requests do not switch", async () => {
   let value = provider("semantic-authentication")
-  const originalFetch = globalThis.fetch
   let mode: "authentication" | "invalid-request" = "authentication"
   let fallbackCalls = 0
-  globalThis.fetch = async (_input, init) => {
+  const previousFetch = setProviderFetchForTesting(async (_input, init) => {
     if (!isPrimary(init, value)) {
       fallbackCalls += 1
       return Response.json({
@@ -236,7 +233,7 @@ test("2xx authentication errors switch immediately while invalid requests do not
           : { type: "invalid_request_error", message: "unsupported parameter" },
       output: [],
     })
-  }
+  })
 
   try {
     const authentication = await fetchWithEndpointFailover({
@@ -264,7 +261,7 @@ test("2xx authentication errors switch immediately while invalid requests do not
     assert.deepEqual(invalidRequest.target.attemptedEndpointIds, [value.endpoints[0].id])
     assert.equal(fallbackCalls, 0)
   } finally {
-    globalThis.fetch = originalFetch
+    setProviderFetchForTesting(previousFetch)
   }
 })
 

@@ -1,5 +1,6 @@
 import "server-only"
 
+import { fetchProvider } from "@/lib/server/proxy/provider-fetch"
 import type { WorkbuddyAccount } from "./account"
 import { BILLING_UA, realmBase } from "./api-client"
 import { appendTaskDebug } from "./task-debug"
@@ -71,7 +72,7 @@ async function oauthJson(
  const timeout = setTimeout(() => controller.abort(),30_000)
  let status =0
  try {
- const response = await fetch(url, {
+ const response = await fetchProvider(url, {
  method: init.method,
  headers: {
  ...oauthHeaders(),
@@ -230,4 +231,3 @@ export function buildCredentialFile(
 export function isValidUid(uid: string) {
  return uid.length >0 && uid.length <=64 && /^[A-Za-z0-9_-]+$/.test(uid)
 }
-

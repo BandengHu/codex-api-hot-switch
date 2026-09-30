@@ -7,6 +7,7 @@ import {
 import { browseWebPages, searchWeb } from "../web"
 import type { BrowsePage, WebSearchResponse } from "../web"
 import type { AlphaSearchMode } from "@/lib/types"
+import { fetchProvider } from "./provider-fetch"
 
 type AnyRecord = Record<string, any>
 
@@ -224,7 +225,7 @@ function resolvePageUrl(session: AlphaSession, args: AnyRecord) {
 }
 
 async function readJson(url: string, init: RequestInit = {}, signal?: AbortSignal): Promise<any> {
-  const response = await fetch(url, {
+  const response = await fetchProvider(url, {
     ...init,
     headers: {
       accept: "application/json",

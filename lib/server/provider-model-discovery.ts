@@ -8,6 +8,7 @@ import {
 } from "@/lib/provider-model-discovery"
 import { isWorkbuddyProvider } from "@/lib/workbuddy-provider"
 import { getSystemProxyDispatcher } from "./proxy/system-proxy"
+import { fetchProvider } from "./proxy/provider-fetch"
 import {
   discoverWorkbuddyCatalogModels,
   withWorkbuddyCredentials,
@@ -47,7 +48,7 @@ export async function discoverProviderModels(
         cache: "no-store",
       }
       if (dispatcher) init.dispatcher = dispatcher
-      const response = await fetch(url, init as RequestInit)
+      const response = await fetchProvider(url, init as RequestInit)
       const contentLength = Number(response.headers.get("content-length") || 0)
       if (contentLength > MAX_MODEL_LIST_BYTES) {
         throw new Error("上游模型列表响应过大，已停止读取")

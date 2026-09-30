@@ -1,5 +1,6 @@
 import "server-only"
 
+import { fetchProvider } from "@/lib/server/proxy/provider-fetch"
 import { appendTaskDebug } from "./task-debug"
 
 /**
@@ -98,7 +99,7 @@ async function globalJson(
       ...(init.bearer ? { authorization: `Bearer ${init.bearer}` } : {}),
       ...(init.refreshToken ? { "x-refresh-token": init.refreshToken } : {}),
     })
-    const response = await fetch(url, {
+    const response = await fetchProvider(url, {
       method: init.method,
       headers,
       body: init.body === undefined ? undefined : JSON.stringify(init.body),

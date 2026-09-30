@@ -6,6 +6,7 @@ import {
 } from "@/lib/provider-endpoints"
 import { isWorkbuddyProvider, workbuddyCatalogUrl } from "@/lib/workbuddy-provider"
 import { getSystemProxyDispatcher } from "./proxy/system-proxy"
+import { fetchProvider } from "./proxy/provider-fetch"
 import { withWorkbuddyCredentials } from "./workbuddy/upstream"
 import type {
   Provider,
@@ -91,7 +92,7 @@ export async function runProviderTest(
         cache: "no-store",
       }
       if (dispatcher) init.dispatcher = dispatcher
-      const response = await fetch(url, init as RequestInit)
+      const response = await fetchProvider(url, init as RequestInit)
       if (!response.ok) {
         const text = await response.text()
         const detail = text ? `：${text.slice(0, 240)}` : ""

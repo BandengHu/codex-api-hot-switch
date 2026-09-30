@@ -15,6 +15,7 @@ import {
   workbuddySiteUrl,
 } from "@/lib/workbuddy-provider"
 import { getSystemProxyDispatcher } from "@/lib/server/proxy/system-proxy"
+import { fetchProvider } from "@/lib/server/proxy/provider-fetch"
 import type { WorkbuddyAccount } from "./account"
 import { readActiveGlobalPoolAccount } from "./global-pool-store"
 import { readActivePoolAccount } from "./pool-account"
@@ -119,7 +120,7 @@ export async function discoverWorkbuddyCatalogModels(
       cache: "no-store",
     }
     if (dispatcher) init.dispatcher = dispatcher
-    const response = await fetch(url, init as RequestInit)
+    const response = await fetchProvider(url, init as RequestInit)
     const text = await response.text()
     if (text.length > MAX_CATALOG_BYTES) {
       throw new Error("WorkBuddy 模型目录响应过大，已停止解析")

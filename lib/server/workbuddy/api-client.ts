@@ -1,6 +1,7 @@
 import "server-only"
 
 import { createHash } from "node:crypto"
+import { fetchProvider } from "@/lib/server/proxy/provider-fetch"
 import type { WorkbuddyAccount } from "./account"
 import { appendTaskDebug } from "./task-debug"
 
@@ -190,7 +191,7 @@ export async function taskFetch(
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), init.timeoutMs ??20_000)
   try {
-   response = await fetch(url, {
+   response = await fetchProvider(url, {
     method: init.method,
     headers,
     body: init.body === undefined ? undefined : JSON.stringify(init.body),
