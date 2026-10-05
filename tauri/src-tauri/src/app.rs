@@ -2,8 +2,10 @@
 //
 // 设计要点：
 //
-// 1. **复用宿主机 Node**。外壳探测宿主机 Node 运行 `server.js`，WebView 使用系统
-//    WebView2，不随应用分发 Chromium。
+// 1. **发布包内置 Node**。构建时把当前 Windows Node 复制到
+//    `resources/server/runtime/node.exe`，发布态只使用这份随包运行时。
+//    开发态优先使用随包运行时；仓库开发时若不存在，则回退探测宿主机 Node。
+//    WebView 使用系统 WebView2，不随应用分发 Chromium。
 //
 // 2. **不碰原生模块**。`lib/server/codex-session-sync/sqlite.ts` 优先用 Node 内置的
 //    `node:sqlite`（Node >= 22.5 可用），`better-sqlite3` 只是 Node 20 的兜底。
@@ -186,8 +188,20 @@ fn default_data_dir() -> PathBuf {
 
 // ---------------------------------------------------------------- Node 探测
 
+/// 发布包中的 Node 运行时路径。
+fn bundled_node_path(server_root: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        server_root.join("runtime").join("node.exe")
+    }
+    #[cfg(not(windows))]
+    {
+        server_root.join("runtime").join("bin").join("node")
+    }
+}
+
 /// 在 Windows 上直接 `Command::new("node")` 有时找不到（PATH 里是 node.exe 的 shim），
-/// 所以先试裸名，再逐个试常见安装位置。全平台都保留裸名兜底。
+/// 所以先试裸名，再逐个试常见安装位置。这里只服务开发态回退，发布态不会使用。
 fn candidate_node_paths() -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if cfg!(windows) {
@@ -206,8 +220,17 @@ fn candidate_node_paths() -> Vec<PathBuf> {
                     .join("node.exe"),
             );
             // nvm-windows / fnm / volta 的常见落点
-            candidates.push(PathBuf::from(&local).join("fnm_multishells").join("node.exe"));
-            candidates.push(PathBuf::from(&local).join("Volta").join("bin").join("node.exe"));
+            candidates.push(
+                PathBuf::from(&local)
+                    .join("fnm_multishells")
+                    .join("node.exe"),
+            );
+            candidates.push(
+                PathBuf::from(&local)
+                    .join("Volta")
+                    .join("bin")
+                    .join("node.exe"),
+            );
         }
         if let Ok(appdata) = std::env::var("APPDATA") {
             candidates.push(PathBuf::from(&appdata).join("nvm").join("node.exe"));
@@ -283,23 +306,71 @@ fn parse_version(version: &str) -> Option<(u32, u32)> {
     Some((major, minor))
 }
 
-#[tauri::command]
-fn probe_node() -> Result<NodeProbe, String> {
-    for candidate in candidate_node_paths() {
-        if let Some((path, version)) = probe_node_version(&candidate) {
-            let (major, minor) =
-                parse_version(&version).ok_or_else(|| format!("无法解析 Node 版本：{version}"))?;
-            let supported = major > MIN_NODE_MAJOR || (major == MIN_NODE_MAJOR && minor >= MIN_NODE_MINOR);
-            return Ok(NodeProbe {
-                path: path.to_string_lossy().to_string(),
-                version,
-                major,
-                minor,
-                supported,
-            });
+fn probe_node_at(exe: &Path) -> Result<NodeProbe, String> {
+    let (path, version) =
+        probe_node_version(exe).ok_or_else(|| format!("无法执行 Node：{}", exe.display()))?;
+    let (major, minor) =
+        parse_version(&version).ok_or_else(|| format!("无法解析 Node 版本：{version}"))?;
+    let supported = major > MIN_NODE_MAJOR || (major == MIN_NODE_MAJOR && minor >= MIN_NODE_MINOR);
+    Ok(NodeProbe {
+        path: path.to_string_lossy().to_string(),
+        version,
+        major,
+        minor,
+        supported,
+    })
+}
+
+fn resolve_node(server_root: &Path) -> Result<NodeProbe, String> {
+    let bundled = bundled_node_path(server_root);
+
+    if cfg!(debug_assertions) {
+        let mut candidates = vec![bundled.clone()];
+        candidates.extend(candidate_node_paths());
+        let mut incompatible = None;
+
+        for candidate in candidates {
+            match probe_node_at(&candidate) {
+                Ok(probe) if probe.supported => return Ok(probe),
+                Ok(probe) => incompatible.get_or_insert(probe),
+                Err(_) => continue,
+            };
         }
+
+        if let Some(probe) = incompatible {
+            return Err(format!(
+                "未找到满足 Node {MIN_NODE_MAJOR}.{MIN_NODE_MINOR} 或更高版本的运行时。当前可用版本为 {}（{}）。请升级开发机 Node。",
+                probe.version, probe.path
+            ));
+        }
+
+        return Err(format!(
+            "未找到可用的 Node 运行时。已尝试随包路径 {} 和宿主机常见安装位置。",
+            bundled.display()
+        ));
     }
-    Err("未在系统里找到可用的 Node，请先安装 Node 22.5 或更高版本".into())
+
+    let probe = probe_node_at(&bundled).map_err(|_| {
+        format!(
+            "随包 Node 运行时缺失或无法执行：{}\n安装包不完整，请重新安装或重新下载。",
+            bundled.display()
+        )
+    })?;
+
+    if !probe.supported {
+        return Err(format!(
+            "随包 Node 运行时版本过低：{}。需要 {MIN_NODE_MAJOR}.{MIN_NODE_MINOR} 或更高，安装包已损坏，请重新下载。",
+            probe.version
+        ));
+    }
+
+    Ok(probe)
+}
+
+#[tauri::command]
+fn probe_node(app: tauri::AppHandle) -> Result<NodeProbe, String> {
+    let root = server_root(&app)?;
+    resolve_node(&root)
 }
 
 // ---------------------------------------------------------------- 服务生命周期
@@ -316,7 +387,9 @@ fn health_ok(endpoint: &str) -> bool {
         addr.to_string()
     };
     TcpStream::connect_timeout(
-        &addr.parse().unwrap_or_else(|_| "127.0.0.1:1".parse().unwrap()),
+        &addr
+            .parse()
+            .unwrap_or_else(|_| "127.0.0.1:1".parse().unwrap()),
         Duration::from_millis(600),
     )
     .is_ok()
@@ -386,18 +459,13 @@ fn start_server(
         }
     }
 
+    let root = server_root(&app)?;
     let node = {
         let cached = state.node.lock().unwrap().clone();
         match cached {
             Some(probe) if probe.supported => probe,
             _ => {
-                let probe = probe_node()?;
-                if !probe.supported {
-                    return Err(format!(
-                        "Node 版本过低：{}。需要 {MIN_NODE_MAJOR}.{MIN_NODE_MINOR} 或更高（node:sqlite 依赖）。",
-                        probe.version
-                    ));
-                }
+                let probe = resolve_node(&root)?;
                 *state.node.lock().unwrap() = Some(probe.clone());
                 probe
             }
@@ -420,7 +488,6 @@ fn start_server(
         return Ok(status);
     }
 
-    let root = server_root(&app)?;
     let server_js = root.join("server.js");
     let data_dir = options
         .data_dir
@@ -474,7 +541,10 @@ fn start_server(
     *state.child.lock().unwrap() = Some(child);
     let status = ServerStatus {
         state: "starting".into(),
-        message: format!("正在启动本地中转服务：{host}:{port}（node {}）", node.version),
+        message: format!(
+            "正在启动本地中转服务：{host}:{port}（node {}）",
+            node.version
+        ),
         endpoint,
         owned: true,
     };
@@ -565,10 +635,21 @@ fn stop_server(state: State<'_, ServerRuntime>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn restart_server(app: tauri::AppHandle, state: State<'_, ServerRuntime>) -> Result<ServerStatus, String> {
+fn restart_server(
+    app: tauri::AppHandle,
+    state: State<'_, ServerRuntime>,
+) -> Result<ServerStatus, String> {
     stop_server(state.clone())?;
     std::thread::sleep(std::time::Duration::from_millis(600));
-    start_server(app, state, StartOptions { host: None, port: None, data_dir: None })
+    start_server(
+        app,
+        state,
+        StartOptions {
+            host: None,
+            port: None,
+            data_dir: None,
+        },
+    )
 }
 
 /// 用系统浏览器打开外链（授权登录走这条）。
@@ -615,6 +696,7 @@ fn guide_log(level: String, message: String) {
 fn debug_paths(app: tauri::AppHandle) -> serde_json::Value {
     let res = app.path().resource_dir().ok();
     let resolved = server_root(&app).ok();
+    let bundled_node = resolved.as_ref().map(|root| bundled_node_path(root));
     serde_json::json!({
         // resource_dir() 的原始返回值（Windows 上带 `\\?\` 前缀，仅供参考）
         "resourceDir": res.as_ref().map(|p| p.display().to_string()),
@@ -623,6 +705,8 @@ fn debug_paths(app: tauri::AppHandle) -> serde_json::Value {
         "serverRoot": resolved.as_ref().map(|p| p.display().to_string()),
         "serverJs": resolved.as_ref().map(|p| p.join("server.js").display().to_string()),
         "serverJsExists": resolved.as_ref().map(|p| p.join("server.js").exists()).unwrap_or(false),
+        "bundledNode": bundled_node.as_ref().map(|p| p.display().to_string()),
+        "bundledNodeExists": bundled_node.as_ref().map(|p| p.exists()).unwrap_or(false),
         "exeDir": std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.display().to_string())),
         "dataDir": default_data_dir().display().to_string(),
         "debugBuild": cfg!(debug_assertions),
@@ -645,8 +729,8 @@ fn attach_kill_on_close_job(child: &Child) {
 
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
 
@@ -713,7 +797,8 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
             "restart" => {
                 // 托盘菜单里没有 State 参数，这里手动取
                 if let Some(state) = app.try_state::<ServerRuntime>() {
-                    if let Ok(mut child) = state.child.lock().map(|mut g| g.take()).map_err(|_| ()) {
+                    if let Ok(mut child) = state.child.lock().map(|mut g| g.take()).map_err(|_| ())
+                    {
                         if let Some(mut c) = child.take() {
                             let _ = c.kill();
                             let _ = c.wait();
@@ -761,8 +846,19 @@ fn reveal_main_window(app: &tauri::AppHandle) {
 
 /// 供托盘「重启服务」复用：把 start_server 的 State 版本包一层，避免菜单回调里
 /// 拿不到 State 泛型。
-fn helper_start(app: tauri::AppHandle, state: State<'_, ServerRuntime>) -> Result<ServerStatus, String> {
-    start_server(app, state, StartOptions { host: None, port: None, data_dir: None })
+fn helper_start(
+    app: tauri::AppHandle,
+    state: State<'_, ServerRuntime>,
+) -> Result<ServerStatus, String> {
+    start_server(
+        app,
+        state,
+        StartOptions {
+            host: None,
+            port: None,
+            data_dir: None,
+        },
+    )
 }
 
 // ---------------------------------------------------------------- 入口

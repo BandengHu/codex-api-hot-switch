@@ -10,6 +10,10 @@
 
 const fs = require("node:fs/promises")
 const path = require("node:path")
+const { spawnSync } = require("node:child_process")
+
+const MIN_NODE_MAJOR = 22
+const MIN_NODE_MINOR = 5
 
 const REQUIRED_RESOURCE_PATHS = [
   "server.js",
@@ -17,6 +21,7 @@ const REQUIRED_RESOURCE_PATHS = [
   ".next/BUILD_ID",
   ".next/server",
   ".next/static",
+  "runtime/node.exe",
 ]
 
 function requiredVendorPackages(platformPackageName) {
@@ -123,8 +128,54 @@ async function assertResourcesComplete(dir, platformPackageName) {
   return { apiRoutes: apiCount, chunks }
 }
 
+async function assertBundledNodeRuntime(dir) {
+  const executable = path.join(dir, "runtime", "node.exe")
+  let stat
+  try {
+    stat = await fs.stat(executable)
+  } catch {
+    throw new Error(`随包 Node 运行时缺失：${executable}`)
+  }
+  if (!stat.isFile()) {
+    throw new Error(`随包 Node 运行时不是文件：${executable}`)
+  }
+
+  const result = spawnSync(
+    executable,
+    ["-e", "process.stdout.write(process.versions.node)"],
+    {
+      encoding: "utf8",
+      timeout: 10_000,
+      windowsHide: true,
+    },
+  )
+  if (result.error) throw result.error
+  if (result.status !== 0) {
+    const detail = [result.stdout, result.stderr].filter(Boolean).join("\n").trim()
+    throw new Error(
+      `随包 Node 运行时无法执行（退出码 ${result.status ?? "unknown"}）：${executable}\n${detail}`,
+    )
+  }
+
+  const version = String(result.stdout || "").trim()
+  const match = /^(\d+)\.(\d+)/u.exec(version)
+  if (!match) {
+    throw new Error(`无法解析随包 Node 版本：${version || "(空)"}`)
+  }
+  const major = Number(match[1])
+  const minor = Number(match[2])
+  if (major < MIN_NODE_MAJOR || (major === MIN_NODE_MAJOR && minor < MIN_NODE_MINOR)) {
+    throw new Error(
+      `随包 Node 版本过低：${version}，需要 ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR} 或更高`,
+    )
+  }
+
+  return { path: executable, version, major, minor }
+}
+
 module.exports = {
   assertNoLongPaths,
   assertResourcesComplete,
+  assertBundledNodeRuntime,
   requiredVendorPackages,
 }

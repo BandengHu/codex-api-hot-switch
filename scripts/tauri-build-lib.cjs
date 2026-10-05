@@ -156,10 +156,13 @@ async function pruneNonRuntimeFiles(dir) {
  * CodexBridge CLI。仅检查文件存在不够：包体在、传递依赖缺失时，
  * Web 服务正常但企业微信服务会在启动后立即退出。
  *
+ * `nodeExecutable` 必须传发布包实际携带的 Node，不能用构建机
+ * `process.execPath` 冒充通过。
+ *
  * CLI 的 `--help` 自身以退出码 1 结束，因此要允许 1，同时确认 stderr
  * 没有未捕获异常或模块解析错误。
  */
-function assertCodexBridgeStarts(serverDir) {
+function assertCodexBridgeStarts(serverDir, nodeExecutable = process.execPath) {
   const loader = path.join(serverDir, "vendor", "node_modules", "tsx", "dist", "loader.mjs")
   const cli = path.join(serverDir, "integrations", "codexbridge", "src", "cli.ts")
   if (!require("node:fs").existsSync(loader) || !require("node:fs").existsSync(cli)) {
@@ -167,7 +170,7 @@ function assertCodexBridgeStarts(serverDir) {
   }
 
   const result = spawnSync(
-    process.execPath,
+    nodeExecutable,
     ["--import", pathToFileURL(loader).href, cli, "--help"],
     {
       cwd: path.join(serverDir, "integrations", "codexbridge"),

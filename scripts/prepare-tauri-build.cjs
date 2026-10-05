@@ -3,7 +3,7 @@
  * 为 Tauri 外壳准备随包资源。
  *
  * Tauri 没有 asar 概念，resources 目录天然就是真实文件，因此这里只负责拷贝、
- * 裁剪运行时依赖并做完整性检查。外壳使用宿主机 Node，vendor 通过 NODE_PATH 解析。
+ * 裁剪运行时依赖并做完整性检查。发布包会携带 Node 运行时，vendor 通过 NODE_PATH 解析。
  */
 
 const fs = require("node:fs/promises")
@@ -17,7 +17,11 @@ const {
   rmRetry,
 } = require("./tauri-build-lib.cjs")
 const { createCodexBridgeRuntimeCopier } = require("./tauri-codexbridge-runtime.cjs")
-const { assertNoLongPaths, assertResourcesComplete } = require("./tauri-resource-check.cjs")
+const {
+  assertBundledNodeRuntime,
+  assertNoLongPaths,
+  assertResourcesComplete,
+} = require("./tauri-resource-check.cjs")
 
 const root = path.resolve(__dirname, "..")
 const standaloneDir = path.join(root, ".next", "standalone")
@@ -41,6 +45,81 @@ function esbuildPlatformPackageName() {
     : process.platform === "darwin"
       ? (process.arch === "arm64" ? "@esbuild/darwin-arm64" : "@esbuild/darwin-x64")
       : process.arch === "arm64" ? "@esbuild/linux-arm64" : "@esbuild/linux-x64"
+}
+
+function parseNodeVersion(version) {
+  const match = /^v?(\d+)\.(\d+)/u.exec(String(version || "").trim())
+  if (!match) return null
+  return { major: Number(match[1]), minor: Number(match[2]) }
+}
+
+function assertSupportedBuildNode() {
+  if (process.platform !== "win32") {
+    throw new Error("Tauri NSIS 安装包必须使用 Windows 上的 Node 构建")
+  }
+  const parsed = parseNodeVersion(process.versions.node)
+  if (!parsed || parsed.major < 22 || (parsed.major === 22 && parsed.minor < 5)) {
+    throw new Error(
+      `构建机 Node ${process.versions.node} 版本过低，需要 Node 22.5 或更高版本`,
+    )
+  }
+}
+
+async function copyBundledNodeRuntime(serverDir) {
+  assertSupportedBuildNode()
+  const source = await fs.realpath(process.execPath)
+  const runtimeDir = path.join(serverDir, "runtime")
+  const destination = path.join(runtimeDir, "node.exe")
+  await fs.mkdir(runtimeDir, { recursive: true })
+  await fs.copyFile(source, destination)
+
+  let license = ""
+  for (const name of ["LICENSE", "LICENSE.md"]) {
+    const candidate = path.join(path.dirname(source), name)
+    if (!(await exists(candidate))) continue
+    await fs.copyFile(candidate, path.join(runtimeDir, name))
+    license = path.join(runtimeDir, name)
+    break
+  }
+
+  return {
+    destination,
+    license,
+    source,
+    version: process.versions.node,
+  }
+}
+
+async function rewriteBundledBuildPaths(serverDir) {
+  const files = [
+    path.join(serverDir, "server.js"),
+    path.join(serverDir, ".next", "required-server-files.json"),
+  ]
+  const buildRootForms = [root, root.replaceAll("\\", "/")]
+  const rewritten = []
+
+  for (const file of files) {
+    if (!(await exists(file))) continue
+    const before = await fs.readFile(file, "utf8")
+    let after = before
+    for (const form of buildRootForms) {
+      after = after.split(JSON.stringify(form)).join(JSON.stringify("."))
+    }
+    if (after === before) continue
+    await fs.writeFile(file, after, "utf8")
+    rewritten.push(path.relative(serverDir, file))
+  }
+
+  for (const file of files) {
+    if (!(await exists(file))) continue
+    const contents = await fs.readFile(file, "utf8")
+    for (const form of buildRootForms) {
+      if (!contents.includes(JSON.stringify(form))) continue
+      throw new Error(`随包资源仍包含构建机绝对路径：${path.relative(root, file)} -> ${form}`)
+    }
+  }
+
+  return rewritten
 }
 
 const copyCodexBridgeRuntimeNodeModules = createCodexBridgeRuntimeCopier({
@@ -362,6 +441,7 @@ async function main() {
     console.log(`  源侧摊平 .pnpm：${flattened.moved} 个包移到顶层`)
   }
   await copyDir(standaloneDir, targetServerDir)
+  const bundledNodeRuntime = await copyBundledNodeRuntime(targetServerDir)
 
   // 补入运行时脚本与 integrations。
   await fs.mkdir(path.join(targetServerDir, "scripts"), { recursive: true })
@@ -413,10 +493,12 @@ async function main() {
   // `resources/server/tauri/`（自嵌套，还带着打包产物目录 `dist/`）。
   // 上面 `tracedBuildArtifacts` 已经尽量在拷贝前清理，这里再擦一次地。
   await pruneSelfNestedDirs(targetServerDir)
+  const rewrittenPaths = await rewriteBundledBuildPaths(targetServerDir)
 
   const maxLen = await assertNoLongPaths(targetServerDir)
   const check = await assertResourcesComplete(targetServerDir, esbuildPlatformPackageName())
-  assertCodexBridgeStarts(targetServerDir)
+  const bundledNode = await assertBundledNodeRuntime(targetServerDir)
+  assertCodexBridgeStarts(targetServerDir, bundledNode.path)
 
   const size = await dirSize(targetServerDir)
   // 体积护栏：只抓「量级错」的情况（自嵌套会把资源撑到 GB 级）。
@@ -436,6 +518,12 @@ async function main() {
   console.log(`Tauri 资源已就绪：tauri/src-tauri/resources/server`)
   console.log(`  体积 ${(size / 1024 / 1024).toFixed(0)}MB，最长路径 ${maxLen} 字符`)
   console.log(`  关键路径自检通过（api 路由 ${check.apiRoutes} 项，chunks ${check.chunks} 项）`)
+  console.log(
+    `  随包 Node ${bundledNodeRuntime.version}：${path.relative(root, bundledNodeRuntime.destination)}`,
+  )
+  if (rewrittenPaths.length > 0) {
+    console.log(`  已清理构建机绝对路径：${rewrittenPaths.join("、")}`)
+  }
   if (tsxRuntimePackages.length > 0) {
     console.log(`  tsx 运行时依赖已补齐：${tsxRuntimePackages.join("、")}`)
   }
