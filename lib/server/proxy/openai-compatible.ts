@@ -116,6 +116,7 @@ export function buildOpenAICompatibleRequest(
       preserveRequestControls: target.paused,
       rawResponsesPassthrough: Boolean(target.provider.rawResponsesPassthrough),
       compatibleResponsesToolSearch: !isOpenAIOfficialResponsesTarget(target),
+      compatibleWebSearchHistory: !isOpenAIOfficialResponsesTarget(target),
     },
   )
   normalizeDashScopeQwenResponsesReasoning(prepared.body, target, prepared.upstreamPath)

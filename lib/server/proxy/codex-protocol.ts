@@ -15,6 +15,9 @@ import {
 import { ProxyRequestBodyError } from "./content-encoding"
 import { canonicalToolArguments } from "./json-canonical"
 import { repairResponsesItemIdsInBody } from "./responses-item-id-repair"
+import {
+  adaptWebSearchHistoryForRawResponsesPassthrough,
+} from "./responses-web-search-history-compat"
 
 type AnyRecord = Record<string, any>
 
@@ -44,6 +47,7 @@ interface PrepareCodexRequestOptions {
   preserveRequestControls?: boolean
   rawResponsesPassthrough?: boolean
   compatibleResponsesToolSearch?: boolean
+  compatibleWebSearchHistory?: boolean
 }
 
 function isObject(value: unknown): value is AnyRecord {
@@ -663,9 +667,19 @@ export function prepareCodexOpenAICompatibleRequest(
     ) as AnyRecord
     const requestedModel = safeTrim(passthrough.model)
     if (options.preserveRequestControls || options.rawResponsesPassthrough) {
-      const repaired = repairResponsesItemIdsInBody(passthrough) as AnyRecord
+      let repaired = repairResponsesItemIdsInBody(passthrough) as AnyRecord
       if (!options.preserveRequestControls) {
         applyHotSwitchOverrides(repaired, model, reasoning)
+      }
+      let upstreamHistory = requestHistory
+      if (options.rawResponsesPassthrough && options.compatibleWebSearchHistory !== false) {
+        // 部分透传网关不接受历史里的 web_search_call，转成等价的
+        // function_call + function_call_output 配对；历史记录体用同一份结果，
+        // 避免后续请求再次带回 web_search_call。
+        repaired = adaptWebSearchHistoryForRawResponsesPassthrough(repaired) as AnyRecord
+        upstreamHistory = adaptWebSearchHistoryForRawResponsesPassthrough(
+          requestHistory,
+        ) as AnyRecord
       }
       return {
         upstreamPath: "v1/responses",
@@ -675,7 +689,7 @@ export function prepareCodexOpenAICompatibleRequest(
           requestIsStream: Boolean(passthrough.stream),
           requestedModel,
           responseModelOverride: requestedModel || safeTrim(body.model) || undefined,
-          historyRequestBody: requestHistory,
+          historyRequestBody: upstreamHistory,
         },
       }
     }
