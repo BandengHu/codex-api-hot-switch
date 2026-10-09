@@ -53,7 +53,10 @@ function supportsHostedWebSearch(provider: Provider | undefined) {
   )
 }
 
-function supportsCodexWebSearch(provider: Provider | undefined) {
+function supportsCodexWebSearch(snapshot: RoutingSnapshot, provider: Provider | undefined) {
+  // mcp / disabled 模式不能向 Codex 声明托管 web_search：原样透传链路不处理
+  // web_search_call 历史，声明后会把上游 schema 不接受的状态字段带进后续请求。
+  if (snapshot.settings.webSearchMode !== "builtin") return false
   return supportsHostedWebSearch(provider) || supportsRelayWebSearchProvider(provider)
 }
 
@@ -123,7 +126,7 @@ export function buildCodexClientModelsResponse(snapshot: RoutingSnapshot) {
       200000,
       true,
       true,
-      supportsCodexWebSearch(defaultProvider),
+      supportsCodexWebSearch(snapshot, defaultProvider),
       0,
     ),
   ]
@@ -138,7 +141,7 @@ export function buildCodexClientModelsResponse(snapshot: RoutingSnapshot) {
         model.contextLength,
         model.supportsReasoning,
         model.supportsVision,
-        supportsCodexWebSearch(provider),
+        supportsCodexWebSearch(snapshot, provider),
         priority,
       ),
     )
