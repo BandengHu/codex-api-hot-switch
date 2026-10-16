@@ -53,7 +53,9 @@ tauri/
   并用 `remote.urls` 放行 `http://127.0.0.1:*`，让 WebView 能导航到本地控制台
 - **前端桌面桥**：`lib/desktop-open-external.ts` 与 `lib/desktop-directory-picker.ts`
   通过 Tauri 的 `window.__TAURI__`：
-  - 打开外链 → `__TAURI__.opener.openUrl`（`tauri-plugin-opener` + `opener:allow-open-url`）
+  - 打开外链 → `__TAURI__.opener.openUrl`
+    （`tauri-plugin-opener` + `opener:allow-open-url` + `opener:allow-default-urls`；
+    前者只放行命令，URL 范围由后者提供，缺一不可）
   - 选择文件夹 → `invoke("plugin:dialog|open", { options: { directory: true } })`
     （`tauri-plugin-dialog` + `dialog:allow-open`）
 - **安装包中文化**：NSIS `SimpChinese`（tauri-bundler 内置译文）

@@ -15,6 +15,7 @@
     "core:webview:allow-internal-toggle-devtools",
     "shell:allow-open",
     "opener:allow-open-url",
+    "opener:allow-default-urls",
     "dialog:allow-open"
   ]
 }

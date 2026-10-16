@@ -1,6 +1,6 @@
 [package]
 name = "codex-switchgate-tauri"
-version = "0.2.12"
+version = "0.2.13"
 description = "Codex SwitchGate Tauri shell"
 authors = ["Local"]
 edition = "2021"
