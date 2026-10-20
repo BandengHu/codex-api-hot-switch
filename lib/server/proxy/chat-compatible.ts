@@ -30,6 +30,7 @@ import {
 } from "./json-canonical"
 import { assertSseBufferWithinLimit, lastCompleteSseFrameBoundary } from "./sse-frame"
 import { normalizeChatToolPairing } from "./chat-tool-pairing"
+import { normalizeWorkbuddyChatMessages } from "./chat-workbuddy-request"
 import { chatWireToolChoice } from "./chat-tool-choice"
 import { chatStreamHasUsableOutput, chatToolDeltas, parseChatSseFrames } from "./chat-sse-fold"
 import { normalizeContextCheckpointRecoveryMessages } from "./context-checkpoint-recovery"
@@ -1017,21 +1018,6 @@ function forceUpstreamStream(body: AnyRecord, target: ProxyTarget) {
   body.stream = true
 }
 
-/**
- * WorkBuddy 的渠道校验只接受官方客户端使用的 Chat 角色。Codex 会发送
- * OpenAI 风格的 `developer` 消息，上游会以 11128 拒绝；对 WorkBuddy 路由
- * 归一为 `system`，其他供应商保持原样。
- */
-function normalizeWorkbuddyChatRoles(body: AnyRecord, target: ProxyTarget) {
-  if (!isWorkbuddyProvider(target.provider) || !Array.isArray(body.messages)) return
-  body.messages = body.messages.map((message: unknown) => {
-    if (!isObject(message) || safeTrim(message.role).toLowerCase() !== "developer") {
-      return message
-    }
-    return { ...message, role: "system" }
-  })
-}
-
 function chatCompatibleUrl(baseUrl: string, endpoint: "chat/completions" | "models") {
   const rawBase = baseUrl.trim()
   const skipVersionPrefix = rawBase.endsWith("#")
@@ -1067,7 +1053,7 @@ export function buildChatCompatibleRequest(
     }
     appendOutputLanguagePolicyToChatBody(passthrough, target)
     const requestedStream = Boolean(passthrough.stream)
-    normalizeWorkbuddyChatRoles(passthrough, target)
+    normalizeWorkbuddyChatMessages(passthrough, target)
     forceUpstreamStream(passthrough, target)
     return {
       url: chatCompatibleUrl(target.provider.baseUrl, "chat/completions"),
@@ -1104,6 +1090,7 @@ export function buildChatCompatibleRequest(
   const converted = responsesToChatCompletions(request, target, {
     applyLanguagePolicy: !compactionTrigger,
   })
+  normalizeWorkbuddyChatMessages(converted.body, target)
   injectChatPromptCacheKey(target.provider, converted.body, originalRequest)
   // 对齐 cc-switch #6863：Moonshot / Kimi 的 Chat 校验器拒绝带兄弟关键字的 $ref，
   // 只在命中的上游改写，其他供应商保持字节级不变。
