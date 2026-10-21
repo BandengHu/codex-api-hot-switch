@@ -4,6 +4,8 @@ import { isWorkbuddyProvider } from "@/lib/workbuddy-provider"
 import type { ProxyTarget } from "./common"
 
 const DSH_IDENTITY = "You are an AI agent powered by DeepSeek Harness."
+const DSH_GUI_IDENTITY =
+  "You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names."
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value))
@@ -11,7 +13,8 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function stripDshIdentity(content: unknown): unknown {
   if (typeof content === "string") {
-    return content.startsWith(DSH_IDENTITY) ? content.slice(DSH_IDENTITY.length) : content
+    const text = content.startsWith(DSH_IDENTITY) ? content.slice(DSH_IDENTITY.length) : content
+    return text.replace(DSH_GUI_IDENTITY, "")
   }
   if (!Array.isArray(content) || content.length === 0) return content
   const first = content[0]
@@ -45,7 +48,7 @@ export function normalizeWorkbuddyChatMessages(
     const role = message.role.trim().toLowerCase()
     if (role !== "system" && role !== "developer") return message
 
-    // Only this exact leading DSH identity reproduced WorkBuddy's 11128 rejection.
+    // Only these exact DSH identity statements reproduced WorkBuddy's 11128 rejection.
     const content = stripDshIdentity(message.content)
     const nextRole = role === "developer" ? "system" : message.role
     if (content === message.content && nextRole === message.role) return message
