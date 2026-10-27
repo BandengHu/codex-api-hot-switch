@@ -8,6 +8,9 @@ import { buildProxyRequest } from "./request-builder"
 const dshIdentity = "You are an AI agent powered by DeepSeek Harness."
 const dshGuiIdentity =
   "You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names."
+const dshPathReference = "Tokens prefixed with @ are paths the user explicitly referenced."
+const workbuddyPathReference =
+  "References beginning with @ identify paths explicitly mentioned by the user."
 
 function target(providerId: string, baseUrl: string) {
   return {
@@ -191,13 +194,69 @@ test("WorkBuddy removes the GUI identity without requiring a leading DSH identit
   assert.equal(body.messages[0].content, `${before}${after}`)
 })
 
+test("WorkBuddy rephrases only the verified path instruction without changing history", () => {
+  const before = "\r\nKeep the original instructions.  "
+  const after = "\n\nPreserve @src/main.ts and every path resolution rule.  \r\n"
+  for (const role of ["system", "developer"]) {
+    const messages = [
+      { role, content: `${before}${dshPathReference}${after}`, name: "agent" },
+      { role: "system", content: dshPathReference.replace("Tokens", "References") },
+      { role: "user", content: dshPathReference },
+      { role: "assistant", content: dshPathReference },
+      { role: "tool", content: dshPathReference, tool_call_id: "call-1" },
+    ]
+    const original = structuredClone(messages)
+    const body = { messages }
+
+    normalizeWorkbuddyChatMessages(body, target("prov-workbuddy", "https://www.codebuddy.cn/v2"))
+
+    assert.deepEqual(body.messages, [
+      { ...messages[0], role: "system", content: `${before}${workbuddyPathReference}${after}` },
+      ...messages.slice(1),
+    ])
+    assert.deepEqual(messages, original)
+    for (let index = 1; index < messages.length; index++) {
+      assert.strictEqual(body.messages[index], messages[index])
+    }
+    const normalized = structuredClone(body)
+    normalizeWorkbuddyChatMessages(body, target("prov-workbuddy", "https://www.codebuddy.cn/v2"))
+    assert.deepEqual(body, normalized)
+  }
+})
+
+test("WorkBuddy path instruction handling preserves structured metadata and later blocks", () => {
+  const before = "\nKeep every task constraint.\n"
+  const after = "\nResolve relative paths against the workspace."
+  const text = `${before}${dshPathReference}${after}`
+  for (const first of [
+    text,
+    { type: "text", text, cache_control: { type: "ephemeral" } },
+    { type: "input_text", text, metadata: { source: "runtime" } },
+  ]) {
+    const content = [first, { type: "text", text: dshPathReference }]
+    const original = structuredClone(content)
+    const body = { messages: [{ role: "system", content }] }
+
+    normalizeWorkbuddyChatMessages(body, target("prov-workbuddy", "https://www.codebuddy.cn/v2"))
+
+    const expected = `${before}${workbuddyPathReference}${after}`
+    assert.deepEqual(body.messages[0].content, [
+      typeof first === "string" ? expected : { ...first, text: expected },
+      content[1],
+    ])
+    assert.deepEqual(content, original)
+    assert.strictEqual(body.messages[0].content[1], content[1])
+  }
+})
+
 test("WorkBuddy Chat strips the DSH identity and retains tools and client stream mode", () => {
-  const constraints = "\n\nKeep all task instructions."
+  const constraints = `\n\n${dshPathReference}\nKeep all task instructions.`
+  const expectedConstraints = `\n\n${workbuddyPathReference}\nKeep all task instructions.`
   const tools = [{
     type: "function",
     function: {
       name: "check",
-      description: `${dshIdentity}\n${dshGuiIdentity}`,
+      description: `${dshIdentity}\n${dshGuiIdentity}\n${dshPathReference}`,
       parameters: { type: "object" },
     },
   }]
@@ -216,7 +275,7 @@ test("WorkBuddy Chat strips the DSH identity and retains tools and client stream
   )
   const body = built.rewrittenBody as any
 
-  assert.ok(body.messages.some((message: any) => message.content === constraints))
+  assert.ok(body.messages.some((message: any) => message.content === expectedConstraints))
   assert.equal(body.messages.some((message: any) => message.role === "developer"), false)
   assert.deepEqual(body.tools, tools)
   assert.equal(body.stream, true)
@@ -233,14 +292,14 @@ test("WorkBuddy Responses conversion applies the same DSH normalization", () => 
       "v1/responses",
       {
         model: "client-model",
-        instructions: `${dshIdentity}${dshGuiIdentity}\nKeep the top-level instructions.`,
+        instructions: `${dshIdentity}${dshGuiIdentity}\n${dshPathReference}\nKeep the top-level instructions.`,
         input: [
           {
             type: "message",
             role: "developer",
             content: [{
               type: "input_text",
-              text: `${dshIdentity}${dshGuiIdentity}\nKeep the developer instructions.`,
+              text: `${dshIdentity}${dshGuiIdentity}\n${dshPathReference}\nKeep the developer instructions.`,
             }],
           },
           { role: "user", content: "Check the connection." },
@@ -251,8 +310,8 @@ test("WorkBuddy Responses conversion applies the same DSH normalization", () => 
     const body = built.rewrittenBody as any
     const systems = body.messages.filter((message: any) => message.role === "system")
     assert.equal(systems.length, 2)
-    assert.ok(systems[0].content.startsWith("\nKeep the top-level instructions."))
-    assert.equal(systems[1].content, "\nKeep the developer instructions.")
+    assert.ok(systems[0].content.startsWith(`\n${workbuddyPathReference}\nKeep the top-level instructions.`))
+    assert.equal(systems[1].content, `\n${workbuddyPathReference}\nKeep the developer instructions.`)
     assert.equal(body.stream, true)
     assert.equal(built.adapter.type, "chat_compatible")
   }
@@ -281,14 +340,15 @@ test("WorkBuddy preserves Codex identities and all their task instructions", () 
   }
 })
 
-test("other providers retain the DSH identities", () => {
+test("other providers retain the DSH identities and path instruction", () => {
+  const instructions = `${dshIdentity}${dshGuiIdentity}\n${dshPathReference}\nKeep the task.`
   const built = buildChatCompatibleRequest(
     target("provider-chat", "https://example.com/v1"),
     "v1/chat/completions",
     {
       model: "client-model",
       messages: [
-        { role: "developer", content: `${dshIdentity}${dshGuiIdentity}\nKeep the task.` },
+        { role: "developer", content: instructions },
         { role: "user", content: "Check the connection." },
       ],
       stream: true,
@@ -296,7 +356,7 @@ test("other providers retain the DSH identities", () => {
   )
   const body = built.rewrittenBody as any
   assert.ok(body.messages.some((message: any) =>
-    message.role === "developer" && message.content === `${dshIdentity}${dshGuiIdentity}\nKeep the task.`,
+    message.role === "developer" && message.content === instructions,
   ))
 })
 
@@ -307,7 +367,7 @@ test("raw Responses retains DSH and Codex identities without message normalizati
   rawTarget.reasoning = "auto"
   const request = {
     model: "client-model",
-    instructions: `${dshIdentity}${dshGuiIdentity}\nKeep the task.`,
+    instructions: `${dshIdentity}${dshGuiIdentity}\n${dshPathReference}\nKeep the task.`,
     input: [{
       role: "developer",
       content: [{ type: "input_text", text: "You are Codex, a coding agent based on GPT-5." }],
@@ -321,7 +381,7 @@ test("raw Responses retains DSH and Codex identities without message normalizati
   assert.deepEqual(request, original)
 
   const chatBody = {
-    messages: [{ role: "developer", content: `${dshIdentity}${dshGuiIdentity}\nKeep the task.` }],
+    messages: [{ role: "developer", content: `${dshIdentity}${dshGuiIdentity}\n${dshPathReference}\nKeep the task.` }],
   }
   const originalChat = structuredClone(chatBody)
   normalizeWorkbuddyChatMessages(chatBody, rawTarget)
