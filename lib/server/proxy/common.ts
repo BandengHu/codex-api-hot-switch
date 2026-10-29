@@ -14,6 +14,11 @@ import type {
   RoutingSnapshot,
 } from "@/lib/types"
 
+export interface WorkbuddyTargetAccount {
+  uid: string
+  realm: "cn" | "global"
+}
+
 export interface ProxyTarget {
   provider: ResolvedProvider
   model?: Model
@@ -25,6 +30,7 @@ export interface ProxyTarget {
   fullRequestLoggingEnabled?: boolean
   attemptedEndpointIds?: string[]
   failoverReason?: string
+  workbuddyAccount?: WorkbuddyTargetAccount
 }
 
 export function joinUrl(baseUrl: string, path: string) {

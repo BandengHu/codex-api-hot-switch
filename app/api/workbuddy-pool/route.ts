@@ -3,7 +3,8 @@ import { errorMessage, jsonError, readJsonBody } from "@/lib/server/http"
 import {
  importPoolAccount,
  listPoolEntries,
-  readActiveUid,
+  availableUidOfState,
+  readPoolState,
   setActivePoolAccount,
  syncPoolFromDisk,
 } from "@/lib/server/workbuddy/task-pool-store"
@@ -35,6 +36,7 @@ export async function GET() {
  try {
  await syncPoolFromDisk()
  const entries = await listPoolEntries()
+ const poolState = await readPoolState()
  const schedule = await readDailyScheduleState()
  const today = formatScheduleDay(new Date())
  const enriched: PoolEntryWithBalance[] = []
@@ -66,8 +68,11 @@ export async function GET() {
  }
  enriched.push(item)
  }
- // activeUid由池状态解出（失效自动回落 local），界面据此标注当前转发账号。
- return NextResponse.json({ entries: enriched, activeUid: await readActiveUid() })
+ // 全部账号限频时仍返回列表；没有可转发账号就用空串表示。
+ return NextResponse.json({
+   entries: enriched,
+   activeUid: availableUidOfState(poolState) ?? "",
+ })
  } catch (error) {
  return jsonError(`读取号池失败：${errorMessage(error)}`)
  }

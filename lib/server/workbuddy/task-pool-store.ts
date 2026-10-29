@@ -4,6 +4,15 @@ import { mkdir, readFile, rename, readdir, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { hotSwitchDataDir } from "@/lib/server/state-store"
 import { parseWorkbuddyAccount, type WorkbuddyAccount } from "./account"
+import {
+  availableUidOf,
+  nextAvailableUidOf,
+  preferredRateLimitOf,
+  pruneExpiredRateLimits,
+  selectedUidOf,
+  type WorkbuddyAccountRateLimit,
+} from "./pool-selection"
+import { WorkbuddyRateLimitError } from "./rate-limit"
 
 /**
  * WorkBuddy 号池存储。
@@ -33,10 +42,12 @@ export interface WorkbuddyPoolState {
  /**
  * 当前生效账号（uid）：代理转发出站时用它的登录态。
  *
- * 号池**不做自动轮转**，切号完全由用户在界面上手动决定，这里只记「选了谁」。
- * 缺失、或指向已从池里移除的账号时，一律回落本机账号 `local`。
+ * 用户可手动指定；上游返回账号级频率限制时，代理会自动切到下一个可用账号。
+ * 缺失、或指向已从池里移除的账号时，按池顺序回落到第一个可用账号。
  */
  activeUid?: string
+ /** 上游账号级限频冻结，key 为 uid，到期后自动恢复。 */
+ rateLimits?: Record<string, WorkbuddyAccountRateLimit>
 }
 
 function poolDir() {
@@ -47,7 +58,20 @@ function poolStatePath() {
  return join(poolDir(), "pool.json")
 }
 
-const DEFAULT_STATE: WorkbuddyPoolState = { version:1, entries: [] }
+function emptyPoolState(): WorkbuddyPoolState {
+ return { version:1, entries: [] }
+}
+
+let writeQueue: Promise<unknown> = Promise.resolve()
+
+function enqueueMutation<T>(task: () => Promise<T>) {
+ const run = writeQueue.catch(() => undefined).then(task)
+ writeQueue = run.then(
+   () => undefined,
+   () => undefined,
+ )
+ return run
+}
 
 async function ensurePoolDir() {
  await mkdir(poolDir(), { recursive: true })
@@ -57,10 +81,19 @@ export async function readPoolState(): Promise<WorkbuddyPoolState> {
  try {
  const raw = await readFile(poolStatePath(), "utf8")
  const parsed = JSON.parse(raw) as WorkbuddyPoolState
- if (parsed.version !==1 || !Array.isArray(parsed.entries)) return DEFAULT_STATE
- return parsed
+ if (parsed.version !==1 || !Array.isArray(parsed.entries)) {
+ return emptyPoolState()
+ }
+ return {
+   ...parsed,
+   ...(parsed.rateLimits &&
+   typeof parsed.rateLimits === "object" &&
+   !Array.isArray(parsed.rateLimits)
+     ? { rateLimits: parsed.rateLimits }
+     : {}),
+ }
  } catch {
- return DEFAULT_STATE
+ return emptyPoolState()
  }
 }
 
@@ -86,30 +119,90 @@ export async function listPoolEntries(): Promise<WorkbuddyPoolEntry[]> {
 /**本机账号的固定 uid（池里永远存在，代表桌面端登录态）。 */
 export const LOCAL_POOL_UID = "local"
 
+function orderedEntries(state: WorkbuddyPoolState): WorkbuddyPoolEntry[] {
+ return [
+   {
+     uid: LOCAL_POOL_UID,
+     nickname: "",
+     source: "local",
+     disabled: false,
+   },
+   ...state.entries,
+ ]
+}
+
+/** 当前真正可用于上游请求的 uid；全部禁用或限频时返回 undefined。 */
+export function availableUidOfState(
+ state: WorkbuddyPoolState,
+ now = Date.now(),
+) {
+ return availableUidOf(state, orderedEntries(state), now)
+}
+
+/** 当前账号不可用后，按池顺序选择下一个未禁用、未限频账号。 */
+export function nextAvailableUidAfter(
+ state: WorkbuddyPoolState,
+ uid: string,
+ now = Date.now(),
+) {
+ return nextAvailableUidOf(state, orderedEntries(state), uid, now)
+}
+
+export function preferredRateLimitOfState(
+ state: WorkbuddyPoolState,
+ now = Date.now(),
+) {
+ return preferredRateLimitOf(state, orderedEntries(state), now)
+}
+
 /**
  * 从池状态里解出**真正可用**的激活 uid。
  *
- * 只有三种情况算有效：显式选中且账号存在、账号未被禁用；其余（没选过、选中的账号
- * 已删除、已禁用）一律回落本机账号。代理链路每次请求都会调用，不能抛错。
+ * 显式选中的账号可用时优先；否则按池顺序找第一个未禁用、未限频的账号。
+ * 这个函数只用于界面状态；真正转发前使用 `availableUidOfState` 再确认。
  */
-export function activeUidOf(state: WorkbuddyPoolState) {
- const uid = state.activeUid?.trim()
- if (!uid || uid === LOCAL_POOL_UID) return LOCAL_POOL_UID
- const entry = state.entries.find((candidate) => candidate.uid === uid)
- if (!entry || entry.disabled) return LOCAL_POOL_UID
- return uid
+export function activeUidOf(state: WorkbuddyPoolState, now = Date.now()) {
+ return selectedUidOf(state, orderedEntries(state)) ?? LOCAL_POOL_UID
 }
 
-/**读取当前生效账号的 uid（无效时回落 `local`）。 */
+/** 读取真正可转发的 uid，跳过已禁用和仍在限频冻结期内的账号。 */
 export async function readActiveUid(): Promise<string> {
- return activeUidOf(await readPoolState())
+ const state = await readPoolState()
+ const uid = availableUidOfState(state)
+ if (uid) return uid
+ const rateLimit = preferredRateLimitOfState(state)
+ if (rateLimit) throw new WorkbuddyRateLimitError(rateLimit)
+ throw new Error("WorkBuddy 号池里没有可用账号")
+}
+
+/**
+ * 冻结上游刚返回限频的账号，并立即把转发出口切到下一个可用账号。
+ * 没有下一个可用账号时保留原选择，返回 undefined。
+ */
+export async function freezePoolAccount(
+ uid: string,
+ rateLimit: WorkbuddyAccountRateLimit,
+ now = Date.now(),
+) {
+ return enqueueMutation(async () => {
+   const state = await readPoolState()
+   pruneExpiredRateLimits(state, now)
+   state.rateLimits = {
+     ...(state.rateLimits ?? {}),
+     [uid]: rateLimit,
+   }
+   const nextUid = nextAvailableUidAfter(state, uid, now)
+   if (nextUid) state.activeUid = nextUid
+   await writePoolState(state)
+   return nextUid
+ })
 }
 
 /**
  * 切换当前转发账号。
  *
- * 传 `local` 表示切回本机桌面端登录态。号池**不做自动轮转**：切号只由这里发生，
- * 即用户在界面上的手动选择。
+ * 传 `local` 表示切回本机桌面端登录态。上游限频触发的自动换号由
+ * `freezePoolAccount` 负责，用户手动选择仍走这里。
  */
 export async function setActivePoolAccount(uid: string) {
  const state = await readPoolState()
@@ -162,6 +255,7 @@ export async function removePoolAccount(uid: string) {
  const before = state.entries.length
  state.entries = state.entries.filter((entry) => entry.uid !== uid)
  if (state.entries.length === before) return
+ if (state.rateLimits) delete state.rateLimits[uid]
  // 删掉的正是当前转发账号时清掉标记，回落本机账号。
  if (state.activeUid === uid) delete state.activeUid
  await writePoolState(state)

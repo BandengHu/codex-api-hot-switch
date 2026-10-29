@@ -6,6 +6,7 @@ import {
   registerRequestLogDetailSource,
 } from "@/lib/server/request-log-details"
 import { withWorkbuddyTargetCredentials } from "@/lib/server/workbuddy/upstream"
+import { WorkbuddyRateLimitError } from "@/lib/server/workbuddy/rate-limit"
 import {
   buildCodexClientModelsResponse,
   buildOpenAIModelsResponse,
@@ -100,7 +101,7 @@ import {
   parseJsonSafe,
   type BuiltProxyRequest,
 } from "./request-builder"
-import { fetchWithEndpointFailover } from "./endpoint-failover"
+import { fetchWithWorkbuddyAccountFailover } from "./workbuddy-account-failover"
 import { applyAuxiliaryRouting } from "./auxiliary-routing"
 import {
   maybeRectifyUpstreamError,
@@ -1292,7 +1293,7 @@ async function handleResponsesCompactFallback(params: {
   let built = buildProxyRequest(summaryTarget, "v1/responses", summaryBody)
   let upstream: Response
   try {
-    const result = await fetchWithEndpointFailover({
+    const result = await fetchWithWorkbuddyAccountFailover({
       target: summaryTarget,
       path: "v1/responses",
       body: summaryBody,
@@ -1304,6 +1305,7 @@ async function handleResponsesCompactFallback(params: {
     built = result.built
     upstream = result.response
   } catch (error) {
+    if (error instanceof WorkbuddyRateLimitError) throw error
     const message = error instanceof Error ? error.message : String(error)
     const transformed = {
       error: {
@@ -1681,7 +1683,7 @@ async function handleRelayWebSearchResponses(params: {
   for (let turn = 0; turn < WEB_SEARCH_RELAY_MAX_TURNS; turn += 1) {
     let upstream: Response
     try {
-      const result = await fetchWithEndpointFailover({
+      const result = await fetchWithWorkbuddyAccountFailover({
         target: currentTarget,
         path: params.path,
         body: currentBody,
@@ -1693,6 +1695,7 @@ async function handleRelayWebSearchResponses(params: {
       currentBuilt = result.built
       upstream = result.response
     } catch (error) {
+      if (error instanceof WorkbuddyRateLimitError) throw error
       const message = error instanceof Error ? error.message : String(error)
       appendLogDetached(
         makeLog({
@@ -1944,7 +1947,7 @@ export async function handleProxyPost(parts: string[], request: Request) {
       isResponsesPath(effectivePath) &&
       built.adapter?.type === "passthrough"
     const fetchEndpoint = async (requestBody: unknown) => {
-      const result = await fetchWithEndpointFailover({
+      const result = await fetchWithWorkbuddyAccountFailover({
         target: target!,
         path: effectivePath,
         body: requestBody,
@@ -2146,8 +2149,16 @@ export async function handleProxyPost(parts: string[], request: Request) {
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    const status = error instanceof ProxyRequestBodyError ? error.status : 502
-    const type = error instanceof ProxyRequestBodyError ? "invalid_request_error" : "server_error"
+    const rateLimitError =
+      error instanceof WorkbuddyRateLimitError ? error : undefined
+    const status =
+      rateLimitError?.status ??
+      (error instanceof ProxyRequestBodyError ? error.status : 502)
+    const type = rateLimitError
+      ? "rate_limit_error"
+      : error instanceof ProxyRequestBodyError
+        ? "invalid_request_error"
+        : "server_error"
     const errorStack = error instanceof Error ? error.stack : undefined
     if (target) {
       appendLogDetached(

@@ -6,6 +6,14 @@ import { hotSwitchDataDir } from "@/lib/server/state-store"
 import type { WorkbuddyAccount } from "./account"
 import { parseGlobalCredential } from "./global-account"
 import { isSafeGlobalUid } from "./global-oauth"
+import {
+  availableUidOf,
+  nextAvailableUidOf,
+  preferredRateLimitOf,
+  pruneExpiredRateLimits,
+  type WorkbuddyAccountRateLimit,
+} from "./pool-selection"
+import { WorkbuddyRateLimitError } from "./rate-limit"
 
 /**
  * WorkBuddy **国际版**号池存储（独立于国内站号池）。
@@ -32,13 +40,28 @@ export interface GlobalPoolState {
   /**
    * 当前生效账号（uid）：转发到国际站时用它的登录态。
    *
-   * 与国内站号池同一套语义——**不做自动轮转**，切号只由用户在界面上手动决定。
-   * 缺失、或指向已移除/已禁用的账号时，回落到池里第一个未禁用账号。
+   * 用户可手动指定；上游返回账号级频率限制时，代理会自动切到下一个可用账号。
+   * 缺失、或指向已移除/已禁用的账号时，回落到池里第一个可用账号。
    */
   activeUid?: string
+  /** 上游账号级限频冻结，key 为 uid，到期后自动恢复。 */
+  rateLimits?: Record<string, WorkbuddyAccountRateLimit>
 }
 
-const DEFAULT_STATE: GlobalPoolState = { version: 1, entries: [] }
+function emptyPoolState(): GlobalPoolState {
+  return { version: 1, entries: [] }
+}
+
+let writeQueue: Promise<unknown> = Promise.resolve()
+
+function enqueueMutation<T>(task: () => Promise<T>) {
+  const run = writeQueue.catch(() => undefined).then(task)
+  writeQueue = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  return run
+}
 
 export function globalPoolDir() {
   return join(hotSwitchDataDir(), "workbuddy-global-pool")
@@ -63,10 +86,19 @@ export async function readGlobalPoolState(): Promise<GlobalPoolState> {
   try {
     const raw = await readFile(poolStatePath(), "utf8")
     const parsed = JSON.parse(raw) as GlobalPoolState
-    if (parsed.version !== 1 || !Array.isArray(parsed.entries)) return DEFAULT_STATE
-    return parsed
+    if (parsed.version !== 1 || !Array.isArray(parsed.entries)) {
+      return emptyPoolState()
+    }
+    return {
+      ...parsed,
+      ...(parsed.rateLimits &&
+      typeof parsed.rateLimits === "object" &&
+      !Array.isArray(parsed.rateLimits)
+        ? { rateLimits: parsed.rateLimits }
+        : {}),
+    }
   } catch {
-    return DEFAULT_STATE
+    return emptyPoolState()
   }
 }
 
@@ -86,21 +118,43 @@ export async function listGlobalPoolEntries(): Promise<GlobalPoolEntry[]> {
  * 解出国际版号池**真正可用**的生效 uid。
  *
  * 国际站没有「本机账号」这一档，所以回落规则与国内站不同：
- * 1. 显式选中且账号存在、未禁用 → 用它；
- * 2. 否则池里第一个未禁用账号；
+ * 1. 显式选中且账号存在、未禁用、未限频 → 用它；
+ * 2. 否则池里第一个未禁用、未限频账号；
  * 3. 池里没有可用账号 → 抛错（转发链路会把这个原因原样抛给用户）。
  *
  * 代理链路每次请求都会调用，所以这里只做纯计算，不做 IO。
  */
-export function activeGlobalUidOf(state: GlobalPoolState): string {
-  const uid = state.activeUid?.trim()
-  if (uid) {
-    const entry = state.entries.find((candidate) => candidate.uid === uid)
-    if (entry && !entry.disabled) return uid
-  }
-  const fallback = state.entries.find((entry) => !entry.disabled)
-  if (fallback) return fallback.uid
+export function availableGlobalUidOf(
+  state: GlobalPoolState,
+  now = Date.now(),
+) {
+  return availableUidOf(state, state.entries, now)
+}
+
+export function activeGlobalUidOf(
+  state: GlobalPoolState,
+  now = Date.now(),
+): string {
+  const available = availableGlobalUidOf(state, now)
+  if (available) return available
+  const rateLimit = preferredRateLimitOfGlobalState(state, now)
+  if (rateLimit) throw new WorkbuddyRateLimitError(rateLimit)
   throw new Error("国际版号池里没有可用账号，请先在「WorkBuddy 国际版号池」里授权登录或导入账号")
+}
+
+export function nextAvailableGlobalUidAfter(
+  state: GlobalPoolState,
+  uid: string,
+  now = Date.now(),
+) {
+  return nextAvailableUidOf(state, state.entries, uid, now)
+}
+
+export function preferredRateLimitOfGlobalState(
+  state: GlobalPoolState,
+  now = Date.now(),
+) {
+  return preferredRateLimitOf(state, state.entries, now)
 }
 
 /** 读取当前生效的国际版账号 uid。 */
@@ -136,6 +190,29 @@ export async function setActiveGlobalPoolAccount(uid: string) {
  */
 export async function readActiveGlobalPoolAccount(): Promise<WorkbuddyAccount> {
   return readGlobalPoolAccount(await readActiveGlobalUid())
+}
+
+/**
+ * 冻结上游刚返回限频的国际版账号，并立即切到下一个可用账号。
+ * 没有下一个可用账号时保留原选择，返回 undefined。
+ */
+export async function freezeGlobalPoolAccount(
+  uid: string,
+  rateLimit: WorkbuddyAccountRateLimit,
+  now = Date.now(),
+) {
+  return enqueueMutation(async () => {
+    const state = await readGlobalPoolState()
+    pruneExpiredRateLimits(state, now)
+    state.rateLimits = {
+      ...(state.rateLimits ?? {}),
+      [uid]: rateLimit,
+    }
+    const nextUid = nextAvailableGlobalUidAfter(state, uid, now)
+    if (nextUid) state.activeUid = nextUid
+    await writeGlobalPoolState(state)
+    return nextUid
+  })
 }
 
 /**
@@ -176,6 +253,7 @@ export async function removeGlobalAccount(uid: string) {
   const before = state.entries.length
   state.entries = state.entries.filter((entry) => entry.uid !== uid)
   if (state.entries.length === before) return
+  if (state.rateLimits) delete state.rateLimits[uid]
   // 删掉的正是当前生效账号时清掉标记，回落到池里第一个可用账号。
   if (state.activeUid === uid) delete state.activeUid
   await writeGlobalPoolState(state)

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { EndpointAttemptError } from "@/lib/server/provider-endpoint-runtime"
+import { WorkbuddyRateLimitError } from "@/lib/server/workbuddy/rate-limit"
 import { prepareUpstreamResponse } from "./upstream-response-primer"
+
+const WORKBUDDY_LIMIT =
+  "您的使用量已超出频率限制，将在 2026-10-30 10:43:32 UTC+8 重置，您也可以切换其他模型继续使用。"
 
 function streamedResponse(chunks: string[], contentType?: string) {
   const encoder = new TextEncoder()
@@ -124,6 +128,76 @@ test("stream priming replays exact bytes and does not intercept failures after o
     true,
   )
   assert.equal(await prepared.text(), chunks.join(""))
+})
+
+test("WorkBuddy rate limits are detected before output but ignored after visible output", async () => {
+  const limitFrame =
+    `data: ${JSON.stringify({ choices: [{ delta: { content: WORKBUDDY_LIMIT } }] })}\n\n`
+  await assert.rejects(
+    () =>
+      prepareUpstreamResponse(
+        streamedResponse([limitFrame], "text/event-stream"),
+        true,
+        { detectWorkbuddyRateLimit: true },
+      ),
+    (error) => {
+      assert.ok(error instanceof WorkbuddyRateLimitError)
+      assert.equal(error.status, 429)
+      assert.equal(error.message, WORKBUDDY_LIMIT)
+      return true
+    },
+  )
+
+  const chunks = [
+    "data: {\"choices\":[{\"delta\":{\"content\":\"started\"}}]}\n\n",
+    limitFrame,
+  ]
+  const prepared = await prepareUpstreamResponse(
+    streamedResponse(chunks, "text/event-stream"),
+    true,
+    { detectWorkbuddyRateLimit: true },
+  )
+  assert.equal(await prepared.text(), chunks.join(""))
+})
+
+test("buffered WorkBuddy rate limits are detected from plain text", async () => {
+  await assert.rejects(
+    () =>
+      prepareUpstreamResponse(
+        new Response(WORKBUDDY_LIMIT, {
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        }),
+        false,
+        { detectWorkbuddyRateLimit: true },
+      ),
+    (error) => {
+      assert.ok(error instanceof WorkbuddyRateLimitError)
+      assert.equal(error.status, 429)
+      assert.equal(error.message, WORKBUDDY_LIMIT)
+      return true
+    },
+  )
+})
+
+test("buffered WorkBuddy rate limits are detected from non-streaming SSE", async () => {
+  const body =
+    `data: ${JSON.stringify({ choices: [{ delta: { content: WORKBUDDY_LIMIT } }] })}\n\n`
+  await assert.rejects(
+    () =>
+      prepareUpstreamResponse(
+        new Response(body, {
+          headers: { "content-type": "text/event-stream; charset=utf-8" },
+        }),
+        false,
+        { detectWorkbuddyRateLimit: true },
+      ),
+    (error) => {
+      assert.ok(error instanceof WorkbuddyRateLimitError)
+      assert.equal(error.status, 429)
+      assert.equal(error.message, WORKBUDDY_LIMIT)
+      return true
+    },
+  )
 })
 
 test("stream priming rejects empty bodies, times out, and preserves client cancellation", async () => {

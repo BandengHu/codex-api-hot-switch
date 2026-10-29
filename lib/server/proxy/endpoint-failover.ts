@@ -8,6 +8,12 @@ import {
   recordProviderEndpointFailure,
   recordProviderEndpointSuccess,
 } from "@/lib/server/provider-endpoint-runtime"
+import {
+  WorkbuddyRateLimitError,
+  workbuddyRateLimitFromPayload,
+  workbuddyRateLimitFromText,
+} from "@/lib/server/workbuddy/rate-limit"
+import { isWorkbuddyProvider } from "@/lib/workbuddy-provider"
 import type { ProxyTarget } from "./common"
 import { fetchWithHtmlResponseRetry } from "./html-response-retry"
 import { fetchWithModelCapacityRetry } from "./model-capacity-retry"
@@ -78,6 +84,7 @@ export async function fetchWithEndpointFailover(params: {
   capacityRetryEnabled: boolean
 }): Promise<EndpointFailoverResult> {
   const rootProvider = params.target.provider
+  const detectWorkbuddyRateLimit = isWorkbuddyProvider(rootProvider)
   const endpoints = await availableProviderEndpoints(rootProvider)
   if (endpoints.length === 0) {
     return {
@@ -168,6 +175,7 @@ export async function fetchWithEndpointFailover(params: {
         response = await prepareUpstreamResponse(response, params.requestIsStream, {
           requestSignal: params.requestSignal,
           timeoutMs: target.provider.timeoutMs,
+          detectWorkbuddyRateLimit,
         })
       }
 
@@ -182,7 +190,15 @@ export async function fetchWithEndpointFailover(params: {
         }
       }
 
-      const { classification } = await classifyResponse(response)
+      const { payload, classification } = await classifyResponse(response)
+      if (detectWorkbuddyRateLimit) {
+        const rateLimit =
+          workbuddyRateLimitFromPayload(payload) ??
+          (typeof payload === "string"
+            ? workbuddyRateLimitFromText(payload)
+            : null)
+        if (rateLimit) throw new WorkbuddyRateLimitError(rateLimit)
+      }
       lastFailureMessage = classification.message
       lastFailureStatus = classification.status || response.status
       if (classification.kind === "terminal") {
@@ -212,6 +228,7 @@ export async function fetchWithEndpointFailover(params: {
       failoverReasons.push(`${endpoint.name}：${classification.message}`)
     } catch (error) {
       if (isClientCancellation(error, params.requestSignal)) throw error
+      if (error instanceof WorkbuddyRateLimitError) throw error
       const classification =
         error instanceof EndpointAttemptError
           ? error

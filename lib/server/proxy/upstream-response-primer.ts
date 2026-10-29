@@ -5,6 +5,11 @@ import {
   EndpointAttemptError,
   type EndpointFailureClassification,
 } from "@/lib/server/provider-endpoint-runtime"
+import {
+  WorkbuddyRateLimitError,
+  workbuddyRateLimitFromPayload,
+  workbuddyRateLimitFromText,
+} from "@/lib/server/workbuddy/rate-limit"
 import { readResponseBytesWithLimit } from "./body-size-limit"
 
 type AnyRecord = Record<string, unknown>
@@ -171,7 +176,34 @@ function parseSseFrame(raw: string) {
   }
 }
 
-function frameIsSemantic(frame: ReturnType<typeof parseSseFrame>) {
+function throwIfWorkbuddyRateLimit(
+  frame: ReturnType<typeof parseSseFrame>,
+  enabled: boolean,
+) {
+  if (!enabled) return
+  const rateLimit =
+    workbuddyRateLimitFromPayload(frame.payload) ??
+    workbuddyRateLimitFromText(frame.dataText)
+  if (rateLimit) throw new WorkbuddyRateLimitError(rateLimit)
+}
+
+function throwIfBufferedWorkbuddyRateLimit(text: string) {
+  const direct = workbuddyRateLimitFromText(text)
+  if (direct) throw new WorkbuddyRateLimitError(direct)
+
+  const frames = text.includes("data:")
+    ? text.split(/\r?\n\r?\n/)
+    : [text]
+  for (const rawFrame of frames) {
+    throwIfWorkbuddyRateLimit(parseSseFrame(rawFrame), true)
+  }
+}
+
+function frameIsSemantic(
+  frame: ReturnType<typeof parseSseFrame>,
+  detectWorkbuddyRateLimit = false,
+) {
+  throwIfWorkbuddyRateLimit(frame, detectWorkbuddyRateLimit)
   const failure = semanticFailureClassification({
     payload: frame.payload,
     event: frame.event,
@@ -272,7 +304,10 @@ function splitSseFrame(buffer: string) {
   return { index: lf, separatorLength: 2 }
 }
 
-function inspectJsonDocument(text: string) {
+function inspectJsonDocument(
+  text: string,
+  detectWorkbuddyRateLimit = false,
+) {
   const trimmed = text.trim()
   if (!trimmed || !["{", "["].includes(trimmed[0])) return false
   let payload: unknown
@@ -280,6 +315,10 @@ function inspectJsonDocument(text: string) {
     payload = JSON.parse(trimmed)
   } catch {
     return false
+  }
+  if (detectWorkbuddyRateLimit) {
+    const rateLimit = workbuddyRateLimitFromPayload(payload)
+    if (rateLimit) throw new WorkbuddyRateLimitError(rateLimit)
   }
   const failure = semanticFailureClassification({ payload, text: trimmed })
   if (failure) throw new EndpointAttemptError(failure)
@@ -321,12 +360,18 @@ function replayResponse(
   })
 }
 
-async function prepareBufferedResponse(response: Response) {
+async function prepareBufferedResponse(
+  response: Response,
+  detectWorkbuddyRateLimit = false,
+) {
   if (!response.body) return response
   try {
     const body = await readResponseBytesWithLimit(response)
     const text = new TextDecoder().decode(body)
-    if (text.trim()) inspectJsonDocument(text)
+    if (text.trim()) {
+      inspectJsonDocument(text, detectWorkbuddyRateLimit)
+      if (detectWorkbuddyRateLimit) throwIfBufferedWorkbuddyRateLimit(text)
+    }
     return new Response(body, {
       status: response.status,
       statusText: response.statusText,
@@ -347,10 +392,13 @@ export async function prepareUpstreamResponse(
   options: {
     requestSignal?: AbortSignal
     timeoutMs?: number
+    detectWorkbuddyRateLimit?: boolean
   } = {},
 ): Promise<Response> {
   if (!response.ok) return response
-  if (!requestIsStream) return prepareBufferedResponse(response)
+  if (!requestIsStream) {
+    return prepareBufferedResponse(response, options.detectWorkbuddyRateLimit)
+  }
   if (!response.body) {
     throw new EndpointAttemptError({
       kind: "transient",
@@ -401,7 +449,7 @@ export async function prepareUpstreamResponse(
           frameBuffer += tail
           inspectedText += tail
         }
-        if (inspectJsonDocument(inspectedText)) {
+        if (inspectJsonDocument(inspectedText, options.detectWorkbuddyRateLimit)) {
           semantic = true
           break
         }
@@ -409,16 +457,28 @@ export async function prepareUpstreamResponse(
         while (boundary) {
           const rawFrame = frameBuffer.slice(0, boundary.index)
           frameBuffer = frameBuffer.slice(boundary.index + boundary.separatorLength)
-          if (frameIsSemantic(parseSseFrame(rawFrame))) {
+          if (
+            frameIsSemantic(
+              parseSseFrame(rawFrame),
+              options.detectWorkbuddyRateLimit,
+            )
+          ) {
             semantic = true
             break
           }
           boundary = splitSseFrame(frameBuffer)
         }
         if (!semantic && frameBuffer.trim()) {
-          semantic = frameIsSemantic(parseSseFrame(frameBuffer.trim()))
+          semantic = frameIsSemantic(
+            parseSseFrame(frameBuffer.trim()),
+            options.detectWorkbuddyRateLimit,
+          )
         }
         if (!semantic) {
+          const rateLimit = options.detectWorkbuddyRateLimit
+            ? workbuddyRateLimitFromText(inspectedText)
+            : null
+          if (rateLimit) throw new WorkbuddyRateLimitError(rateLimit)
           throw new EndpointAttemptError({
             kind: "transient",
             status: 502,
@@ -435,7 +495,7 @@ export async function prepareUpstreamResponse(
       inspectedText += text
       frameBuffer += text
 
-      if (inspectJsonDocument(inspectedText)) {
+      if (inspectJsonDocument(inspectedText, options.detectWorkbuddyRateLimit)) {
         semantic = true
         break
       }
@@ -444,7 +504,12 @@ export async function prepareUpstreamResponse(
       while (boundary) {
         const rawFrame = frameBuffer.slice(0, boundary.index)
         frameBuffer = frameBuffer.slice(boundary.index + boundary.separatorLength)
-        if (frameIsSemantic(parseSseFrame(rawFrame))) {
+        if (
+          frameIsSemantic(
+            parseSseFrame(rawFrame),
+            options.detectWorkbuddyRateLimit,
+          )
+        ) {
           semantic = true
           break
         }

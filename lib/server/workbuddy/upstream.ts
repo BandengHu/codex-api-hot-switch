@@ -13,12 +13,16 @@ import {
   workbuddyCatalogModels,
   workbuddyRealmOfProvider,
   workbuddySiteUrl,
+  type WorkbuddyRealm,
 } from "@/lib/workbuddy-provider"
 import { getSystemProxyDispatcher } from "@/lib/server/proxy/system-proxy"
 import { fetchProvider } from "@/lib/server/proxy/provider-fetch"
 import type { WorkbuddyAccount } from "./account"
-import { readActiveGlobalPoolAccount } from "./global-pool-store"
-import { readActivePoolAccount } from "./pool-account"
+import {
+  readActiveGlobalUid,
+  readGlobalPoolAccount,
+} from "./global-pool-store"
+import { readActiveUid, readPoolAccount } from "./task-pool-store"
 
 const MAX_CATALOG_BYTES = 2 * 1024 * 1024
 const CATALOG_TIMEOUT_MS = 15_000
@@ -26,20 +30,85 @@ const CATALOG_TIMEOUT_MS = 15_000
 /**
  * 把当前生效账号的登录态写进供应商：token 落到每个端点，账号相关的头补齐。
  *
- * 生效账号 = 号池里被手动选中的那个。**按 realm 取池**：
+ * 生效账号优先使用号池里的显式选择；选择不可用或被限频时，按池顺序取下一个
+ * 可用账号。**按 realm 取池**：
  * - `cn`（国内站 www.codebuddy.cn / copilot.tencent.com）→ 国内站号池，默认本机桌面端登录态；
  * - `global`（国际站 www.workbuddy.ai）→ 国际版号池，默认池里第一个可用账号。
  *
- * 两个池都**不做自动轮转**，换号只发生在用户点「设为转发账号」时，所以这里每次请求
- * 现读一次，切完立刻生效。
+ * 每次请求都现读一次，用户手动切号或上游限频自动切号后都会立刻生效。
  *
  * 非 WorkBuddy 供应商原样返回——这批头只有它认。
  */
 export async function withWorkbuddyCredentials(provider: Provider): Promise<Provider> {
   if (!isWorkbuddyProvider(provider)) return provider
+  const credential = await readWorkbuddyCredential(provider)
+  return {
+    ...provider,
+    endpoints: provider.endpoints.map((endpoint) => ({
+      ...endpoint,
+      apiKey: credential.account.accessToken,
+    })),
+    headers: withAccountHeaders(provider.headers, credential.account, provider),
+  }
+}
+
+export async function withWorkbuddyTargetCredentials<
+  T extends {
+    provider: ResolvedProvider
+    workbuddyAccount?: { uid: string; realm: WorkbuddyRealm }
+  },
+>(
+  target: T,
+  accountUid?: string,
+): Promise<T> {
+  if (!isWorkbuddyProvider(target.provider)) return target
+  const credential = await readWorkbuddyCredential(target.provider, accountUid)
+  const injected = injectWorkbuddyCredential(target.provider, credential.account)
+  const endpoint =
+    injected.endpoints.find(
+      (candidate) => candidate.id === target.provider.activeEndpointId,
+    ) ?? primaryProviderEndpoint(injected)
+  return {
+    ...target,
+    provider: resolveProviderEndpoint(injected, endpoint),
+    workbuddyAccount: {
+      uid: credential.uid,
+      realm: credential.realm,
+    },
+  }
+}
+
+interface WorkbuddyCredential {
+  account: WorkbuddyAccount
+  uid: string
+  realm: WorkbuddyRealm
+}
+
+async function readWorkbuddyCredential(
+  provider: Provider,
+  requestedUid?: string,
+): Promise<WorkbuddyCredential> {
   const realm = workbuddyRealmOfProvider(provider)
-  const account =
-    realm === "global" ? await readActiveGlobalPoolAccount() : await readActivePoolAccount()
+  if (realm === "global") {
+    const uid = requestedUid?.trim() || await readActiveGlobalUid()
+    return {
+      account: await readGlobalPoolAccount(uid),
+      uid,
+      realm,
+    }
+  }
+  const uid = requestedUid?.trim() || await readActiveUid()
+  return {
+    account: await readPoolAccount(uid),
+    uid,
+    realm,
+  }
+}
+
+function injectWorkbuddyCredential(
+  provider: Provider,
+  account: WorkbuddyAccount,
+): Provider {
   return {
     ...provider,
     endpoints: provider.endpoints.map((endpoint) => ({
@@ -48,18 +117,6 @@ export async function withWorkbuddyCredentials(provider: Provider): Promise<Prov
     })),
     headers: withAccountHeaders(provider.headers, account, provider),
   }
-}
-
-export async function withWorkbuddyTargetCredentials<T extends { provider: ResolvedProvider }>(
-  target: T,
-): Promise<T> {
-  if (!isWorkbuddyProvider(target.provider)) return target
-  const injected = await withWorkbuddyCredentials(target.provider)
-  const endpoint =
-    injected.endpoints.find(
-      (candidate) => candidate.id === target.provider.activeEndpointId,
-    ) ?? primaryProviderEndpoint(injected)
-  return { ...target, provider: resolveProviderEndpoint(injected, endpoint) }
 }
 
 /** 账号维度的头：桌面端按登录态带，用户的静态头列表里没有。 */
