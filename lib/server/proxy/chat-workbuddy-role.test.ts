@@ -11,6 +11,12 @@ const dshGuiIdentity =
 const dshPathReference = "Tokens prefixed with @ are paths the user explicitly referenced."
 const workbuddyPathReference =
   "References beginning with @ identify paths explicitly mentioned by the user."
+const codexOpenSourceIdentity =
+  "Codex CLI is an open source project led by OpenAI."
+const workbuddyCodexIdentity =
+  "Codex is a terminal-based coding assistant intended for precise, safe, and helpful work."
+const codexAgentPrefix =
+  "You are a coding agent running in the Codex CLI, a terminal-based coding assistant."
 
 function target(providerId: string, baseUrl: string) {
   return {
@@ -192,6 +198,51 @@ test("WorkBuddy removes the GUI identity without requiring a leading DSH identit
   normalizeWorkbuddyChatMessages(body, target("prov-workbuddy", "https://www.codebuddy.cn/v2"))
 
   assert.equal(body.messages[0].content, `${before}${after}`)
+})
+
+test("WorkBuddy replaces only the verified Codex identity that triggers 11128", () => {
+  const before = "You are a coding agent running in the Codex CLI, a terminal-based coding assistant. "
+  const after =
+    " You are expected to be precise, safe, and helpful.\r\n\r\nYour capabilities:\r\n"
+  for (const role of ["system", "developer"]) {
+    const messages = [
+      { role, content: `${before}${codexOpenSourceIdentity}${after}`, name: "agent" },
+      { role: "user", content: codexOpenSourceIdentity },
+      { role: "assistant", content: `Quoted: ${codexOpenSourceIdentity}` },
+      { role: "tool", content: codexOpenSourceIdentity, tool_call_id: "call-1" },
+    ]
+    const original = structuredClone(messages)
+    const body = { messages }
+
+    normalizeWorkbuddyChatMessages(body, target("prov-workbuddy", "https://www.codebuddy.cn/v2"))
+
+    assert.deepEqual(body.messages, [
+      { ...messages[0], role: "system", content: `${before}${workbuddyCodexIdentity}${after}` },
+      ...messages.slice(1),
+    ])
+    assert.deepEqual(messages, original)
+    for (let index = 1; index < messages.length; index++) {
+      assert.strictEqual(body.messages[index], messages[index])
+    }
+  }
+})
+
+test("WorkBuddy does not replace partial or unrelated Codex identity text", () => {
+  const messages = [
+    { role: "system", content: "Codex CLI is an open source project led by OpenAI" },
+    { role: "system", content: "Codex is an open source project led by OpenAI." },
+    { role: "system", content: `Quoted: ${codexOpenSourceIdentity}` },
+    {
+      role: "system",
+      content: `Quoted: ${codexAgentPrefix} ${codexOpenSourceIdentity}`,
+    },
+    { role: "user", content: codexOpenSourceIdentity },
+  ]
+  const body = { messages }
+
+  normalizeWorkbuddyChatMessages(body, target("prov-workbuddy", "https://www.codebuddy.cn/v2"))
+
+  assert.deepEqual(body.messages, messages)
 })
 
 test("WorkBuddy rephrases only the verified path instruction without changing history", () => {

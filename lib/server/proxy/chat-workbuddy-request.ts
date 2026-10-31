@@ -9,6 +9,12 @@ const DSH_GUI_IDENTITY =
 const DSH_PATH_REFERENCE = "Tokens prefixed with @ are paths the user explicitly referenced."
 const WORKBUDDY_PATH_REFERENCE =
   "References beginning with @ identify paths explicitly mentioned by the user."
+const CODEX_OPEN_SOURCE_IDENTITY =
+  "Codex CLI is an open source project led by OpenAI."
+const WORKBUDDY_CODEX_IDENTITY =
+  "Codex is a terminal-based coding assistant intended for precise, safe, and helpful work."
+const CODEX_AGENT_PREFIX =
+  "You are a coding agent running in the Codex CLI, a terminal-based coding assistant."
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value))
@@ -17,7 +23,15 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function normalizeDshInstructions(content: unknown): unknown {
   if (typeof content === "string") {
     const text = content.startsWith(DSH_IDENTITY) ? content.slice(DSH_IDENTITY.length) : content
-    return text
+    const identityOffset = CODEX_AGENT_PREFIX.length + 1
+    const hasCodexIdentity =
+      text.startsWith(CODEX_AGENT_PREFIX) &&
+      text.slice(identityOffset, identityOffset + CODEX_OPEN_SOURCE_IDENTITY.length) ===
+        CODEX_OPEN_SOURCE_IDENTITY
+    const normalized = hasCodexIdentity
+      ? `${CODEX_AGENT_PREFIX} ${WORKBUDDY_CODEX_IDENTITY}${text.slice(identityOffset + CODEX_OPEN_SOURCE_IDENTITY.length)}`
+      : text
+    return normalized
       .replace(DSH_GUI_IDENTITY, "")
       .replace(DSH_PATH_REFERENCE, WORKBUDDY_PATH_REFERENCE)
   }
@@ -53,7 +67,7 @@ export function normalizeWorkbuddyChatMessages(
     const role = message.role.trim().toLowerCase()
     if (role !== "system" && role !== "developer") return message
 
-    // Apply only the exact DSH instruction changes verified against WorkBuddy's 11128 rejection.
+    // Apply only instruction changes verified against WorkBuddy's 11128 rejection.
     const content = normalizeDshInstructions(message.content)
     const nextRole = role === "developer" ? "system" : message.role
     if (content === message.content && nextRole === message.role) return message
