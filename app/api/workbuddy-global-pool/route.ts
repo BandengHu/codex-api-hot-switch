@@ -1,3 +1,4 @@
+import { authRequiredResponse, isAuthorized } from "@/lib/server/access-guard"
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError, readJsonBody } from "@/lib/server/http"
 import {
@@ -34,7 +35,8 @@ interface GlobalPoolEntryWithBalance {
   balanceError?: string
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  if (!(await isAuthorized(request))) return authRequiredResponse()
   try {
     await syncGlobalPoolFromDisk()
     const entries = await listGlobalPoolEntries()
@@ -80,6 +82,7 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  if (!(await isAuthorized(request))) return authRequiredResponse()
   try {
     const body = await readJsonBody<{ credentials?: string }>(request)
     if (!body.credentials?.trim()) return jsonError("缺少凭据内容", 400)

@@ -1,3 +1,4 @@
+import { authRequiredResponse, isAuthorized } from "@/lib/server/access-guard"
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError } from "@/lib/server/http"
 import {
@@ -9,7 +10,8 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 /** 发起国际版浏览器授权登录：返回授权 URL 与 state。 */
-export async function POST() {
+export async function POST(request: Request) {
+  if (!(await isAuthorized(request))) return authRequiredResponse()
   try {
     return NextResponse.json(await beginGlobalPoolLogin())
   } catch (error) {
@@ -19,6 +21,7 @@ export async function POST() {
 
 /** 轮询登录态：未完成 `{done:false}`；完成即已写入国际版号池。 */
 export async function GET(request: Request) {
+  if (!(await isAuthorized(request))) return authRequiredResponse()
   const state = new URL(request.url).searchParams.get("state")?.trim()
   if (!state) return jsonError("缺少 state", 400)
   try {

@@ -1,3 +1,4 @@
+import { authRequiredResponse, isAuthorized } from "@/lib/server/access-guard"
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError, readJsonBody } from "@/lib/server/http"
 import {
@@ -25,7 +26,8 @@ type RouteContext = { params: Promise<{ uid: string }> }
  */
 const AUTOMATE_ALL_TIMEOUT_MS =5 *60 *1000
 
-export async function GET(_request: Request, context: RouteContext) {
+export async function GET(request: Request, context: RouteContext) {
+  if (!(await isAuthorized(request))) return authRequiredResponse()
  const { uid } = await context.params
  try {
  const account = await readPoolAccount(uid)
@@ -37,6 +39,7 @@ export async function GET(_request: Request, context: RouteContext) {
 }
 
 export async function POST(request: Request, context: RouteContext) {
+  if (!(await isAuthorized(request))) return authRequiredResponse()
  const { uid } = await context.params
  try {
  const body = await readJsonBody<{ action?: string; taskCode?: string }>(request)

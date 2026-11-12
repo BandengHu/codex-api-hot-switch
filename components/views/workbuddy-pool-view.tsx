@@ -81,9 +81,9 @@ export function WorkbuddyPoolView() {
  const [entries, setEntries] = useState<WorkbuddyPoolEntryView[]>([])
  const [actions, setActions] = useState<Record<string, WorkbuddyTaskAction>>({})
  /**当前真正的转发账号（后端解出的值，切号只改它）。 */
- const [activeUid, setActiveUid] = useState("local")
+ const [activeUid, setActiveUid] = useState("")
  /**下拉框里正在查看的账号：只影响本页展示，不改转发出口。 */
- const [viewUid, setViewUid] = useState("local")
+ const [viewUid, setViewUid] = useState("")
  const [tasks, setTasks] = useState<WorkbuddyPoolGrowthTask[]>([])
  const [dailySteps, setDailySteps] = useState<WorkbuddyDailyStep[] | null>(null)
  const [busy, setBusy] = useState<BusyAction | null>("refresh")
@@ -100,6 +100,11 @@ export function WorkbuddyPoolView() {
  const snapshot = await fetchPoolEntries()
  setEntries(snapshot.entries)
  setActiveUid(snapshot.activeUid)
+ setViewUid((current) =>
+ snapshot.entries.some((entry) => entry.uid === current && !entry.disabled)
+ ? current
+ : snapshot.activeUid || snapshot.entries.find((entry) => !entry.disabled)?.uid || "",
+ )
  } catch (error) {
  toast.error(error instanceof Error ? error.message : String(error))
  } finally {
@@ -131,6 +136,10 @@ export function WorkbuddyPoolView() {
  }, [])
 
  useEffect(() => {
+ if (!viewUid) {
+ setTasks([])
+ return
+ }
  void loadTasks(viewUid)
  }, [loadTasks, viewUid])
 
@@ -313,7 +322,7 @@ export function WorkbuddyPoolView() {
  <Card>
  <CardHeader>
  <CardTitle>账号列表</CardTitle>
- <CardDescription>本机账号始终存在；导入账号以文件形式保存在号池目录</CardDescription>
+ <CardDescription>本机模式始终显示本机账号；服务器模式只显示导入账号</CardDescription>
  </CardHeader>
  <CardContent>
  <Table>
@@ -426,7 +435,7 @@ export function WorkbuddyPoolView() {
   <CardHeader>
   <CardTitle className="text-base">账号任务</CardTitle>
   <CardDescription>
-  {activeEntry ? `当前转发：${activeEntry.nickname || activeEntry.uid}` : "当前转发：本机账号"}
+ {activeEntry ? `当前转发：${activeEntry.nickname || activeEntry.uid}` : "当前转发：号池暂无可用账号"}
   </CardDescription>
   <CardAction>
   <div className="flex flex-wrap items-center gap-2">

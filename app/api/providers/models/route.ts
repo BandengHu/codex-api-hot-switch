@@ -1,3 +1,4 @@
+import { authRequiredResponse, isAuthorized } from "@/lib/server/access-guard"
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError, readJsonBody } from "@/lib/server/http"
 import { discoverProviderModels } from "@/lib/server/provider-model-discovery"
@@ -7,6 +8,7 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function POST(request: Request) {
+  if (!(await isAuthorized(request))) return authRequiredResponse()
   try {
     const { provider } = await readJsonBody<{ provider: Provider }>(request)
     if (!provider) return jsonError("缺少 provider", 400)

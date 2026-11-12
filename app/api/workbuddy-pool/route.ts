@@ -1,3 +1,4 @@
+import { authRequiredResponse, isAuthorized } from "@/lib/server/access-guard"
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError, readJsonBody } from "@/lib/server/http"
 import {
@@ -32,7 +33,8 @@ interface PoolEntryWithBalance {
  }
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  if (!(await isAuthorized(request))) return authRequiredResponse()
  try {
  await syncPoolFromDisk()
  const entries = await listPoolEntries()
@@ -79,6 +81,7 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  if (!(await isAuthorized(request))) return authRequiredResponse()
  try {
  const body = await readJsonBody<{ credentials?: string; activeUid?: string }>(request)
  if (body.activeUid !== undefined) {

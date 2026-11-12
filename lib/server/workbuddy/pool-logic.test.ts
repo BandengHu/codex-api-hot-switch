@@ -162,11 +162,24 @@ function poolState(active?: string, entries: Array<Partial<WorkbuddyPoolState["e
  }
 }
 
-test("转发账号：没选过 / 选了本机 → 一律回落到 local", () => {
+test("转发账号：本机模式没选过 / 选了本机 → local", () => {
  assert.equal(activeUidOf(poolState()), LOCAL_POOL_UID)
  assert.equal(activeUidOf(poolState("")), LOCAL_POOL_UID)
  assert.equal(activeUidOf(poolState("  ")), LOCAL_POOL_UID)
  assert.equal(activeUidOf(poolState(LOCAL_POOL_UID)), LOCAL_POOL_UID)
+})
+
+test("服务器模式：不把 local 当兜底，全部导入账号不可用时返回空", () => {
+ const previous = process.env.CODEX_HOT_SWITCH_LOCAL_WORKBUDDY
+ process.env.CODEX_HOT_SWITCH_LOCAL_WORKBUDDY = "0"
+ try {
+ assert.equal(activeUidOf(poolState()), "")
+ assert.equal(activeUidOf(poolState("", [{ uid: "acc-1" }])), "acc-1")
+ assert.equal(activeUidOf(poolState("gone", [{ uid: "acc-1", disabled: true }])), "")
+ } finally {
+ if (previous === undefined) delete process.env.CODEX_HOT_SWITCH_LOCAL_WORKBUDDY
+ else process.env.CODEX_HOT_SWITCH_LOCAL_WORKBUDDY = previous
+ }
 })
 
 test("转发账号：选中池内可用账号时生效（这是唯一的换号入口）", () => {
