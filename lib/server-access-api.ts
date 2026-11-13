@@ -19,6 +19,11 @@ export interface RotatedApiKey extends ServerAccessStatus {
   apiKey: string
 }
 
+export interface CurrentApiKey {
+  ok: true
+  apiKey: string
+}
+
 async function parseResponse<T>(response: Response): Promise<T> {
   const body = (await response.json().catch(() => null)) as
     | { error?: { message?: string } | string; message?: string }
@@ -40,6 +45,18 @@ export async function fetchServerAccessStatus(): Promise<ServerAccessStatus> {
 export async function rotateServerApiKey(): Promise<RotatedApiKey> {
   return parseResponse<RotatedApiKey>(
     await fetch("/api/auth/rotate", { method: "POST" }),
+  )
+}
+
+/**
+ * 读取本账号当前 API Key。
+ *
+ * 后端对旧版只存哈希的账号会返回 409，这里原样抛错，
+ * 由界面提示“需更换一次”，而不是伪造一个 Key。
+ */
+export async function fetchCurrentApiKey(): Promise<CurrentApiKey> {
+  return parseResponse<CurrentApiKey>(
+    await fetch("/api/auth/key", { cache: "no-store" }),
   )
 }
 

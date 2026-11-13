@@ -16,8 +16,15 @@ const {
   resetAccountsCacheForTests,
   updateAccount,
 } = require("./accounts-store") as typeof import("./accounts-store")
-const { ensureAccountAuth, hashPassword, passwordSalt, verifyAccountApiKey, verifyPassword } =
-  require("./account-auth") as typeof import("./account-auth")
+const {
+  ensureAccountAuth,
+  hashPassword,
+  passwordSalt,
+  readAccountApiKey,
+  rotateAccountApiKey,
+  verifyAccountApiKey,
+  verifyPassword,
+} = require("./account-auth") as typeof import("./account-auth")
 const { accountFromApiKey } = require("./access-guard") as typeof import("./access-guard")
 const { runWithAccountDataDir } = require("./data-root") as typeof import("./data-root")
 const { getSnapshot, saveSnapshot } =
@@ -83,6 +90,21 @@ describe("账号隔离", () => {
 
     const missing = await accountFromApiKey(new Headers())
     assert.equal(missing, null)
+  })
+
+  it("API Key 可回显，且换 Key 后旧值立即失效", async () => {
+    assert.equal(await readAccountApiKey(alice.dataDir), alice.apiKey)
+    assert.equal(await readAccountApiKey(bob.dataDir), bob.apiKey)
+
+    const rotated = await rotateAccountApiKey(alice.dataDir)
+    assert.notEqual(rotated, alice.apiKey)
+    assert.equal(await readAccountApiKey(alice.dataDir), rotated)
+    assert.equal(await verifyAccountApiKey(alice.dataDir, alice.apiKey), false)
+    assert.equal(await verifyAccountApiKey(alice.dataDir, rotated), true)
+    //回显只读本账号目录，不会串到别人。
+    assert.equal(await readAccountApiKey(bob.dataDir), bob.apiKey)
+
+    alice.apiKey = rotated
   })
 
   it("两个账号的配置互相不可见", async () => {

@@ -48,7 +48,7 @@ import { toast } from "sonner"
 
 const REASONING_OPTIONS: ReasoningEffort[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "auto"]
 
-export function SettingsView() {
+export function SettingsView({ showServerAccess = false }: { showServerAccess?: boolean }) {
   const { settings, providers, modelsByProvider, updateSettings, replaceSnapshot } =
     useConsole()
   const [draft, setDraft] = useState(settings)
@@ -170,6 +170,8 @@ export function SettingsView() {
 
   return (
     <div className="flex flex-col gap-5">
+      {showServerAccess ? <ServerAccessCard /> : null}
+
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold">设置</h1>
@@ -652,8 +654,6 @@ export function SettingsView() {
           </FieldGroup>
         </CardContent>
       </Card>
-
-      <ServerAccessCard />
 
       <div className="flex justify-end">
         <Button onClick={handleSave} disabled={!valid}>
