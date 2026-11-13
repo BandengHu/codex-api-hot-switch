@@ -7,23 +7,28 @@ import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { useConsole } from "@/lib/console-store"
+import { formatPublicEndpoint } from "@/lib/public-endpoint"
 import { REASONING_LABELS } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 
-export function Topbar() {
+export function Topbar({ publicBaseUrl = "" }: { publicBaseUrl?: string }) {
   const { runtime, getProvider, getModel, settings, saving, error } = useConsole()
   const [copied, setCopied] = useState(false)
 
   const provider = getProvider(runtime.activeProviderId)
   const model = getModel(runtime.activeModelId)
   const isActive = runtime.takeover === "active"
-  const endpoint = `http://${settings.listenAddress}:${settings.port}/v1`
+  const endpoint = formatPublicEndpoint({
+    publicBaseUrl,
+    listenAddress: settings.listenAddress,
+    port: settings.port,
+  })
 
   function copyEndpoint() {
     navigator.clipboard.writeText(endpoint)
     setCopied(true)
-    toast.success("已复制本地中转地址")
+    toast.success(publicBaseUrl ? "已复制中转地址" : "已复制本地中转地址")
     setTimeout(() => setCopied(false), 1500)
   }
 
