@@ -37,7 +37,7 @@ export async function importGlobalPoolAccount(credentials: string) {
 
 export async function globalPoolAccountAction(
   uid: string,
-  action: "disable" | "enable" | "remove" | "balance" | "active",
+  action: "disable" | "enable" | "unban" | "remove" | "balance" | "active",
 ): Promise<{ ok: boolean; balance?: WorkbuddyGlobalBalance; activeUid?: string }> {
   return parseResponse(
     await fetch(`/api/workbuddy-global-pool/${encodeURIComponent(uid)}`, {

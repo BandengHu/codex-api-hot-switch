@@ -4,9 +4,11 @@ import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/pro
 import { join } from "node:path"
 import { hotSwitchDataDir } from "@/lib/server/state-store"
 import type { WorkbuddyAccount } from "./account"
+import type { WorkbuddyAccountBan } from "./account-ban"
 import { parseGlobalCredential } from "./global-account"
 import { isSafeGlobalUid } from "./global-oauth"
 import {
+  accountBanOf,
   availableUidOf,
   nextAvailableUidOf,
   preferredRateLimitOf,
@@ -46,6 +48,8 @@ export interface GlobalPoolState {
   activeUid?: string
   /** 上游账号级限频冻结，key 为 uid，到期后自动恢复。 */
   rateLimits?: Record<string, WorkbuddyAccountRateLimit>
+  /** 上游返回 11140 后持久封禁，只能由操作者手动解除。 */
+  accountBans?: Record<string, WorkbuddyAccountBan>
 }
 
 function emptyPoolState(): GlobalPoolState {
@@ -96,6 +100,11 @@ export async function readGlobalPoolState(): Promise<GlobalPoolState> {
       !Array.isArray(parsed.rateLimits)
         ? { rateLimits: parsed.rateLimits }
         : {}),
+      ...(parsed.accountBans &&
+      typeof parsed.accountBans === "object" &&
+      !Array.isArray(parsed.accountBans)
+        ? { accountBans: parsed.accountBans }
+        : {}),
     }
   } catch {
     return emptyPoolState()
@@ -118,8 +127,8 @@ export async function listGlobalPoolEntries(): Promise<GlobalPoolEntry[]> {
  * 解出国际版号池**真正可用**的生效 uid。
  *
  * 国际站没有「本机账号」这一档，所以回落规则与国内站不同：
- * 1. 显式选中且账号存在、未禁用、未限频 → 用它；
- * 2. 否则池里第一个未禁用、未限频账号；
+ * 1. 显式选中且账号存在、未禁用、未封禁、未限频 → 用它；
+ * 2. 否则池里第一个未禁用、未封禁、未限频账号；
  * 3. 池里没有可用账号 → 抛错（转发链路会把这个原因原样抛给用户）。
  *
  * 代理链路每次请求都会调用，所以这里只做纯计算，不做 IO。
@@ -173,6 +182,9 @@ export async function setActiveGlobalPoolAccount(uid: string) {
   if (target) {
     const entry = state.entries.find((candidate) => candidate.uid === target)
     if (!entry) throw new Error(`国际版号池里没有 uid=${target} 的账号`)
+    if (accountBanOf(state, target)) {
+      throw new Error(`账号 ${entry.nickname || target} 已被上游封禁，请先解除封禁`)
+    }
     if (entry.disabled) throw new Error(`账号 ${entry.nickname || target} 已禁用，请先启用再切换`)
     state.activeUid = target
   } else {
@@ -215,6 +227,36 @@ export async function freezeGlobalPoolAccount(
   })
 }
 
+/** 持久封禁国际版账号；不自动解除，也不尝试同池其他账号。 */
+export async function banGlobalPoolAccount(
+  uid: string,
+  ban: WorkbuddyAccountBan,
+) {
+  return enqueueMutation(async () => {
+    const state = await readGlobalPoolState()
+    state.accountBans = {
+      ...(state.accountBans ?? {}),
+      [uid]: ban,
+    }
+    if (state.activeUid === uid) delete state.activeUid
+    await writeGlobalPoolState(state)
+  })
+}
+
+export async function unbanGlobalPoolAccount(uid: string) {
+  return enqueueMutation(async () => {
+    const state = await readGlobalPoolState()
+    const wasBanned = Boolean(state.accountBans?.[uid])
+    if (state.accountBans) delete state.accountBans[uid]
+    const entry = state.entries.find((candidate) => candidate.uid === uid)
+    if (!entry) throw new Error(`国际版号池里没有 uid=${uid} 的账号`)
+    entry.disabled = false
+    if (!wasBanned) return false
+    await writeGlobalPoolState(state)
+    return true
+  })
+}
+
 /**
  * 导入一段凭据文本到国际版号池。
  *
@@ -254,6 +296,7 @@ export async function removeGlobalAccount(uid: string) {
   state.entries = state.entries.filter((entry) => entry.uid !== uid)
   if (state.entries.length === before) return
   if (state.rateLimits) delete state.rateLimits[uid]
+  if (state.accountBans) delete state.accountBans[uid]
   // 删掉的正是当前生效账号时清掉标记，回落到池里第一个可用账号。
   if (state.activeUid === uid) delete state.activeUid
   await writeGlobalPoolState(state)
@@ -282,6 +325,10 @@ export async function setGlobalAccountDisabled(uid: string, disabled: boolean) {
  */
 export async function readGlobalPoolAccount(uid: string): Promise<WorkbuddyAccount> {
   const state = await readGlobalPoolState()
+  const ban = accountBanOf(state, uid)
+  if (ban) {
+    throw new Error(`账号已被上游封禁：${ban.message}`)
+  }
   const entry = state.entries.find((candidate) => candidate.uid === uid)
   if (!entry) throw new Error(`国际版号池里没有 uid=${uid} 的账号`)
   const filePath = entry.filePath ?? entryFilePath(uid)

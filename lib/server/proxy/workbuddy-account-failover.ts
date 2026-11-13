@@ -1,13 +1,24 @@
 import "server-only"
 
 import {
+  accountBanOf,
+  activeRateLimitOf,
+} from "@/lib/server/workbuddy/pool-selection"
+import {
+  banGlobalPoolAccount,
   freezeGlobalPoolAccount,
+  readGlobalPoolState,
 } from "@/lib/server/workbuddy/global-pool-store"
+import {
+  WorkbuddyAccountBanError,
+} from "@/lib/server/workbuddy/account-ban"
 import {
   WorkbuddyRateLimitError,
 } from "@/lib/server/workbuddy/rate-limit"
 import {
+  banPoolAccount,
   freezePoolAccount,
+  readPoolState,
 } from "@/lib/server/workbuddy/task-pool-store"
 import {
   withWorkbuddyTargetCredentials,
@@ -17,6 +28,29 @@ import type {
 } from "./endpoint-failover"
 import { fetchWithEndpointFailover } from "./endpoint-failover"
 import type { ProxyTarget } from "./common"
+
+async function assertWorkbuddyAccountAvailable(
+  target: ProxyTarget,
+  attemptedUids: ReadonlySet<string>,
+) {
+  const account = target.workbuddyAccount
+  if (!account || attemptedUids.has(account.uid)) return
+  const state =
+    account.realm === "global"
+      ? await readGlobalPoolState()
+      : await readPoolState()
+  const ban = accountBanOf(state, account.uid)
+  if (ban) {
+    throw new WorkbuddyAccountBanError(
+      { code: ban.code, message: ban.message },
+      new Date(ban.detectedAt),
+    )
+  }
+  const rateLimit = activeRateLimitOf(state, account.uid)
+  if (rateLimit) {
+    throw new WorkbuddyRateLimitError(rateLimit)
+  }
+}
 
 /**
  * WorkBuddy 账号层轮换：冻结刚返回精确限频的账号，用下一个可用账号重试。
@@ -35,6 +69,7 @@ export async function fetchWithWorkbuddyAccountFailover(params: {
 }): Promise<EndpointFailoverResult> {
   let target = params.target
   const attemptedUids = new Set(params.attemptedUids ?? [])
+  await assertWorkbuddyAccountAvailable(target, attemptedUids)
 
   while (true) {
     try {
@@ -43,6 +78,17 @@ export async function fetchWithWorkbuddyAccountFailover(params: {
         target,
       })
     } catch (error) {
+      if (error instanceof WorkbuddyAccountBanError) {
+        const account = target.workbuddyAccount
+        if (account) {
+          if (account.realm === "global") {
+            await banGlobalPoolAccount(account.uid, error.ban)
+          } else {
+            await banPoolAccount(account.uid, error.ban)
+          }
+        }
+        throw error
+      }
       if (!(error instanceof WorkbuddyRateLimitError)) throw error
       const account = target.workbuddyAccount
       if (!account) throw error
@@ -58,6 +104,7 @@ export async function fetchWithWorkbuddyAccountFailover(params: {
       params.attemptedUids?.push(account.uid)
       delete target.attemptedEndpointIds
       delete target.failoverReason
+      await assertWorkbuddyAccountAvailable(target, attemptedUids)
     }
   }
 }

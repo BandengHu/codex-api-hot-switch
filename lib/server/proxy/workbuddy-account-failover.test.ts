@@ -8,6 +8,7 @@ import { resolvePrimaryProvider } from "@/lib/provider-endpoints"
 import type { Provider } from "@/lib/types"
 import { workbuddyGlobalProviderTemplate } from "@/lib/workbuddy-provider"
 import { WorkbuddyRateLimitError } from "@/lib/server/workbuddy/rate-limit"
+import { WorkbuddyAccountBanError } from "@/lib/server/workbuddy/account-ban"
 
 const MESSAGE =
   "您的使用量已超出频率限制，将在 2026-10-30 10:43:32 UTC+8 重置，您也可以切换其他模型继续使用。"
@@ -344,5 +345,112 @@ test("WorkBuddy account failover", async (t) => {
   } finally {
     setProviderFetchForTesting(previousFetch)
   }
+  })
+
+  await t.test("11140 persists the ban and never rotates to another account", async () => {
+    await rm(join(dataDir, "workbuddy-global-pool"), {
+      recursive: true,
+      force: true,
+    })
+    const prepared = await prepareAccounts("banned-account", "must-not-run")
+    let calls = 0
+    const previousFetch = setProviderFetchForTesting(async () => {
+      calls += 1
+      return Response.json(
+        {
+          code: 0,
+          data: {
+            error: {
+              code: 11140,
+              message: "账号存在异常行为，已被限制使用",
+            },
+          },
+        },
+        { status: 403 },
+      )
+    })
+
+    try {
+      await assert.rejects(
+        () =>
+          fetchWithWorkbuddyAccountFailover({
+            target: prepared.target,
+            path: "v1/chat/completions",
+            body: {
+              model: "glm-5.3",
+              stream: true,
+              messages: [{ role: "user", content: "hello" }],
+            },
+            requestIsStream: true,
+            capacityRetryEnabled: false,
+          }),
+        (error) => {
+          assert.ok(error instanceof WorkbuddyAccountBanError)
+          assert.equal(error.status, 403)
+          assert.equal(error.kind, "auth")
+          assert.equal(error.ban.code, 11140)
+          return true
+        },
+      )
+      assert.equal(calls, 1)
+      const pool = await readGlobalPoolState()
+      assert.equal(pool.activeUid, undefined)
+      assert.equal(pool.accountBans?.["banned-account"]?.code, 11140)
+      assert.equal(pool.accountBans?.["must-not-run"], undefined)
+    } finally {
+      setProviderFetchForTesting(previousFetch)
+    }
+  })
+
+  await t.test("a persisted ban stops before provider fetch with a typed 403", async () => {
+    await rm(join(dataDir, "workbuddy-global-pool"), {
+      recursive: true,
+      force: true,
+    })
+    const prepared = await prepareAccounts("restart-banned-account", "must-not-run")
+    const { banGlobalPoolAccount } = await import(
+      "@/lib/server/workbuddy/global-pool-store"
+    )
+    const detectedAt = new Date("2026-11-13T08:00:00.000Z")
+    await banGlobalPoolAccount("restart-banned-account", {
+      code: 11140,
+      message: "账号存在异常行为，已被限制使用",
+      detectedAt: detectedAt.toISOString(),
+    })
+    let calls = 0
+    const previousFetch = setProviderFetchForTesting(async () => {
+      calls += 1
+      return new Response(SUCCESS_STREAM, {
+        headers: { "content-type": "text/event-stream" },
+      })
+    })
+
+    try {
+      await assert.rejects(
+        () =>
+          fetchWithWorkbuddyAccountFailover({
+            target: prepared.target,
+            path: "v1/chat/completions",
+            body: {
+              model: "glm-5.3",
+              stream: true,
+              messages: [{ role: "user", content: "hello" }],
+            },
+            requestIsStream: true,
+            capacityRetryEnabled: false,
+          }),
+        (error) => {
+          assert.ok(error instanceof WorkbuddyAccountBanError)
+          assert.equal(error.status, 403)
+          assert.equal(error.kind, "auth")
+          assert.equal(error.ban.code, 11140)
+          assert.equal(error.ban.detectedAt, detectedAt.toISOString())
+          return true
+        },
+      )
+      assert.equal(calls, 0)
+    } finally {
+      setProviderFetchForTesting(previousFetch)
+    }
   })
 })

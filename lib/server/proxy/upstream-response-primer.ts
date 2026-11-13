@@ -6,6 +6,10 @@ import {
   type EndpointFailureClassification,
 } from "@/lib/server/provider-endpoint-runtime"
 import {
+  WorkbuddyAccountBanError,
+  workbuddyAccountBanFromPayload,
+} from "@/lib/server/workbuddy/account-ban"
+import {
   isWorkbuddyRateLimitPrefix,
   WorkbuddyRateLimitError,
   workbuddyRateLimitFromPayload,
@@ -182,13 +186,15 @@ function throwIfWorkbuddyRateLimit(
   enabled: boolean,
 ) {
   if (!enabled) return
+  const accountBan = workbuddyAccountBanFromPayload(403, frame.payload)
+  if (accountBan) throw accountBan
   const rateLimit =
     workbuddyRateLimitFromPayload(frame.payload) ??
     workbuddyRateLimitFromText(frame.dataText)
   if (rateLimit) throw new WorkbuddyRateLimitError(rateLimit)
 }
 
-function throwIfBufferedWorkbuddyRateLimit(text: string) {
+function throwIfBufferedWorkbuddyRejection(text: string) {
   const direct = workbuddyRateLimitFromText(text)
   if (direct) throw new WorkbuddyRateLimitError(direct)
 
@@ -196,7 +202,10 @@ function throwIfBufferedWorkbuddyRateLimit(text: string) {
     ? text.split(/\r?\n\r?\n/)
     : [text]
   for (const rawFrame of frames) {
-    throwIfWorkbuddyRateLimit(parseSseFrame(rawFrame), true)
+    const frame = parseSseFrame(rawFrame)
+    const accountBan = workbuddyAccountBanFromPayload(403, frame.payload)
+    if (accountBan) throw accountBan
+    throwIfWorkbuddyRateLimit(frame, true)
   }
 }
 
@@ -367,6 +376,8 @@ function inspectJsonDocument(
     return false
   }
   if (detectWorkbuddyRateLimit) {
+    const accountBan = workbuddyAccountBanFromPayload(403, payload)
+    if (accountBan) throw accountBan
     const rateLimit = workbuddyRateLimitFromPayload(payload)
     if (rateLimit) throw new WorkbuddyRateLimitError(rateLimit)
   }
@@ -420,7 +431,7 @@ async function prepareBufferedResponse(
     const text = new TextDecoder().decode(body)
     if (text.trim()) {
       inspectJsonDocument(text, detectWorkbuddyRateLimit)
-      if (detectWorkbuddyRateLimit) throwIfBufferedWorkbuddyRateLimit(text)
+      if (detectWorkbuddyRateLimit) throwIfBufferedWorkbuddyRejection(text)
     }
     return new Response(body, {
       status: response.status,

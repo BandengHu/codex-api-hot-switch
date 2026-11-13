@@ -8,6 +8,7 @@ import {
   Plus,
   Power,
   RefreshCw,
+  ShieldOff,
   Trash2,
   Zap,
 } from "lucide-react"
@@ -51,6 +52,20 @@ import { toast } from "sonner"
 import { WorkbuddyGlobalPoolLoginDialog } from "./workbuddy-global-pool-login-dialog"
 
 type BusyAction = "refresh" | "import" | { uid: string; action: string }
+
+function formatBanDetectedAt(value: string) {
+  const timestamp = Date.parse(value)
+  if (!Number.isFinite(timestamp)) return ""
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(timestamp)
+}
 
 /**
  * WorkBuddy **国际版**号池页面。
@@ -100,14 +115,24 @@ export function WorkbuddyGlobalPoolView() {
 
   async function handleAccountAction(
     uid: string,
-    action: "disable" | "enable" | "remove" | "balance" | "active",
+    action: "disable" | "enable" | "unban" | "remove" | "balance" | "active",
   ) {
     setBusy({ uid, action })
     try {
       await globalPoolAccountAction(uid, action)
       if (action === "balance") toast.success("余额已刷新")
       else if (action === "active") toast.success("已设为国际版转发账号")
-      else toast.success(action === "remove" ? "已移除" : action === "disable" ? "已禁用" : "已启用")
+      else {
+        toast.success(
+          action === "remove"
+            ? "已移除"
+            : action === "disable"
+              ? "已禁用"
+              : action === "unban"
+                ? "已解除封禁并启用"
+                : "已启用",
+        )
+      }
       await refresh()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error))
@@ -117,7 +142,10 @@ export function WorkbuddyGlobalPoolView() {
   }
 
   const totalRemain = entries.reduce((sum, entry) => sum + (entry.balance?.remain ?? 0), 0)
-  const availableCount = entries.filter((entry) => !entry.disabled).length
+  const availableCount = entries.filter(
+    (entry) => !entry.disabled && !entry.accountBan,
+  ).length
+  const bannedCount = entries.filter((entry) => Boolean(entry.accountBan)).length
 
   return (
     <div className="flex flex-col gap-5">
@@ -158,6 +186,14 @@ export function WorkbuddyGlobalPoolView() {
           <CardHeader className="pb-2">
             <CardDescription>可用账号</CardDescription>
             <CardTitle className="text-2xl">{availableCount}</CardTitle>
+          </CardHeader>
+        </Card>
+        <Card className="flex-1">
+          <CardHeader className="pb-2">
+            <CardDescription>已封禁账号</CardDescription>
+            <CardTitle className={bannedCount ? "text-2xl text-destructive" : "text-2xl"}>
+              {bannedCount}
+            </CardTitle>
           </CardHeader>
         </Card>
         <Card className="flex-1">
@@ -207,7 +243,23 @@ export function WorkbuddyGlobalPoolView() {
                   <TableCell>
                     <div className="flex flex-wrap items-center gap-1">
                       {entry.active ? <Badge>生效</Badge> : null}
-                      {entry.disabled ? (
+                      {entry.accountBan ? (
+                        <div className="flex max-w-72 flex-col gap-1">
+                          <div className="flex flex-wrap items-center gap-1">
+                            <Badge variant="destructive">已封禁</Badge>
+                            {entry.disabled ? <Badge variant="outline">已禁用</Badge> : null}
+                          </div>
+                          <span className="text-xs" title={entry.accountBan.message}>
+                            {entry.accountBan.message}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            上游代码 {entry.accountBan.code}
+                            {formatBanDetectedAt(entry.accountBan.detectedAt)
+                              ? ` · 检测于 ${formatBanDetectedAt(entry.accountBan.detectedAt)}`
+                              : ""}
+                          </span>
+                        </div>
+                      ) : entry.disabled ? (
                         <Badge variant="outline">已禁用</Badge>
                       ) : entry.balanceError ? (
                         <Badge variant="destructive">凭据异常</Badge>
@@ -222,7 +274,12 @@ export function WorkbuddyGlobalPoolView() {
                         variant="ghost"
                         size="sm"
                         onClick={() => void handleAccountAction(entry.uid, "active")}
-                        disabled={entry.disabled || entry.active || busy !== null}
+                        disabled={
+                          entry.disabled ||
+                          Boolean(entry.accountBan) ||
+                          entry.active ||
+                          busy !== null
+                        }
                       >
                         {busy && typeof busy === "object" && busy.uid === entry.uid && busy.action === "active" ? (
                           <Spinner className="size-4" />
@@ -235,7 +292,11 @@ export function WorkbuddyGlobalPoolView() {
                         variant="ghost"
                         size="sm"
                         onClick={() => void handleAccountAction(entry.uid, "balance")}
-                        disabled={entry.disabled || busy !== null}
+                        disabled={
+                          entry.disabled ||
+                          Boolean(entry.accountBan) ||
+                          busy !== null
+                        }
                       >
                         {busy && typeof busy === "object" && busy.uid === entry.uid && busy.action === "balance" ? (
                           <Spinner className="size-4" />
@@ -244,17 +305,32 @@ export function WorkbuddyGlobalPoolView() {
                         )}
                         余额
                       </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() =>
-                          void handleAccountAction(entry.uid, entry.disabled ? "enable" : "disable")
-                        }
-                        disabled={busy !== null}
-                      >
-                        <Power className="size-4" />
-                        {entry.disabled ? "启用" : "禁用"}
-                      </Button>
+                      {entry.accountBan ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => void handleAccountAction(entry.uid, "unban")}
+                          disabled={busy !== null}
+                        >
+                          <ShieldOff className="size-4" />
+                          解除封禁并启用
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() =>
+                            void handleAccountAction(
+                              entry.uid,
+                              entry.disabled ? "enable" : "disable",
+                            )
+                          }
+                          disabled={busy !== null}
+                        >
+                          <Power className="size-4" />
+                          {entry.disabled ? "启用" : "禁用"}
+                        </Button>
+                      )}
                       <Button
                         variant="ghost"
                         size="sm"

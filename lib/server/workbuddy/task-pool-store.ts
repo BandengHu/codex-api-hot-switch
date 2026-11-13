@@ -4,7 +4,9 @@ import { mkdir, readFile, rename, readdir, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { hotSwitchDataDir } from "@/lib/server/state-store"
 import { parseWorkbuddyAccount, type WorkbuddyAccount } from "./account"
+import type { WorkbuddyAccountBan } from "./account-ban"
 import {
+  accountBanOf,
   activeRateLimitOf,
   availableUidOf,
   nextAvailableUidOf,
@@ -48,6 +50,8 @@ export interface WorkbuddyPoolState {
  activeUid?: string
  /** 上游账号级限频冻结，key 为 uid，到期后自动恢复。 */
  rateLimits?: Record<string, WorkbuddyAccountRateLimit>
+ /** 上游返回 11140 后持久封禁，只能由操作者手动解除。 */
+ accountBans?: Record<string, WorkbuddyAccountBan>
 }
 
 function poolDir() {
@@ -90,6 +94,11 @@ export async function readPoolState(): Promise<WorkbuddyPoolState> {
    typeof parsed.rateLimits === "object" &&
    !Array.isArray(parsed.rateLimits)
      ? { rateLimits: parsed.rateLimits }
+     : {}),
+   ...(parsed.accountBans &&
+   typeof parsed.accountBans === "object" &&
+   !Array.isArray(parsed.accountBans)
+     ? { accountBans: parsed.accountBans }
      : {}),
  }
  } catch {
@@ -137,7 +146,7 @@ function orderedEntries(state: WorkbuddyPoolState): WorkbuddyPoolEntry[] {
  return local ? [local, ...state.entries] : state.entries
 }
 
-/** 当前真正可用于上游请求的 uid；全部禁用或限频时返回 undefined。 */
+/** 当前真正可用于上游请求的 uid；全部禁用、封禁或限频时返回 undefined。 */
 export function availableUidOfState(
  state: WorkbuddyPoolState,
  now = Date.now(),
@@ -145,7 +154,7 @@ export function availableUidOfState(
  return availableUidOf(state, orderedEntries(state), now)
 }
 
-/** 当前账号不可用后，按池顺序选择下一个未禁用、未限频账号。 */
+/** 当前账号不可用后，按池顺序选择下一个未禁用、未封禁、未限频账号。 */
 export function nextAvailableUidAfter(
  state: WorkbuddyPoolState,
  uid: string,
@@ -164,7 +173,7 @@ export function preferredRateLimitOfState(
 /**
  * 从池状态里解出**真正可用**的激活 uid。
  *
- * 显式选中的账号可用时优先；否则按池顺序找第一个未禁用、未限频的账号。
+ * 显式选中的账号可用时优先；否则按池顺序找第一个未禁用、未封禁、未限频的账号。
  * 这个函数只用于界面状态；真正转发前使用 `availableUidOfState` 再确认。
  */
 export function activeUidOf(state: WorkbuddyPoolState, now = Date.now()) {
@@ -172,7 +181,7 @@ export function activeUidOf(state: WorkbuddyPoolState, now = Date.now()) {
  return availableUidOf(state, entries, now) ?? ""
 }
 
-/** 读取真正可转发的 uid，跳过已禁用和仍在限频冻结期内的账号。 */
+/** 读取真正可转发的 uid，跳过已禁用、封禁和仍在限频冻结期内的账号。 */
 export async function readActiveUid(): Promise<string> {
  const state = await readPoolState()
  const uid = availableUidOfState(state)
@@ -205,6 +214,39 @@ export async function freezePoolAccount(
  })
 }
 
+/** 持久封禁账号；不清除手动禁用、限频等其他状态。 */
+export async function banPoolAccount(
+  uid: string,
+  ban: WorkbuddyAccountBan,
+) {
+  return enqueueMutation(async () => {
+    const state = await readPoolState()
+    state.accountBans = {
+      ...(state.accountBans ?? {}),
+      [uid]: ban,
+    }
+    if (state.activeUid === uid) delete state.activeUid
+    await writePoolState(state)
+  })
+}
+
+/** 仅在操作者明确解除封禁并重新启用时调用。 */
+export async function unbanPoolAccount(uid: string) {
+  return enqueueMutation(async () => {
+    const state = await readPoolState()
+    const wasBanned = Boolean(state.accountBans?.[uid])
+    if (state.accountBans) delete state.accountBans[uid]
+    if (uid !== LOCAL_POOL_UID) {
+      const entry = state.entries.find((candidate) => candidate.uid === uid)
+      if (!entry) throw new Error(`号池里没有 uid=${uid} 的账号`)
+      entry.disabled = false
+    }
+    if (!wasBanned) return false
+    await writePoolState(state)
+    return true
+  })
+}
+
 /**
  * 切换当前转发账号。
  *
@@ -216,6 +258,10 @@ export async function setActivePoolAccount(uid: string) {
  const target = uid.trim() || (localWorkbuddyPoolEnabled() ? LOCAL_POOL_UID : "")
  if (target === LOCAL_POOL_UID && !localWorkbuddyPoolEnabled()) {
    throw new Error("服务器模式没有本机 WorkBuddy 登录态，请选择导入账号")
+ }
+ const ban = accountBanOf(state, target)
+ if (ban) {
+   throw new Error(`账号 ${target === LOCAL_POOL_UID ? "本机账号" : target} 已被上游封禁，请先解除封禁`)
  }
  if (target && target !== LOCAL_POOL_UID) {
  const entry = state.entries.find((candidate) => candidate.uid === target)
@@ -275,6 +321,7 @@ export async function removePoolAccount(uid: string) {
  state.entries = state.entries.filter((entry) => entry.uid !== uid)
  if (state.entries.length === before) return
  if (state.rateLimits) delete state.rateLimits[uid]
+ if (state.accountBans) delete state.accountBans[uid]
  // 删掉的正是当前转发账号时清掉标记，回落本机账号。
  if (state.activeUid === uid) delete state.activeUid
  await writePoolState(state)
@@ -298,6 +345,11 @@ export async function setPoolAccountDisabled(uid: string, disabled: boolean) {
 
 /**读取某个账号的登录态（local →桌面端文件；file → 号池目录）。 */
 export async function readPoolAccount(uid: string): Promise<WorkbuddyAccount> {
+ const state = await readPoolState()
+ const ban = accountBanOf(state, uid)
+ if (ban) {
+   throw new Error(`账号已被上游封禁：${ban.message}`)
+ }
  if (uid === "local") {
    if (!localWorkbuddyPoolEnabled()) {
      throw new Error("服务器模式没有本机 WorkBuddy 登录态，请使用号池里的导入账号")
@@ -305,7 +357,6 @@ export async function readPoolAccount(uid: string): Promise<WorkbuddyAccount> {
  const { readWorkbuddyAccount } = await import("./account")
  return readWorkbuddyAccount()
  }
- const state = await readPoolState()
  const entry = state.entries.find((candidate) => candidate.uid === uid)
  if (!entry?.filePath) throw new Error(`号池里没有 uid=${uid} 的账号`)
  const { readFile: readFileFn } = await import("node:fs/promises")

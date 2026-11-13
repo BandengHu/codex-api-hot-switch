@@ -9,6 +9,7 @@ import {
  Power,
  Plus,
  RefreshCw,
+  ShieldOff,
  Sun,
  Trash2,
  Users,
@@ -90,6 +91,20 @@ function isTaskAutoable(
   )
 }
 
+function formatBanDetectedAt(value: string) {
+  const timestamp = Date.parse(value)
+  if (!Number.isFinite(timestamp)) return ""
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(timestamp)
+}
+
 export function WorkbuddyPoolView() {
  const [entries, setEntries] = useState<WorkbuddyPoolEntryView[]>([])
  const [actions, setActions] = useState<Record<string, WorkbuddyTaskAction>>({})
@@ -114,7 +129,9 @@ export function WorkbuddyPoolView() {
  setEntries(snapshot.entries)
  setActiveUid(snapshot.activeUid)
   setViewUid((current) => {
-   const selectable = snapshot.entries.filter((entry) => !entry.disabled && !entry.rateLimit)
+   const selectable = snapshot.entries.filter(
+     (entry) => !entry.disabled && !entry.accountBan && !entry.rateLimit,
+   )
    return selectable.some((entry) => entry.uid === current)
     ? current
     : selectable[0]?.uid ?? ""
@@ -175,12 +192,20 @@ export function WorkbuddyPoolView() {
 
  async function handleAccountAction(
  uid: string,
- action: "disable" | "enable" | "remove",
+ action: "disable" | "enable" | "unban" | "remove",
  ) {
  setBusy({ uid, action })
  try {
  await poolAccountAction(uid, action)
- toast.success(action === "remove" ? "已移除" : action === "disable" ? "已禁用" : "已启用")
+ toast.success(
+   action === "remove"
+     ? "已移除"
+     : action === "disable"
+       ? "已禁用"
+       : action === "unban"
+         ? "已解除封禁并启用"
+         : "已启用",
+ )
  await refresh()
  } catch (error) {
  toast.error(error instanceof Error ? error.message : String(error))
@@ -272,9 +297,14 @@ export function WorkbuddyPoolView() {
  (sum, entry) => sum + (entry.balance?.remain ??0),
  0,
  )
- const activeCount = entries.filter((entry) => !entry.disabled && !entry.rateLimit).length
+ const activeCount = entries.filter(
+   (entry) => !entry.disabled && !entry.accountBan && !entry.rateLimit,
+ ).length
+ const bannedCount = entries.filter((entry) => Boolean(entry.accountBan)).length
  /**下拉里可选来做操作的账号（禁用和有效限频账号不出现）。 */
- const selectableEntries = entries.filter((entry) => !entry.disabled && !entry.rateLimit)
+ const selectableEntries = entries.filter(
+   (entry) => !entry.disabled && !entry.accountBan && !entry.rateLimit,
+ )
  const viewEntry = entries.find((entry) => entry.uid === viewUid)
  const viewTaskList = tasks
   const viewAutoable = viewTaskList.filter((task) => isTaskAutoable(task, actions))
@@ -319,6 +349,14 @@ export function WorkbuddyPoolView() {
  <CardHeader className="pb-2">
  <CardDescription>可用账号</CardDescription>
  <CardTitle className="text-2xl">{activeCount}</CardTitle>
+ </CardHeader>
+ </Card>
+ <Card className="flex-1">
+ <CardHeader className="pb-2">
+ <CardDescription>已封禁账号</CardDescription>
+ <CardTitle className={bannedCount ? "text-2xl text-destructive" : "text-2xl"}>
+ {bannedCount}
+ </CardTitle>
  </CardHeader>
  </Card>
  <Card className="flex-1">
@@ -368,8 +406,24 @@ export function WorkbuddyPoolView() {
 {entry.balance ? entry.balance.remain.toLocaleString() : "—"}
 </TableCell>
 <TableCell>
-{entry.disabled ? (
-<Badge variant="outline">已禁用</Badge>
+ {entry.accountBan ? (
+ <div className="flex max-w-72 flex-col gap-1">
+ <div className="flex flex-wrap items-center gap-1">
+ <Badge variant="destructive">已封禁</Badge>
+ {entry.disabled ? <Badge variant="outline">已禁用</Badge> : null}
+ </div>
+ <span className="text-xs text-foreground" title={entry.accountBan.message}>
+ {entry.accountBan.message}
+ </span>
+ <span className="text-xs text-muted-foreground">
+ 上游代码 {entry.accountBan.code}
+ {formatBanDetectedAt(entry.accountBan.detectedAt)
+   ? ` · 检测于 ${formatBanDetectedAt(entry.accountBan.detectedAt)}`
+   : ""}
+ </span>
+ </div>
+ ) : entry.disabled ? (
+ <Badge variant="outline">已禁用</Badge>
 ) : entry.rateLimit ? (
 <div className="flex flex-col gap-1">
 <Badge variant="destructive">限频中</Badge>
@@ -447,7 +501,12 @@ export function WorkbuddyPoolView() {
  variant="ghost"
  size="sm"
  onClick={() => void handleSwitchActive(entry.uid)}
- disabled={entry.disabled || Boolean(entry.rateLimit) || busy !== null}
+ disabled={
+   entry.disabled ||
+   Boolean(entry.accountBan) ||
+   Boolean(entry.rateLimit) ||
+   busy !== null
+ }
  >
  {busy === "switch" ? <Spinner className="size-4" /> : null}
  设为转发
@@ -456,15 +515,27 @@ export function WorkbuddyPoolView() {
  </TableCell>
  <TableCell className="text-right">
  <div className="flex justify-end gap-1">
- <Button
- variant="ghost"
- size="sm"
- onClick={() => void handleAccountAction(entry.uid, entry.disabled ? "enable" : "disable")}
- disabled={entry.source === "local" || busy !== null}
- >
- <Power className="size-4" />
- {entry.disabled ? "启用" : "禁用"}
- </Button>
+  {entry.accountBan ? (
+  <Button
+  variant="ghost"
+  size="sm"
+  onClick={() => void handleAccountAction(entry.uid, "unban")}
+  disabled={busy !== null}
+  >
+  <ShieldOff className="size-4" />
+  解除封禁并启用
+  </Button>
+  ) : (
+  <Button
+  variant="ghost"
+  size="sm"
+  onClick={() => void handleAccountAction(entry.uid, entry.disabled ? "enable" : "disable")}
+  disabled={entry.source === "local" || busy !== null}
+  >
+  <Power className="size-4" />
+  {entry.disabled ? "启用" : "禁用"}
+  </Button>
+  )}
  <Button
  variant="ghost"
  size="sm"
@@ -519,7 +590,12 @@ export function WorkbuddyPoolView() {
   size="sm"
   variant="outline"
   onClick={() => void handleDailyRewards(viewUid)}
-  disabled={busy !== null || Boolean(viewEntry?.disabled) || Boolean(viewEntry?.rateLimit)}
+  disabled={
+    busy !== null ||
+    Boolean(viewEntry?.disabled) ||
+    Boolean(viewEntry?.accountBan) ||
+    Boolean(viewEntry?.rateLimit)
+  }
   >
   {isBusyFor(viewUid, "daily") ? <Spinner className="size-4" /> : <Sun className="size-4" />}
   一键领积分
@@ -527,7 +603,13 @@ export function WorkbuddyPoolView() {
   <Button
   size="sm"
   onClick={() => void handleAutomateAll(viewUid)}
-  disabled={busy !== null || !viewAutoable.length}
+  disabled={
+    busy !== null ||
+    !viewAutoable.length ||
+    Boolean(viewEntry?.disabled) ||
+    Boolean(viewEntry?.accountBan) ||
+    Boolean(viewEntry?.rateLimit)
+  }
   >
   {isBusyFor(viewUid, "automate-all") ? <Spinner className="size-4" /> : <Zap className="size-4" />}
   一键全部任务
@@ -595,7 +677,13 @@ export function WorkbuddyPoolView() {
   size="sm"
   variant="outline"
   onClick={() => void handleTaskAction(viewUid, "automate", task.taskCode)}
-   disabled={busy !== null || !isTaskAutoable(task, actions)}
+   disabled={
+     busy !== null ||
+     !isTaskAutoable(task, actions) ||
+     Boolean(viewEntry?.disabled) ||
+     Boolean(viewEntry?.accountBan) ||
+     Boolean(viewEntry?.rateLimit)
+   }
   >
   {isBusyFor(viewUid, "automate", task.taskCode) ? <Spinner className="size-4" /> : null}
   自动完成
@@ -603,7 +691,13 @@ export function WorkbuddyPoolView() {
   <Button
   size="sm"
   onClick={() => void handleTaskAction(viewUid, "claim", task.taskCode)}
-  disabled={busy !== null || !task.claimable}
+  disabled={
+    busy !== null ||
+    !task.claimable ||
+    Boolean(viewEntry?.disabled) ||
+    Boolean(viewEntry?.accountBan) ||
+    Boolean(viewEntry?.rateLimit)
+  }
   >
   {isBusyFor(viewUid, "claim", task.taskCode) ? <Spinner className="size-4" /> : null}
   领奖

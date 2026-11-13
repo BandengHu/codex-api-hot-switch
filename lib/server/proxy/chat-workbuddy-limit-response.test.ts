@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { WorkbuddyRateLimitError } from "@/lib/server/workbuddy/rate-limit"
+import { workbuddyAccountBanClientResponse } from "./workbuddy-account-ban-response"
 import { workbuddyRateLimitClientResponse } from "./workbuddy-rate-limit-response"
 
 const MESSAGE =
@@ -61,4 +62,22 @@ test("the Responses path keeps its existing response.failed error event", async 
   assert.equal(response.status, 200)
   assert.match(text, /event: response\.failed/)
   assert.ok(text.includes(MESSAGE))
+})
+
+test("a non-streaming Chat ban exposes the upstream reason and business code", async () => {
+  const response = workbuddyAccountBanClientResponse({
+    path: "v1/chat/completions",
+    status: 403,
+    message: "账号存在异常行为，已被限制使用",
+  })
+
+  assert.ok(response)
+  assert.equal(response.status, 403)
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: "11140",
+      message: "账号存在异常行为，已被限制使用",
+      type: "permission_error",
+    },
+  })
 })

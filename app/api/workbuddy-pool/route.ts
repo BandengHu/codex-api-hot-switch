@@ -9,7 +9,11 @@ import {
  syncPoolFromDisk,
 } from "@/lib/server/workbuddy/task-pool-store"
 import { fetchBalance } from "@/lib/server/workbuddy/task-api"
-import { activeRateLimitOf } from "@/lib/server/workbuddy/pool-selection"
+import {
+  accountBanOf,
+  activeRateLimitOf,
+} from "@/lib/server/workbuddy/pool-selection"
+import type { WorkbuddyAccountBan } from "@/lib/server/workbuddy/account-ban"
 import {
   formatScheduleDay,
   readDailyScheduleState,
@@ -28,6 +32,7 @@ interface PoolEntryWithBalance {
  nickname: string
  source: "local" | "file"
  disabled: boolean
+ accountBan?: WorkbuddyAccountBan
  rateLimit?: { message: string; resetAt: string }
   recoveredRateLimit?: { message: string; resetAt: string }
  balance?: { remain: number; used: number; size: number; packs: number }
@@ -72,7 +77,9 @@ export async function GET() {
  if (!rateLimit && previousRateLimit) {
    item.recoveredRateLimit = previousRateLimit
  }
- if (!entry.disabled) {
+ const accountBan = accountBanOf(poolState, entry.uid)
+ if (accountBan) item.accountBan = accountBan
+ if (!entry.disabled && !accountBan) {
  try {
  const account = await readPoolAccount(entry.uid)
  const balance = await fetchBalance(account)

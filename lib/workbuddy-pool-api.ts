@@ -58,7 +58,7 @@ export async function fetchPoolTasks(uid: string): Promise<WorkbuddyPoolGrowthTa
 
 export async function poolAccountAction(
  uid: string,
- action: "disable" | "enable" | "remove",
+ action: "disable" | "enable" | "unban" | "remove",
 ): Promise<{ ok: boolean }> {
  return parseResponse(
  await fetch(`/api/workbuddy-pool/${encodeURIComponent(uid)}`, {

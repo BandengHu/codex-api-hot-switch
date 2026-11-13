@@ -66,3 +66,19 @@ test("all actively limited accounts produce no next account", () => {
   assert.equal(nextAvailableUidOf(value, value.entries, "a", NOW), undefined)
   assert.equal(preferredRateLimitOf(value, value.entries, NOW), ACTIVE_LIMIT)
 })
+
+test("selection skips persistently banned accounts and never expires the ban", () => {
+  const value = {
+    ...state("a"),
+    accountBans: {
+      a: {
+        code: 11140,
+        message: "账号存在异常行为，已被限制使用",
+        detectedAt: "2026-10-29T07:00:00.000Z",
+      },
+    },
+  } satisfies WorkbuddySelectableState
+  assert.equal(availableUidOf(value, value.entries, NOW), "b")
+  assert.equal(nextAvailableUidOf(value, value.entries, "a", NOW), "b")
+  assert.equal(nextAvailableUidOf(value, value.entries, "c", NOW), "b")
+})

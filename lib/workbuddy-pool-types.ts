@@ -5,11 +5,19 @@ export interface WorkbuddyPoolBalance {
  packs: number
 }
 
+export interface WorkbuddyAccountBanView {
+  code: number
+  message: string
+  detectedAt: string
+}
+
 export interface WorkbuddyPoolEntryView {
   uid: string
   nickname: string
   source: "local" | "file"
   disabled: boolean
+  /** 上游明确返回 11140 后的持久封禁；不会自动过期。 */
+  accountBan?: WorkbuddyAccountBanView
   /** 仍在重置时间之前的账号级限频。 */
   rateLimit?: {
     message: string

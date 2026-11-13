@@ -17,6 +17,7 @@ import { tryLockTaskAccount, unlockTaskAccount } from "./task-lock"
 import {
   listPoolEntries,
   readPoolAccount,
+  readPoolState,
   syncPoolFromDisk,
   type WorkbuddyPoolEntry,
 } from "./task-pool-store"
@@ -174,9 +175,11 @@ export function pickAccountsNeedingRun(
   state: DailyScheduleState,
   today = formatScheduleDay(new Date()),
   now = Date.now(),
+  bannedUids: ReadonlySet<string> = new Set(),
 ) {
   return entries.filter((entry) => {
     if (entry.disabled) return false
+    if (bannedUids.has(entry.uid)) return false
     if (state.lastRunByUid[entry.uid] !== today) return true
     const retryAt = Date.parse(state.nextRetryAtByUid?.[entry.uid] ?? "")
     return Number.isFinite(retryAt) && retryAt <= now
@@ -287,6 +290,7 @@ export async function maybeRunDailyForAllAccounts(): Promise<DailySchedulerCycle
   const result: DailySchedulerCycleResult = { checked: 0, ran: [], locked: [] }
   await syncPoolFromDisk()
   const entries = await listPoolEntries()
+  const bannedUids = new Set(Object.keys((await readPoolState()).accountBans ?? {}))
   result.checked = entries.length
 
   let isFirstRun = true
@@ -294,7 +298,17 @@ export async function maybeRunDailyForAllAccounts(): Promise<DailySchedulerCycle
     const now = Date.now()
     const today = formatScheduleDay(new Date(now))
     const state = await readDailyScheduleState()
-    if (!pickAccountsNeedingRun([entry], state, today, now).length) continue
+    if (
+      !pickAccountsNeedingRun(
+        [entry],
+        state,
+        today,
+        now,
+        bannedUids,
+      ).length
+    ) {
+      continue
+    }
     if (!tryLockTaskAccount(entry.uid)) {
       result.locked.push(entry.uid)
       continue
@@ -340,9 +354,10 @@ export async function maybeRunNightOwlForAllAccounts(
 
   await syncPoolFromDisk()
   const entries = await listPoolEntries()
+  const bannedUids = new Set(Object.keys((await readPoolState()).accountBans ?? {}))
   result.checked = entries.length
   for (const entry of entries) {
-    if (entry.disabled) continue
+    if (entry.disabled || bannedUids.has(entry.uid)) continue
     const state = await readDailyScheduleState()
     if (!nightOwlShouldRun(now, state.nightOwlByUid?.[entry.uid])) continue
     if (!tryLockTaskAccount(entry.uid)) {
