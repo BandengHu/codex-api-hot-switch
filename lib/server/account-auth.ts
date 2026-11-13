@@ -1,7 +1,10 @@
 import "server-only"
 
 import {
+  createCipheriv,
+  createDecipheriv,
   createHmac,
+  createHash,
   randomBytes,
   scryptSync,
   timingSafeEqual,
@@ -34,6 +37,8 @@ interface AccountAuthFile {
   version: 1
   keySalt: string
   keyHash: string
+  /** API Key 的 AES-256-GCM 密文，用于控制台回显；校验仍以 keyHash 为准。 */
+  keyCipher?: string
   sessionSecret: string
   createdAt: string
   updatedAt: string
@@ -68,6 +73,53 @@ export function verifyPassword(password: string, salt: string, expectedHash: str
 
 function hashApiKey(apiKey: string, salt: string) {
   return scryptSync(apiKey, salt, 32).toString("hex")
+}
+
+/**
+ * 密钥回显用的加密钥。
+ *
+ * 优先用部署方提供的 SWITCHGATE_SECRET_KEY；没有时退回 sessionSecret，
+ * 保证单机部署开箱可用。两把钥都只存在于本账号目录内的 600 权限文件。
+ */
+function keyEncryptionSecret(file: AccountAuthFile) {
+  return (
+    process.env.SWITCHGATE_SECRET_KEY?.trim() ||
+    file.sessionSecret
+  )
+}
+
+function encryptApiKey(apiKey: string, file: AccountAuthFile) {
+  const iv = randomBytes(12)
+  const cipher = createCipheriv(
+    "aes-256-gcm",
+    createHash("sha256").update(keyEncryptionSecret(file)).digest(),
+    iv,
+  )
+  const encrypted = Buffer.concat([cipher.update(apiKey, "utf8"), cipher.final()])
+  return [
+    iv.toString("base64url"),
+    cipher.getAuthTag().toString("base64url"),
+    encrypted.toString("base64url"),
+  ].join(".")
+}
+
+function decryptApiKey(payload: string, file: AccountAuthFile) {
+  const [rawIv, rawTag, rawData] = payload.split(".")
+  if (!rawIv || !rawTag || !rawData) return null
+  try {
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      createHash("sha256").update(keyEncryptionSecret(file)).digest(),
+      Buffer.from(rawIv, "base64url"),
+    )
+    decipher.setAuthTag(Buffer.from(rawTag, "base64url"))
+    return Buffer.concat([
+      decipher.update(Buffer.from(rawData, "base64url")),
+      decipher.final(),
+    ]).toString("utf8")
+  } catch {
+    return null
+  }
 }
 
 async function readAuthFile(dataDir: string): Promise<AccountAuthFile | null> {
@@ -107,15 +159,55 @@ export async function ensureAccountAuth(dataDir: string): Promise<{ created: boo
   const apiKey = `sg_${randomBytes(24).toString("base64url")}`
   const keySalt = randomBytes(16).toString("hex")
   const now = new Date().toISOString()
-  await writeAuthFile(dataDir, {
+  const file: AccountAuthFile = {
     version: 1,
     keySalt,
     keyHash: hashApiKey(apiKey, keySalt),
+    keyCipher: "",
     sessionSecret: randomBytes(32).toString("base64url"),
     createdAt: now,
     updatedAt: now,
-  })
+  }
+  file.keyCipher = encryptApiKey(apiKey, file)
+  await writeAuthFile(dataDir, file)
   return { created: true, apiKey }
+}
+
+/**
+ * 读取本账号当前的 API Key 明文，供控制台展示与复制。
+ *
+ * 历史账号只存了 scrypt 哈希，没存密文，无法反推出原值；
+ * 这种情况返回 null，由调用方引导用户显式更换一次。
+ */
+export async function readAccountApiKey(dataDir: string): Promise<string | null> {
+  const file = await readAuthFile(dataDir)
+  if (!file?.keyCipher) return null
+  const apiKey = decryptApiKey(file.keyCipher, file)
+  if (!apiKey) return null
+  //密文与哈希必须指向同一把 Key，否则说明文件被改过，不返回。
+  const expected = Buffer.from(file.keyHash, "hex")
+  const actual = Buffer.from(hashApiKey(apiKey, file.keySalt), "hex")
+  if (expected.length !== actual.length) return null
+  return timingSafeEqual(expected, actual) ? apiKey : null
+}
+
+/**
+ * 给历史账号补写密文。
+ *
+ * 只有调用方已经拿到明文（例如审批时下发的那一次）才能补；
+ * 因此这个函数不会凭空生成新 Key，不影响正在使用的调用方。
+ */
+export async function rememberAccountApiKey(dataDir: string, apiKey: string) {
+  const file = await readAuthFile(dataDir)
+  if (!file || file.keyCipher) return
+  const expected = Buffer.from(file.keyHash, "hex")
+  const actual = Buffer.from(hashApiKey(apiKey, file.keySalt), "hex")
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return
+  await writeAuthFile(dataDir, {
+    ...file,
+    keyCipher: encryptApiKey(apiKey, file),
+    updatedAt: new Date().toISOString(),
+  })
 }
 
 export async function verifyAccountApiKey(dataDir: string, apiKey: string): Promise<boolean> {
@@ -131,14 +223,17 @@ export async function rotateAccountApiKey(dataDir: string): Promise<string> {
   const apiKey = `sg_${randomBytes(24).toString("base64url")}`
   const keySalt = randomBytes(16).toString("hex")
   const now = new Date().toISOString()
-  await writeAuthFile(dataDir, {
+  const file: AccountAuthFile = {
     version: 1,
     keySalt,
     keyHash: hashApiKey(apiKey, keySalt),
+    keyCipher: "",
     sessionSecret: existing?.sessionSecret ?? randomBytes(32).toString("base64url"),
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
-  })
+  }
+  file.keyCipher = encryptApiKey(apiKey, file)
+  await writeAuthFile(dataDir, file)
   return apiKey
 }
 

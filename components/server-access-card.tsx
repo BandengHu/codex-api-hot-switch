@@ -1,7 +1,16 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { Check, Copy, KeyRound, LogOut, RefreshCw, ShieldCheck } from "lucide-react"
+import {
+  Check,
+  Copy,
+  Eye,
+  EyeOff,
+  KeyRound,
+  LogOut,
+  RefreshCw,
+  ShieldCheck,
+} from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import {
@@ -21,6 +30,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import {
+  fetchCurrentApiKey,
   fetchServerAccessStatus,
   logoutServerSession,
   rotateServerApiKey,
@@ -33,6 +43,10 @@ export function ServerAccessCard() {
   const [rotating, setRotating] = useState(false)
   const [newKey, setNewKey] = useState("")
   const [copied, setCopied] = useState(false)
+  const [currentKey, setCurrentKey] = useState("")
+  const [keyVisible, setKeyVisible] = useState(false)
+  const [keyNotice, setKeyNotice] = useState("")
+  const [currentCopied, setCurrentCopied] = useState(false)
 
   useEffect(() => {
     fetchServerAccessStatus()
@@ -40,11 +54,30 @@ export function ServerAccessCard() {
       .catch(() => setStatus(null))
   }, [])
 
+  const localMode = status?.localMode === true
+
+  useEffect(() => {
+    //本机模式没有服务器 API Key，不需要请求，也不该显示错误。
+    if (!status || localMode) return
+    fetchCurrentApiKey()
+      .then((result) => {
+        setCurrentKey(result.apiKey)
+        setKeyNotice("")
+      })
+      .catch((error) => {
+        setCurrentKey("")
+        setKeyNotice(error instanceof Error ? error.message : String(error))
+      })
+  }, [status, localMode])
+
   async function handleRotate() {
     setRotating(true)
     try {
       const result = await rotateServerApiKey()
       setNewKey(result.apiKey)
+      setCurrentKey(result.apiKey)
+      setKeyVisible(true)
+      setKeyNotice("")
       setStatus(result)
       setConfirmOpen(false)
       toast.success("已生成新的服务器 API Key")
@@ -55,11 +88,35 @@ export function ServerAccessCard() {
     }
   }
 
+  async function copyKey(value: string): Promise<boolean> {
+    try {
+      await navigator.clipboard.writeText(value)
+      return true
+    } catch {
+      //非安全上下文或浏览器拒绝剪贴板权限时，退回手动选中复制。
+      return false
+    }
+  }
+
   async function handleCopy() {
-    await navigator.clipboard.writeText(newKey)
-    setCopied(true)
-    toast.success("已复制新 API Key")
-    setTimeout(() => setCopied(false), 1500)
+    if (await copyKey(newKey)) {
+      setCopied(true)
+      toast.success("已复制新 API Key")
+      setTimeout(() => setCopied(false), 1500)
+      return
+    }
+    toast.error("浏览器阻止了剪贴板写入，请手动选中复制")
+  }
+
+  async function handleCopyCurrent() {
+    if (await copyKey(currentKey)) {
+      setCurrentCopied(true)
+      toast.success("已复制当前 API Key")
+      setTimeout(() => setCurrentCopied(false), 1500)
+      return
+    }
+    setKeyVisible(true)
+    toast.error("浏览器阻止了剪贴板写入，已展开明文，请手动选中复制")
   }
 
   async function handleLogout() {
@@ -83,6 +140,50 @@ export function ServerAccessCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
+        <div className="flex flex-col gap-2 rounded-lg border border-border bg-muted/40 p-3">
+          <div className="text-sm font-medium">我的 API Key</div>
+          {currentKey ? (
+            <>
+              <div className="flex gap-2">
+                <Input
+                  readOnly
+                  value={
+                    keyVisible
+                      ? currentKey
+                      : `${currentKey.slice(0, 6)}${"•".repeat(18)}${currentKey.slice(-4)}`
+                  }
+                  className="font-mono"
+                  aria-label="当前账号 API Key"
+                />
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setKeyVisible((value) => !value)}
+                >
+                  {keyVisible ? <EyeOff /> : <Eye />}
+                  <span className="sr-only">{keyVisible ? "隐藏" : "显示"} API Key</span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => void handleCopyCurrent()}
+                >
+                  {currentCopied ? <Check /> : <Copy />}
+                  <span className="sr-only">复制当前 API Key</span>
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                用于 Codex / MCP 调用本账号的 <span className="font-mono">/v1</span>{" "}
+                接口；网页登录 Cookie 不能调用 API。
+              </p>
+            </>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              {keyNotice || "正在读取当前 API Key…"}
+            </p>
+          )}
+        </div>
+
         <div className="grid gap-3 text-sm sm:grid-cols-2">
           <div className="rounded-lg border border-border p-3">
             <div className="text-muted-foreground">当前账号</div>

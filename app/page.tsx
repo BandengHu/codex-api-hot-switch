@@ -5,6 +5,7 @@ import { cookies } from "next/headers"
 import { ACCESS_COOKIE_NAME } from "@/lib/server/account-auth"
 import { accountFromRequest, accessAuthRequired } from "@/lib/server/access-guard"
 import { runWithAccountDataDir } from "@/lib/server/data-root"
+import { getSnapshot } from "@/lib/server/state-store"
 
 export default async function Page({
   searchParams,
@@ -18,7 +19,13 @@ export default async function Page({
   const view = resolveView(params.view, serverMode)
 
   if (!serverMode) {
-    return <AppRoot initialView={view} serverMode={false} />
+    return (
+      <AppRoot
+        initialView={view}
+        serverMode={false}
+        initialSnapshot={await getSnapshot()}
+      />
+    )
   }
 
   const request = new Request("http://localhost/", {
@@ -27,8 +34,7 @@ export default async function Page({
   const context = await accountFromRequest(request)
   if (!context) redirect("/login")
 
-  // 服务端渲染时先绑定账号目录，避免首屏读到别人的配置。
-  return runWithAccountDataDir(context.dataDir, () => (
-    <AppRoot initialView={view} serverMode />
-  ))
+  // 服务端渲染时先绑定账号目录，首屏快照就是该账号自己的配置。
+  const snapshot = await runWithAccountDataDir(context.dataDir, () => getSnapshot())
+  return <AppRoot initialView={view} serverMode initialSnapshot={snapshot} />
 }

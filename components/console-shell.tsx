@@ -73,7 +73,9 @@ export function ConsoleShell({
             {view === "workbuddy-pool" ? <WorkbuddyPoolView /> : null}
             {view === "workbuddy-global-pool" ? <WorkbuddyGlobalPoolView /> : null}
             {view === "accounts" && serverMode ? <AccountsView /> : null}
-            {view === "settings" ? <SettingsView /> : null}
+            {view === "settings" ? (
+              <SettingsView showServerAccess={serverMode} />
+            ) : null}
           </div>
         </main>
       </div>

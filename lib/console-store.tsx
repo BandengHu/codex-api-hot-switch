@@ -33,7 +33,6 @@ import type {
   ReasoningEffort,
   TakeoverStatus,
 } from "./types"
-import { initialSnapshot } from "./mock-data"
 
 interface ConsoleState extends ConsoleSnapshot {
   loading: boolean
@@ -122,11 +121,25 @@ function normalizeAddedModels(
   })
 }
 
-export function ConsoleProvider({ children }: { children: ReactNode }) {
+/**
+ * 首屏快照必须由服务端渲染时注入：
+ *
+ * - 服务器模式下就是当前登录账号的配置，客户端首帧与 SSR 完全一致，
+ *   既不会闪现别人的供应商，也不会触发 React 水合不一致；
+ * - 本机模式由页面读本地数据目录后传入。
+ */
+export function ConsoleProvider({
+  children,
+  initialSnapshot,
+}: {
+  children: ReactNode
+  initialSnapshot: ConsoleSnapshot
+}) {
   const [snapshot, setSnapshot] = useState<ConsoleSnapshot>(
     normalizeDefault(initialSnapshot),
   )
-  const [loading, setLoading] = useState(true)
+  //已有服务端快照时首屏不算加载中，避免多闪一次骨架。
+  const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const saveVersion = useRef(0)

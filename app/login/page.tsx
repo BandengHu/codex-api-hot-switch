@@ -52,9 +52,6 @@ export default function LoginPage() {
         className="w-full max-w-sm rounded-xl border border-border bg-card p-6 shadow-lg"
       >
         <h1 className="text-lg font-semibold">Codex SwitchGate</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          使用账号登录，会话有效 24 小时。每个账号的配置与密钥互相隔离。
-        </p>
         <label className="mt-5 block text-sm font-medium" htmlFor="username">
           用户名
         </label>
