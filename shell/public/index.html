@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Codex SwitchGate · 本地网页壳</title>
+    <link rel="stylesheet" href="/__shell/styles.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <header class="hero">
+        <div class="mark">SG</div>
+        <div>
+          <h1>Codex SwitchGate</h1>
+          <p>本机只保留网页壳，模型与账号全部在服务器。</p>
+        </div>
+      </header>
+
+      <section id="setup-card" class="card hidden">
+        <h2>首次设置</h2>
+        <p class="muted">设置本机网页登录密码。密码只保存在这台电脑，用于打开控制台和更换服务器 Key。</p>
+        <form id="setup-form" class="stack">
+          <label>登录密码<input id="setup-password" type="password" minlength="8" autocomplete="new-password" required /></label>
+          <label>确认密码<input id="setup-confirm" type="password" minlength="8" autocomplete="new-password" required /></label>
+          <button type="submit">保存并进入</button>
+        </form>
+        <p id="setup-error" class="error hidden"></p>
+      </section>
+
+      <section id="login-card" class="card hidden">
+        <h2>登录</h2>
+        <p class="muted">会话有效期 24 小时，过期后需要重新登录。</p>
+        <form id="login-form" class="stack">
+          <label>本机登录密码<input id="login-password" type="password" autocomplete="current-password" required /></label>
+          <button type="submit">登录</button>
+        </form>
+        <p id="login-error" class="error hidden"></p>
+      </section>
+
+      <section id="console" class="hidden">
+        <div class="grid">
+          <div class="card">
+            <h2>连接状态</h2>
+            <dl class="facts">
+              <div><dt>服务器</dt><dd id="fact-remote">—</dd></div>
+              <div><dt>服务器 Key</dt><dd id="fact-key">—</dd></div>
+              <div><dt>网页会话</dt><dd id="fact-session">—</dd></div>
+            </dl>
+            <div class="row">
+              <button id="open-console" class="primary">打开控制台</button>
+              <button id="logout">退出登录</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>更换服务器 API Key</h2>
+            <p class="muted">粘贴服务器上生成的 Key。Key 只保存在本机壳的私有目录，不写入网页存储。</p>
+            <form id="key-form" class="stack">
+              <label>服务器 API Key<input id="server-key" type="password" autocomplete="off" placeholder="sg_..." required /></label>
+              <button type="submit">验证并保存</button>
+            </form>
+            <div class="row">
+              <button id="rotate-key">在服务器生成新 Key</button>
+              <button id="clear-key" class="danger">清除本机 Key</button>
+            </div>
+            <p id="key-message" class="message hidden"></p>
+          </div>
+
+          <div class="card">
+            <h2>服务器地址</h2>
+            <form id="remote-form" class="stack">
+              <label>SwitchGate 地址<input id="remote-base" type="url" required /></label>
+              <button type="submit">保存地址</button>
+            </form>
+            <p id="remote-message" class="message hidden"></p>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script src="/__shell/app.js"></script>
+  </body>
+</html>
