@@ -326,7 +326,7 @@ export function WorkbuddyPoolView() {
 管理本机账号与导入账号的任务/积分，支持一键完成与领奖
  </p>
  </div>
- <div className="flex items-center gap-2">
+ <div className="flex flex-wrap items-center gap-2">
  <Button variant="outline" onClick={() => void refresh()} disabled={busy !== null}>
  {busy === "refresh" ? <Spinner className="size-4" /> : <RefreshCw className="size-4" />}
 刷新
