@@ -1,19 +1,18 @@
 "use client"
 
-import { Moon, Sun, Copy, Check, Loader2, AlertCircle } from "lucide-react"
+import { Copy, Check, Loader2, AlertCircle } from "lucide-react"
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
+import { ThemeToggle } from "@/components/theme-toggle"
 import { useConsole } from "@/lib/console-store"
-import { useTheme } from "@/lib/theme-provider"
 import { REASONING_LABELS } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 
 export function Topbar() {
   const { runtime, getProvider, getModel, settings, saving, error } = useConsole()
-  const { theme, toggle } = useTheme()
   const [copied, setCopied] = useState(false)
 
   const provider = getProvider(runtime.activeProviderId)
@@ -81,9 +80,7 @@ export function Topbar() {
             <Copy className="size-3.5" />
           )}
         </button>
-        <Button variant="outline" size="icon" onClick={toggle} aria-label="切换主题">
-          {theme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
-        </Button>
+        <ThemeToggle />
       </div>
     </header>
   )

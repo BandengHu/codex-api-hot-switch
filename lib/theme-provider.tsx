@@ -11,20 +11,22 @@ interface ThemeState {
 
 const ThemeContext = createContext<ThemeState | null>(null)
 
-export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setTheme] = useState<Theme>("light")
+const THEME_STORAGE_KEY = "codex-hotswitch-theme"
+const THEME_INIT_SCRIPT = `(function(){try{var stored=localStorage.getItem("${THEME_STORAGE_KEY}");var theme=stored==="light"||stored==="dark"?stored:(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");var root=document.documentElement;root.classList.toggle("dark",theme==="dark");root.style.colorScheme=theme;}catch(e){}})()`
 
-  useEffect(() => {
-    const stored = window.localStorage.getItem("codex-hotswitch-theme") as Theme | null
-    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches
-    const next = stored ?? (prefersDark ? "dark" : "light")
-    setTheme(next)
-  }, [])
+export function ThemeProvider({ children }: { children: ReactNode }) {
+  const [theme, setTheme] = useState<Theme>(() => {
+    if (typeof window === "undefined") return "light"
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY)
+    if (stored === "light" || stored === "dark") return stored
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
+  })
 
   useEffect(() => {
     const root = document.documentElement
     root.classList.toggle("dark", theme === "dark")
-    window.localStorage.setItem("codex-hotswitch-theme", theme)
+    root.style.colorScheme = theme
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme)
   }, [theme])
 
   return (
@@ -34,6 +36,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       {children}
     </ThemeContext.Provider>
   )
+}
+
+export function ThemeInitScript() {
+  return <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
 }
 
 export function useTheme() {

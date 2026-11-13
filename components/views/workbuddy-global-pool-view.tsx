@@ -159,7 +159,7 @@ export function WorkbuddyGlobalPoolView() {
             管理 www.workbuddy.ai（国际站）账号；与国内站号池相互独立，互不影响
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" onClick={() => void refresh()} disabled={busy !== null}>
             {busy === "refresh" ? <Spinner className="size-4" /> : <RefreshCw className="size-4" />}
             刷新
