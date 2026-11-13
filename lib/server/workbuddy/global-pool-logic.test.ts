@@ -145,3 +145,15 @@ test("池里没有可用账号时明确报错，而不是悄悄用空凭据打�
     /没有可用账号/,
   )
 })
+
+test("持久封禁账号即使未禁用也不会被选为生效账号", () => {
+  const state = poolState([{ uid: "a" }, { uid: "b" }], "a")
+  state.accountBans = {
+    a: {
+      code: 11140,
+      message: "账号存在异常行为，已被限制使用",
+      detectedAt: "2026-10-29T08:00:00.000Z",
+    },
+  }
+  assert.equal(activeGlobalUidOf(state), "b")
+})

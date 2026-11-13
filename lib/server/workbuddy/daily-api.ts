@@ -8,7 +8,6 @@ import {
  type TaskFetchInit,
  WorkbuddyTaskApiError,
 } from "./api-client"
-import { isGlobalAccount } from "./task-api"
 
 /**
  * WorkBuddy「每日领积分」接口族。
@@ -24,6 +23,10 @@ import { isGlobalAccount } from "./task-api"
 
 /**签到 /礼包 /补偿三类「已领过」文案（实测原文）。 */
 const ALREADY_DONE_MARKERS = ["已签到", "已领取", "无法重复领取", "未开启", "已过期"]
+
+const CHECKIN_PENDING_MARKERS = ["处理中", "请勿重复操作", "系统繁忙", "稍后再试"]
+const CHECKIN_ALREADY_MARKERS = ["已签到"]
+const CHECKIN_FAILED_MARKERS = ["失败"]
 
 function dailyTaskFetch(
  account: WorkbuddyAccount,
@@ -43,17 +46,157 @@ function dailyTaskFetch(
 export function isAlreadyDoneError(error: unknown) {
  if (!(error instanceof WorkbuddyTaskApiError)) return false
  if (error.status === undefined && !error.message.includes("code=")) return false
- const text = `${error.message} ${typeof error.payload === "string" ? error.payload : ""}`
+ const text = `${error.message} ${serializePayload(error.payload)}`
+ //「签到失败，已签到天数不足」同时含「已签到」，不能把失败回执当成已完成。
+ if (CHECKIN_FAILED_MARKERS.some((marker) => text.includes(marker))) return false
  return ALREADY_DONE_MARKERS.some((marker) => text.includes(marker))
 }
 
-/**签到（billing域）。已签到抛 `isAlreadyDoneError` 可识别的错误。 */
-export async function dailyCheckin(account: WorkbuddyAccount) {
+export type DailyCheckinState = "checked" | "already" | "pending" | "failed"
+
+export interface DailyCheckinReceipt {
+  state: DailyCheckinState
+  credit: number
+  /** 仅当上游回执明确带 credit 时才为 true。 */
+  creditKnown: boolean
+  streakDays?: number
+  code?: number
+  message: string
+}
+
+export interface DailyCheckinStatus {
+  todayCheckedIn: boolean
+  streakDays: number
+  dailyCredit: number
+  todayCredit: number
+  active: boolean
+}
+
+/**
+ * 签到回执分类。
+ *
+ * 顺序必须是 pending → failed → already → checked：
+ * - pending 是明确没签成，不能写完成状态；
+ * - failed 先于 already，避免“签到失败，已签到天数不足”被误判；
+ * - code=0 且带“今天已签到”表示今天早已完成，不是本次新签到。
+ */
+export function classifyDailyCheckin(code: number | undefined, message: string): DailyCheckinState {
+ const text = message.trim()
+ if (CHECKIN_PENDING_MARKERS.some((marker) => text.includes(marker))) return "pending"
+ if (CHECKIN_FAILED_MARKERS.some((marker) => text.includes(marker))) return "failed"
+ if (CHECKIN_ALREADY_MARKERS.some((marker) => text.includes(marker))) return "already"
+ return code === 0 || code === undefined ? "checked" : "failed"
+}
+
+function parsePayload(payload: unknown): Record<string, unknown> | undefined {
+ if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+  return payload as Record<string, unknown>
+ }
+ if (typeof payload !== "string" || !payload.trim()) return undefined
+ try {
+  const parsed = JSON.parse(payload) as unknown
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+   ? parsed as Record<string, unknown>
+   : undefined
+ } catch {
+  return undefined
+ }
+}
+
+function serializePayload(payload: unknown) {
+ if (typeof payload === "string") return payload
+ if (payload && typeof payload === "object") return JSON.stringify(payload)
+ return ""
+}
+
+function payloadText(record: Record<string, unknown> | undefined) {
+ if (!record) return ""
+ return typeof record.msg === "string"
+  ? record.msg
+  : typeof record.message === "string"
+   ? record.message
+   : ""
+}
+
+function receiptFromRecord(record: Record<string, unknown>): DailyCheckinReceipt {
+ const data = (record.data ?? {}) as Record<string, unknown>
+ const code = asNumber(record.code)
+ const message = payloadText(record)
+ const credit = asNumber(record.credit) ?? asNumber(data.credit)
+ const streakDays = asNumber(record.streak_days) ?? asNumber(data.streak_days)
+ return {
+  state: classifyDailyCheckin(code, message),
+  credit: credit ?? 0,
+  creditKnown: credit !== undefined,
+  ...(streakDays === undefined ? {} : { streakDays }),
+  ...(code === undefined ? {} : { code }),
+  message,
+ }
+}
+
+/**
+ * 国内签到。成功回执是平铺 `{credit, streak_days}`，不是 data 信封；
+ * 不能因为没有 data.credit 就把本次真实入账记成 0。
+ */
+export async function dailyCheckin(account: WorkbuddyAccount): Promise<DailyCheckinReceipt> {
  const base = realmBase(account)
- const path = isGlobalAccount(account)
- ? "/billing/meter/daily-checkin"
- : "/v2/billing/meter/daily-checkin"
- await dailyTaskFetch(account, `${base.billing}${path}`, { method: "POST", body: {} }, "每日签到")
+ const path = "/v2/billing/meter/daily-checkin"
+ try {
+  const record = await dailyTaskFetch(
+    account,
+    `${base.billing}${path}`,
+    { method: "POST", body: {} },
+    "每日签到",
+  )
+  return receiptFromRecord(record)
+ } catch (error) {
+  if (!(error instanceof WorkbuddyTaskApiError)) throw error
+  const payload = parsePayload(error.payload)
+  const code = asNumber(payload?.code) ?? asNumber(
+   error.message.match(/\bcode=(\d+)\b/)?.[1],
+  )
+  const message = payloadText(payload) || (
+   /已签到|处理中|请勿重复操作|系统繁忙|稍后再试|失败/.test(error.message)
+    ? error.message
+    : ""
+  )
+  if (error.status !== 400 && code === undefined && !message) throw error
+  if (!message && code === undefined) throw error
+  return {
+   state: classifyDailyCheckin(code, message),
+   credit: 0,
+   creditKnown: false,
+   ...(code === undefined ? {} : { code }),
+   message,
+  }
+ }
+}
+
+/**
+ * 国内官方签到状态。签到请求成功不等于积分到账，必须以这里的
+ * `today_checked_in` / `today_credit` 作为确认事实。
+ */
+export async function fetchCheckinActivityStatus(
+  account: WorkbuddyAccount,
+): Promise<DailyCheckinStatus> {
+  if (account.domain.includes("workbuddy.ai")) {
+    throw new Error("国际站账号不支持国内签到状态查询")
+  }
+  const base = realmBase(account)
+  const record = await dailyTaskFetch(
+    account,
+    `${base.chat}/v2/billing/meter/checkin-activity-status`,
+    { method: "POST", body: {} },
+    "查询签到状态",
+  )
+  const data = (record.data ?? {}) as Record<string, unknown>
+  return {
+    todayCheckedIn: data.today_checked_in === true,
+    streakDays: asNumber(data.streak_days) ?? 0,
+    dailyCredit: asNumber(data.daily_credit) ?? 0,
+    todayCredit: asNumber(data.today_credit) ?? 0,
+    active: data.active !== false,
+  }
 }
 
 /**新手礼包（每号一次，已领返回幂等错误）。返回获得的积分。 */
@@ -267,7 +410,7 @@ export interface TravelState {
  state: string
  /**今日已派出过（自然日 00:00 CST 重置）。 */
  dailyLimitReached: boolean
- /**在途/到站记录 id，领奖必带。 */
+ /**上游返回的在途/到站记录 id；仅用于诊断，官方领奖不依赖它。 */
  recordId: number
  /**到站可领的积分。 */
  rewardCredit: number
@@ -306,13 +449,13 @@ export async function departTravel(account: WorkbuddyAccount, locationId = 4) {
  )
 }
 
-/**领取到站的旅行奖励，返回入账积分。 */
-export async function claimTravel(account: WorkbuddyAccount, recordId: number): Promise<number> {
+/**领取到站的旅行奖励，返回入账积分。官方前端发送空 body。 */
+export async function claimTravel(account: WorkbuddyAccount): Promise<number> {
  const base = realmBase(account)
  const record = await taskFetch(
  account,
  `${base.chat}/activity/growth/buddy/travel/claim`,
- { method: "POST", body: { record_id: recordId } },
+ { method: "POST", body: {} },
  "领取旅行奖励",
  )
  return asNumber((record.data as Record<string, unknown> | undefined)?.reward_credit) ??0

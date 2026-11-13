@@ -7,11 +7,19 @@ export interface WorkbuddyGlobalBalance {
   packs: number
 }
 
+export interface WorkbuddyGlobalAccountBanView {
+  code: number
+  message: string
+  detectedAt: string
+}
+
 export interface WorkbuddyGlobalPoolEntryView {
   uid: string
   nickname: string
   domain: string
   disabled: boolean
+  /** 上游明确返回 11140 后的持久封禁；不会自动过期。 */
+  accountBan?: WorkbuddyGlobalAccountBanView
   /** 是否是当前转发用的账号（转发到国际站时用它的登录态）。 */
   active: boolean
   balance?: WorkbuddyGlobalBalance

@@ -31,6 +31,7 @@ import {
 import { assertSseBufferWithinLimit, lastCompleteSseFrameBoundary } from "./sse-frame"
 import { normalizeChatToolPairing } from "./chat-tool-pairing"
 import { normalizeWorkbuddyChatMessages } from "./chat-workbuddy-request"
+import { normalizeWorkbuddyChatToolSchemas } from "./workbuddy-tool-schema"
 import { chatWireToolChoice } from "./chat-tool-choice"
 import { chatStreamHasUsableOutput, chatToolDeltas, parseChatSseFrames } from "./chat-sse-fold"
 import { normalizeContextCheckpointRecoveryMessages } from "./context-checkpoint-recovery"
@@ -1054,6 +1055,9 @@ export function buildChatCompatibleRequest(
     appendOutputLanguagePolicyToChatBody(passthrough, target)
     const requestedStream = Boolean(passthrough.stream)
     normalizeWorkbuddyChatMessages(passthrough, target)
+    if (isWorkbuddyProvider(target.provider)) {
+      normalizeWorkbuddyChatToolSchemas(passthrough)
+    }
     forceUpstreamStream(passthrough, target)
     return {
       url: chatCompatibleUrl(target.provider.baseUrl, "chat/completions"),
@@ -1091,6 +1095,9 @@ export function buildChatCompatibleRequest(
     applyLanguagePolicy: !compactionTrigger,
   })
   normalizeWorkbuddyChatMessages(converted.body, target)
+  if (isWorkbuddyProvider(target.provider)) {
+    normalizeWorkbuddyChatToolSchemas(converted.body)
+  }
   injectChatPromptCacheKey(target.provider, converted.body, originalRequest)
   // 对齐 cc-switch #6863：Moonshot / Kimi 的 Chat 校验器拒绝带兄弟关键字的 $ref，
   // 只在命中的上游改写，其他供应商保持字节级不变。

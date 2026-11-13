@@ -36,6 +36,13 @@ function monetaryAmount(value: unknown) {
   return Number.isFinite(amount) && amount >= 0 ? amount : undefined
 }
 
+/** 积分允许小数，必须原值保留；显式 0 与缺失分开。 */
+function creditAmount(value: unknown) {
+  if (value == null || value === "") return undefined
+  const amount = Number(value)
+  return Number.isFinite(amount) && amount >= 0 ? amount : undefined
+}
+
 export function extractTokenCost(value: unknown): TokenCost | undefined {
   if (!isObject(value)) return undefined
 
@@ -83,6 +90,7 @@ export function normalizeTokenUsage(value: unknown): TokenUsage | undefined {
   if (!isObject(value)) return undefined
 
   const upstreamCost = extractTokenCost(value)
+  const credit = creditAmount(value.credit)
   const inputTokens = firstToken(
     value.input_tokens,
     value.prompt_tokens,
@@ -144,6 +152,7 @@ export function normalizeTokenUsage(value: unknown): TokenUsage | undefined {
     cachedInputTokens == null &&
     cacheCreationInputTokens == null &&
     reasoningTokens == null &&
+    credit == null &&
     upstreamCost == null
   ) {
     return undefined
@@ -157,6 +166,7 @@ export function normalizeTokenUsage(value: unknown): TokenUsage | undefined {
     cacheCreationInputTokens,
     cacheUsageReported,
     reasoningTokens,
+    ...(credit === undefined ? {} : { credit }),
     upstreamCost,
   }
 }

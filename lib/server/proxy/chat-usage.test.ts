@@ -27,3 +27,13 @@ test("standard Chat cache fields take precedence over DeepSeek fallback", () => 
 
   assert.equal(usage.input_tokens_details.cached_tokens, 0)
 })
+
+test("preserves an explicit fractional WorkBuddy credit", () => {
+  const usage = chatUsageToResponsesUsage({
+    prompt_tokens: 1000,
+    completion_tokens: 100,
+    credit: 0.25,
+  })
+
+  assert.equal(usage.credit, 0.25)
+})

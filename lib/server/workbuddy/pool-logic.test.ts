@@ -187,12 +187,15 @@ test("转发账号：选中池内可用账号时生效（这是唯一的换号�
  assert.equal(activeUidOf(state), "acc-2")
 })
 
-test("转发账号：选中已被移除的账号时回落 local，不会卡在失效状态", () => {
+test("转发账号：选中已被移除的账号时回落本机账号", () => {
  assert.equal(activeUidOf(poolState("gone", [{ uid: "acc-1" }])), LOCAL_POOL_UID)
 })
 
-test("转发账号：选中的账号被禁用后回落 local", () => {
- const state = poolState("acc-1", [{ uid: "acc-1", disabled: true }])
+test("转发账号：选中的账号被禁用后回落本机账号", () => {
+ const state = poolState("acc-1", [
+   { uid: "acc-1", disabled: true },
+   { uid: "acc-2" },
+ ])
  assert.equal(activeUidOf(state), LOCAL_POOL_UID)
 })
 

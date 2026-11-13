@@ -7,6 +7,10 @@ realmBase,
 taskFetch,
 WorkbuddyTaskApiError,
 } from "./api-client"
+import {
+  fallbackCreditTotals,
+  summaryCreditTotals,
+} from "./credit-summary"
 
 /**
  * WorkBuddy成长任务接口。
@@ -46,6 +50,10 @@ export interface WorkbuddyGrowthTask {
  title: string
  description: string
  taskDesc: string
+  /** 上游任务深链；临时专家任务用它携带真实 expertId。 */
+  jumpUrl: string
+  /** auto 任务不接受 accept，且必须先于 single 任务完成。 */
+  taskType: string
  rewardCredit: number
  rewardEnergy: number
  locked: boolean
@@ -108,6 +116,8 @@ export async function listGrowthTasks(
  title: typeof item.title === "string" ? item.title : taskCode,
  description: typeof item.description === "string" ? item.description : "",
  taskDesc: typeof item.task_desc === "string" ? item.task_desc : "",
+    jumpUrl: typeof item.jump_url === "string" ? item.jump_url : "",
+    taskType: typeof item.task_type === "string" ? item.task_type : "",
  rewardCredit: asNumber(item.reward_credit) ??0,
  rewardEnergy: asNumber(item.reward_energy) ??0,
  locked: item.locked === true,
@@ -225,73 +235,83 @@ export interface WorkbuddyBalance {
 }
 
 export async function fetchBalance(account: WorkbuddyAccount): Promise<WorkbuddyBalance> {
-const base = realmBase(account)
- const path = isGlobalAccount(account)
- ? "/billing/meter/get-user-resource"
- : "/v2/billing/meter/get-user-resource"
- const record = await taskFetch(
- account,
- `${base.billing}${path}`,
- {
- method: "POST",
- body: {
- PageNumber:1,
- PageSize:100,
- ProductCode: "p_tcaca",
- Status: [0,3],
- PackageEndTimeRangeBegin: formatDateTime(new Date()),
- PackageEndTimeRangeEnd: formatDateTime(new Date(Date.now() +365 *100 *86_400_000)),
- },
- },
- "查询余额",
- )
+  const base = realmBase(account)
+  const global = isGlobalAccount(account)
+  const path = isGlobalAccount(account)
+    ? "/billing/meter/get-user-resource"
+    : "/v2/billing/meter/get-user-resource"
+  const detailPromise = taskFetch(
+    account,
+    `${base.billing}${path}`,
+    {
+      method: "POST",
+      body: {
+        PageNumber: 1,
+        PageSize: 200,
+        ProductCode: "p_tcaca",
+        Status: [0, 3],
+        PackageEndTimeRangeBegin: formatDateTime(new Date(Date.now() - 365 * 10 * 86_400_000)),
+        PackageEndTimeRangeEnd: formatDateTime(new Date(Date.now() + 365 * 100 * 86_400_000)),
+      },
+    },
+    "查询积分明细",
+  )
+  if (global) {
+    const detail = extractCreditDetails(await detailPromise)
+    return {
+      remain: detail.remain,
+      used: detail.used,
+      size: detail.size,
+      packs: detail.accounts.length,
+    }
+  }
+  const [summaryResult, detailResult] = await Promise.allSettled([
+    taskFetch(
+      account,
+      `${base.billing}/billing/meter/get-user-resource-summary`,
+      { method: "POST", body: {} },
+      "查询积分汇总",
+    ),
+    detailPromise,
+  ])
 
- const data = record.data as Record<string, unknown> | undefined
- const response = data?.Response as Record<string, unknown> | undefined
- const responseData = response?.Data as Record<string, unknown> | undefined
- const accounts = Array.isArray(responseData?.Accounts) ? responseData.Accounts : []
- let remain =0
- let used =0
- let size =0
+  if (summaryResult.status === "rejected" && detailResult.status === "rejected") {
+    throw detailResult.reason
+  }
+  const summaryData =
+    summaryResult.status === "fulfilled"
+      ? summaryResult.value.data as Record<string, unknown> | undefined
+      : undefined
+  const detail =
+    detailResult.status === "fulfilled"
+      ? extractCreditDetails(detailResult.value)
+      : { accounts: [], remain: 0, used: 0, size: 0, totalDosage: 0, totalRemain: 0 }
+  const summary = summaryCreditTotals(summaryData?.Packages)
+  const fallback = fallbackCreditTotals(detail.accounts)
+  const totals = summary ?? fallback
+  const size = summary ? totals.size : totals.size > 0 ? totals.size : detail.totalDosage
+  const remain = summary ? totals.remain : totals.remain > 0 ? totals.remain : detail.totalRemain
 
- for (const entry of accounts) {
- if (!entry || typeof entry !== "object") continue
- const pkg = entry as Record<string, unknown>
- const cycleSize = asNumber(pkg.CycleCapacitySize) ??0
- let packageRemain =0
- let packageUsed =0
- let packageSize =0
+  return {
+    remain,
+    used: totals.used,
+    size,
+    packs: detail.accounts.length,
+  }
+}
 
- if (cycleSize >0) {
- packageSize = cycleSize
- packageRemain = Math.min(Math.max(asNumber(pkg.CycleCapacityRemain) ??0,0), cycleSize)
- packageUsed = cycleSize - packageRemain
- const reportedUsed = asNumber(pkg.CycleCapacityUsed) ??0
- if (reportedUsed > packageUsed) {
- packageUsed = reportedUsed
- if (cycleSize >= packageUsed) packageRemain = cycleSize - packageUsed
- }
- } else {
- packageRemain = asNumber(pkg.CapacityRemain) ??0
- packageUsed = asNumber(pkg.CapacityUsed) ??0
- packageSize = asNumber(pkg.CapacitySize) ??0
- if (packageUsed ===0 && packageSize > packageRemain) {
- packageUsed = packageSize - packageRemain
- }
- }
-
- remain += packageRemain
- used += packageUsed
- size += packageSize
- }
-
- const totalDosage = asNumber(responseData?.TotalDosage) ??0
- if (totalDosage > size) {
- size = totalDosage
- used = Math.max(used, size - remain)
- }
-
- return { remain, used, size, packs: accounts.length }
+function extractCreditDetails(record: Record<string, unknown>) {
+  const data = record.data as Record<string, unknown> | undefined
+  const response = data?.Response as Record<string, unknown> | undefined
+  const responseData = response?.Data as Record<string, unknown> | undefined
+  const accounts = Array.isArray(responseData?.Accounts) ? responseData.Accounts : []
+  const totals = fallbackCreditTotals(accounts)
+  return {
+    accounts,
+    ...totals,
+    totalDosage: asNumber(responseData?.TotalDosage) ?? 0,
+    totalRemain: asNumber(responseData?.TotalRemain) ?? 0,
+  }
 }
 
 export function isGlobalAccount(account: WorkbuddyAccount) {

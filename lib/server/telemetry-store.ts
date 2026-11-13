@@ -254,6 +254,12 @@ function normalizeLogValue(value: unknown): RequestLog | null {
       ? { outputTokensPerSecond: Number(log.outputTokensPerSecond) }
       : {}),
     tokenUsage: log.tokenUsage,
+    ...(typeof log.workbuddyUid === "string" && log.workbuddyUid.trim()
+      ? { workbuddyUid: log.workbuddyUid.trim() }
+      : {}),
+    ...(log.workbuddyRealm === "cn" || log.workbuddyRealm === "global"
+      ? { workbuddyRealm: log.workbuddyRealm }
+      : {}),
     error: log.error,
     rawRequest: log.rawRequest ?? "",
     rewrittenRequest: log.rewrittenRequest ?? "",

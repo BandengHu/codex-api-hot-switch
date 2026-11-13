@@ -1,5 +1,7 @@
 import "server-only"
 
+import type { WorkbuddyAccountBan } from "./account-ban"
+
 export interface WorkbuddyAccountRateLimit {
   resetAt: string
   message: string
@@ -14,6 +16,7 @@ export interface WorkbuddySelectableState {
   activeUid?: string
   entries: WorkbuddySelectableEntry[]
   rateLimits?: Record<string, WorkbuddyAccountRateLimit>
+  accountBans?: Record<string, WorkbuddyAccountBan>
 }
 
 function isActiveRateLimit(
@@ -34,6 +37,13 @@ export function activeRateLimitOf(
   return isActiveRateLimit(rateLimit, now) ? rateLimit : undefined
 }
 
+export function accountBanOf(
+  state: WorkbuddySelectableState,
+  uid: string,
+) {
+  return state.accountBans?.[uid]
+}
+
 export function availableUidOf(
   state: WorkbuddySelectableState,
   orderedEntries: WorkbuddySelectableEntry[],
@@ -46,6 +56,7 @@ export function availableUidOf(
       (entry) =>
         entry.uid === activeUid &&
         !entry.disabled &&
+        !accountBanOf(state, entry.uid) &&
         !activeRateLimitOf(state, entry.uid, now),
     )
   ) {
@@ -53,24 +64,10 @@ export function availableUidOf(
   }
   return orderedEntries.find(
     (entry) =>
-      !entry.disabled && !activeRateLimitOf(state, entry.uid, now),
+      !entry.disabled &&
+      !accountBanOf(state, entry.uid) &&
+      !activeRateLimitOf(state, entry.uid, now),
   )?.uid
-}
-
-export function selectedUidOf(
-  state: WorkbuddySelectableState,
-  orderedEntries: WorkbuddySelectableEntry[],
-) {
-  const activeUid = state.activeUid?.trim()
-  if (
-    activeUid &&
-    orderedEntries.some(
-      (entry) => entry.uid === activeUid && !entry.disabled,
-    )
-  ) {
-    return activeUid
-  }
-  return orderedEntries.find((entry) => !entry.disabled)?.uid
 }
 
 export function nextAvailableUidOf(
@@ -79,7 +76,9 @@ export function nextAvailableUidOf(
   afterUid: string,
   now = Date.now(),
 ) {
-  const enabled = orderedEntries.filter((entry) => !entry.disabled)
+  const enabled = orderedEntries.filter(
+    (entry) => !entry.disabled && !accountBanOf(state, entry.uid),
+  )
   const currentIndex = enabled.findIndex((entry) => entry.uid === afterUid)
   const start = currentIndex >= 0 ? currentIndex + 1 : 0
   for (let offset = 0; offset < enabled.length; offset += 1) {

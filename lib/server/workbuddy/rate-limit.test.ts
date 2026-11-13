@@ -4,6 +4,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  isWorkbuddyRateLimitPrefix,
   WorkbuddyRateLimitError,
   workbuddyRateLimitFromPayload,
   workbuddyRateLimitFromText,
@@ -56,4 +57,22 @@ test("WorkBuddy rate limit keeps the exact upstream message and a 429 classifica
   assert.equal(error.status, 429)
   assert.equal(error.message, MESSAGE)
   assert.deepEqual(error.payload, parsed)
+})
+
+test("WorkBuddy rate limit recognizes every split prefix of the exact message", () => {
+  for (let index = 0; index <= MESSAGE.length; index += 1) {
+    const text = MESSAGE.slice(0, index)
+    assert.equal(isWorkbuddyRateLimitPrefix(text), true, text)
+  }
+  assert.deepEqual(workbuddyRateLimitFromText(MESSAGE), {
+    message: MESSAGE,
+    resetAt: "2026-10-30T02:43:32.000Z",
+  })
+
+  assert.equal(
+    isWorkbuddyRateLimitPrefix(
+      "您的使用量已超出频率限制，将在 2026-10-30 10:43:32 UTC+8 正常回答",
+    ),
+    false,
+  )
 })

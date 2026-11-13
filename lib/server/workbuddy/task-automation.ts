@@ -1,7 +1,10 @@
 import "server-only"
 
 import type { WorkbuddyAccount } from "./account"
+import type { WorkbuddyDynamicExpert } from "@/lib/workbuddy-dynamic-expert"
+import { resolveDynamicExpertTask, runDynamicExpert } from "./actions-experts"
 import { findTaskAction, TASK_ACTIONS } from "./actions-registry"
+import { runCampaignActions } from "./actions-campaign"
 import {
  acceptAllPendingTasks,
  acceptTask,
@@ -12,7 +15,7 @@ import {
  sleep,
  taskProgressText,
 } from "./task-query"
-import { isMpTaskCode } from "./task-api"
+import { isMpTaskCode, listAllGrowthTasks } from "./task-api"
 
 /**
  * WorkBuddy成长任务自动化编排。
@@ -35,6 +38,23 @@ progressAfter?: string
  attempt?: boolean
 }
 
+interface AutomationTaskOrder {
+ taskCode: string
+ taskType: string
+}
+
+/** auto 任务必须先于批量 accept 和其余任务执行，且只执行一次。 */
+export function orderAutomationTaskCodes(tasks: AutomationTaskOrder[]) {
+ const autoCodes = tasks
+  .filter((task) => task.taskType.trim().toLowerCase() === "auto")
+  .map((task) => task.taskCode)
+ const autoSet = new Set(autoCodes)
+ const others = TASK_ACTIONS
+  .map((action) => action.taskCode)
+  .filter((taskCode) => !autoSet.has(taskCode))
+ return { autoCodes, otherCodes: others }
+}
+
 /**
  *完成单个任务：查任务 → accept →执行动作 →轮询达标 →领奖。
  *
@@ -45,14 +65,8 @@ export async function runTaskAutomation(
  taskCode: string,
 ): Promise<AutomationStepResult> {
  const result: AutomationStepResult = { taskCode, status: "error", message: "" }
- const action = findTaskAction(taskCode)
- if (!action) {
- result.status = "skipped"
- result.message = "该任务需要客户端内交互（无对应接口），无法自动完成；请在官方客户端操作"
- return result
- }
-
  let task: Awaited<ReturnType<typeof findTaskFor>>
+ let dynamicExpert: WorkbuddyDynamicExpert | undefined
  try {
  task = await findTaskFor(account, taskCode)
  } catch (error) {
@@ -76,10 +90,23 @@ export async function runTaskAutomation(
  return result
  }
 
+ const action = findTaskAction(taskCode)
+ dynamicExpert = resolveDynamicExpertTask(task)
+ if (!action && !dynamicExpert) {
+  result.status = "skipped"
+  result.message = "该任务需要客户端内交互（无对应接口），无法自动完成；请在官方客户端操作"
+  return result
+ }
+
+// auto 类任务（例如 first_buddy）不接受接取，直接执行并领奖。
+if (task.taskType.trim().toLowerCase() !== "auto") {
  await acceptTask(account, taskCode, isMpTaskCode(taskCode) ? "miniprogram" : undefined)
+}
 
  try {
- result.message = await action.run(account)
+ result.message = action
+  ? await action.run(account)
+  : await runDynamicExpert(account, dynamicExpert!.expertId, dynamicExpert!.expertName)
  } catch (error) {
  result.status = "error"
  result.message = `动作执行失败：${error instanceof Error ? error.message : String(error)}`
@@ -88,11 +115,11 @@ export async function runTaskAutomation(
 
  task = isMpTaskCode(taskCode)
  ? await findTaskFor(account, taskCode).catch(() => undefined)
- : await findTaskWaiting(account, taskCode).catch(() => undefined)
+ : await findTaskWaiting(account, taskCode, dynamicExpert).catch(() => undefined)
 if (!task) {
 result.status = "done"
 result.message += "；回读任务失败，请稍后确认"
- result.attempt = action.attempt
+  result.attempt = action?.attempt
 return result
 }
  result.progressAfter = taskProgressText(task)
@@ -105,7 +132,7 @@ return result
  if (!task.claimable) {
  result.status = "done"
  result.message += `；进度未达标（${taskProgressText(task)}），请稍后重试`
- result.attempt = action.attempt
+ result.attempt = action?.attempt
  return result
  }
 
@@ -147,23 +174,85 @@ export async function runAllAutomations(
 ): Promise<AutomationStepResult[]> {
  const results: AutomationStepResult[] = []
 
+ // auto 任务可能是 single 任务的前置，必须先完成并领奖。
+ // first_buddy 的奖励会发放 Buddy 实例；顺序反了，后续 accept 会报
+ // prerequisite not met: first_buddy。
+ const initialTasks = await listAllGrowthTasks(account).catch((error: unknown) => {
+  results.push({
+   taskCode: "(读取任务)",
+   status: "error",
+   message: `读取成长任务失败（不阻塞后续）：${error instanceof Error ? error.message : String(error)}`,
+  })
+  return []
+ })
+ const { autoCodes, otherCodes } = orderAutomationTaskCodes(initialTasks)
+ for (const taskCode of autoCodes) {
+  try {
+   results.push(await runTaskAutomation(account, taskCode))
+  } catch (error) {
+   results.push({
+    taskCode,
+    status: "error",
+    message: error instanceof Error ? error.message : String(error),
+   })
+  }
+  await sleep(REPORT_GAP_MS)
+ }
+
  for (const message of await acceptAllPendingTasks(account).catch((error: unknown) => [
  `批量接受异常（不阻塞）：${error instanceof Error ? error.message : String(error)}`,
  ])) {
  results.push({ taskCode: "(批量接受)", status: "done", message })
  }
 
- for (const action of TASK_ACTIONS) {
+ for (const taskCode of otherCodes) {
  try {
- results.push(await runTaskAutomation(account, action.taskCode))
+   results.push(await runTaskAutomation(account, taskCode))
  } catch (error) {
  results.push({
- taskCode: action.taskCode,
+    taskCode,
  status: "error",
  message: error instanceof Error ? error.message : String(error),
  })
  }
  await sleep(REPORT_GAP_MS)
+ }
+
+ // 静态动作表无法覆盖上游临时新增的专家任务；深链是唯一可靠判据。
+ const liveTasks = await listAllGrowthTasks(account).catch(() => [])
+ const knownCodes = new Set(TASK_ACTIONS.map((action) => action.taskCode))
+ for (const task of liveTasks) {
+  if (knownCodes.has(task.taskCode) || !resolveDynamicExpertTask(task)) continue
+  try {
+   results.push(await runTaskAutomation(account, task.taskCode))
+  } catch (error) {
+   results.push({
+    taskCode: task.taskCode,
+    status: "error",
+    message: error instanceof Error ? error.message : String(error),
+   })
+  }
+  await sleep(REPORT_GAP_MS)
+ }
+
+ // 运营活动走独立 portal 契约；成长任务列表失败/为空不能阻断这里。
+ try {
+  const campaignResults = await runCampaignActions(account)
+  results.push(
+   ...campaignResults.map((step) => ({
+    taskCode: step.taskCode,
+    status: step.status,
+    message: step.message,
+    ...(step.credit === undefined ? {} : { credit: step.credit }),
+    ...(step.retryable ? { attempt: true } : {}),
+   })),
+  )
+ } catch (error) {
+  results.push({
+   taskCode: "(运营活动)",
+   status: "error",
+   message: error instanceof Error ? error.message : String(error),
+  })
  }
 
  return results

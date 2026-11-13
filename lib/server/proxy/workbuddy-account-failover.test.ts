@@ -8,6 +8,7 @@ import { resolvePrimaryProvider } from "@/lib/provider-endpoints"
 import type { Provider } from "@/lib/types"
 import { workbuddyGlobalProviderTemplate } from "@/lib/workbuddy-provider"
 import { WorkbuddyRateLimitError } from "@/lib/server/workbuddy/rate-limit"
+import { WorkbuddyAccountBanError } from "@/lib/server/workbuddy/account-ban"
 
 const MESSAGE =
   "您的使用量已超出频率限制，将在 2026-10-30 10:43:32 UTC+8 重置，您也可以切换其他模型继续使用。"
@@ -97,6 +98,24 @@ function limitedStream() {
   )
 }
 
+function splitLimitedStream() {
+  const chunks = [
+    "您的使用量已超出",
+    "频率限制，将在 2026-10-30 ",
+    "10:43:32 UTC+8 重置，",
+    "您也可以切换其他模型继续使用。",
+  ]
+  return new Response(
+    chunks
+      .map(
+        (content) =>
+          `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`,
+      )
+      .join(""),
+    { headers: { "content-type": "text/event-stream" } },
+  )
+}
+
 const SUCCESS_STREAM = [
   "data: {\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\n",
   "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
@@ -131,6 +150,7 @@ test("WorkBuddy account failover", async (t) => {
   })
 
   try {
+    const attemptedUids: string[] = []
     const result = await fetchWithWorkbuddyAccountFailover({
       target: prepared.target,
       path: "v1/chat/completions",
@@ -141,6 +161,7 @@ test("WorkBuddy account failover", async (t) => {
       },
       requestIsStream: true,
       capacityRetryEnabled: false,
+      attemptedUids,
     })
 
     assert.deepEqual(
@@ -166,6 +187,7 @@ test("WorkBuddy account failover", async (t) => {
       realm: "global",
     })
     assert.equal(await result.response.text(), SUCCESS_STREAM)
+    assert.deepEqual(attemptedUids, ["account-a"])
 
     const pool = await readGlobalPoolState()
     assert.equal(pool.activeUid, "account-b")
@@ -217,6 +239,77 @@ test("WorkBuddy account failover", async (t) => {
   }
   })
 
+  await t.test("already attempted accounts cannot be selected again", async () => {
+    await rm(join(dataDir, "workbuddy-global-pool"), {
+      recursive: true,
+      force: true,
+    })
+    const prepared = await prepareAccounts("loop-account-a", "loop-account-b")
+    const previousFetch = setProviderFetchForTesting(async (_input, init) => {
+      return accountHeaders(init).get("authorization") === "Bearer token-loop-account-a"
+        ? limitedStream()
+        : Response.json({ error: { message: "unexpected retry" } }, { status: 500 })
+    })
+    try {
+      await assert.rejects(
+        fetchWithWorkbuddyAccountFailover({
+          target: prepared.target,
+          path: "v1/chat/completions",
+          body: { model: "glm-5.3", stream: true },
+          requestIsStream: true,
+          capacityRetryEnabled: false,
+          attemptedUids: ["loop-account-b"],
+        }),
+        WorkbuddyRateLimitError,
+      )
+    } finally {
+      setProviderFetchForTesting(previousFetch)
+    }
+  })
+
+  await t.test("a split WorkBuddy rate limit freezes account A and retries with account B", async () => {
+  await rm(join(dataDir, "workbuddy-global-pool"), {
+    recursive: true,
+    force: true,
+  })
+  const prepared = await prepareAccounts("split-account-a", "split-account-b")
+  const seen: string[] = []
+  const previousFetch = setProviderFetchForTesting(async (_input, init) => {
+    const authorization = accountHeaders(init).get("authorization") || ""
+    seen.push(authorization)
+    if (authorization === "Bearer token-split-account-a") {
+      return splitLimitedStream()
+    }
+    return new Response(SUCCESS_STREAM, {
+      headers: { "content-type": "text/event-stream" },
+    })
+  })
+
+  try {
+    const result = await fetchWithWorkbuddyAccountFailover({
+      target: prepared.target,
+      path: "v1/chat/completions",
+      body: {
+        model: "glm-5.3",
+        stream: true,
+        messages: [{ role: "user", content: "hello" }],
+      },
+      requestIsStream: true,
+      capacityRetryEnabled: false,
+    })
+    assert.deepEqual(seen, [
+      "Bearer token-split-account-a",
+      "Bearer token-split-account-b",
+    ])
+    assert.equal(await result.response.text(), SUCCESS_STREAM)
+    const pool = await readGlobalPoolState()
+    assert.equal(pool.activeUid, "split-account-b")
+    assert.equal(pool.rateLimits?.["split-account-a"]?.message, MESSAGE)
+  } finally {
+    setProviderFetchForTesting(previousFetch)
+  }
+  })
+
   await t.test("a generic 429 does not freeze a WorkBuddy account or rotate", async () => {
   await rm(join(dataDir, "workbuddy-global-pool"), {
     recursive: true,
@@ -252,5 +345,112 @@ test("WorkBuddy account failover", async (t) => {
   } finally {
     setProviderFetchForTesting(previousFetch)
   }
+  })
+
+  await t.test("11140 persists the ban and never rotates to another account", async () => {
+    await rm(join(dataDir, "workbuddy-global-pool"), {
+      recursive: true,
+      force: true,
+    })
+    const prepared = await prepareAccounts("banned-account", "must-not-run")
+    let calls = 0
+    const previousFetch = setProviderFetchForTesting(async () => {
+      calls += 1
+      return Response.json(
+        {
+          code: 0,
+          data: {
+            error: {
+              code: 11140,
+              message: "账号存在异常行为，已被限制使用",
+            },
+          },
+        },
+        { status: 403 },
+      )
+    })
+
+    try {
+      await assert.rejects(
+        () =>
+          fetchWithWorkbuddyAccountFailover({
+            target: prepared.target,
+            path: "v1/chat/completions",
+            body: {
+              model: "glm-5.3",
+              stream: true,
+              messages: [{ role: "user", content: "hello" }],
+            },
+            requestIsStream: true,
+            capacityRetryEnabled: false,
+          }),
+        (error) => {
+          assert.ok(error instanceof WorkbuddyAccountBanError)
+          assert.equal(error.status, 403)
+          assert.equal(error.kind, "auth")
+          assert.equal(error.ban.code, 11140)
+          return true
+        },
+      )
+      assert.equal(calls, 1)
+      const pool = await readGlobalPoolState()
+      assert.equal(pool.activeUid, undefined)
+      assert.equal(pool.accountBans?.["banned-account"]?.code, 11140)
+      assert.equal(pool.accountBans?.["must-not-run"], undefined)
+    } finally {
+      setProviderFetchForTesting(previousFetch)
+    }
+  })
+
+  await t.test("a persisted ban stops before provider fetch with a typed 403", async () => {
+    await rm(join(dataDir, "workbuddy-global-pool"), {
+      recursive: true,
+      force: true,
+    })
+    const prepared = await prepareAccounts("restart-banned-account", "must-not-run")
+    const { banGlobalPoolAccount } = await import(
+      "@/lib/server/workbuddy/global-pool-store"
+    )
+    const detectedAt = new Date("2026-11-13T08:00:00.000Z")
+    await banGlobalPoolAccount("restart-banned-account", {
+      code: 11140,
+      message: "账号存在异常行为，已被限制使用",
+      detectedAt: detectedAt.toISOString(),
+    })
+    let calls = 0
+    const previousFetch = setProviderFetchForTesting(async () => {
+      calls += 1
+      return new Response(SUCCESS_STREAM, {
+        headers: { "content-type": "text/event-stream" },
+      })
+    })
+
+    try {
+      await assert.rejects(
+        () =>
+          fetchWithWorkbuddyAccountFailover({
+            target: prepared.target,
+            path: "v1/chat/completions",
+            body: {
+              model: "glm-5.3",
+              stream: true,
+              messages: [{ role: "user", content: "hello" }],
+            },
+            requestIsStream: true,
+            capacityRetryEnabled: false,
+          }),
+        (error) => {
+          assert.ok(error instanceof WorkbuddyAccountBanError)
+          assert.equal(error.status, 403)
+          assert.equal(error.kind, "auth")
+          assert.equal(error.ban.code, 11140)
+          assert.equal(error.ban.detectedAt, detectedAt.toISOString())
+          return true
+        },
+      )
+      assert.equal(calls, 0)
+    } finally {
+      setProviderFetchForTesting(previousFetch)
+    }
   })
 })

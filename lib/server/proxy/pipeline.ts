@@ -6,7 +6,9 @@ import {
   registerRequestLogDetailSource,
 } from "@/lib/server/request-log-details"
 import { withWorkbuddyTargetCredentials } from "@/lib/server/workbuddy/upstream"
+import { appendWorkbuddyCreditLedger } from "@/lib/server/workbuddy/credit-ledger"
 import { WorkbuddyRateLimitError } from "@/lib/server/workbuddy/rate-limit"
+import { WorkbuddyAccountBanError } from "@/lib/server/workbuddy/account-ban"
 import {
   buildCodexClientModelsResponse,
   buildOpenAIModelsResponse,
@@ -102,6 +104,8 @@ import {
   type BuiltProxyRequest,
 } from "./request-builder"
 import { fetchWithWorkbuddyAccountFailover } from "./workbuddy-account-failover"
+import { workbuddyRateLimitClientResponse } from "./workbuddy-rate-limit-response"
+import { workbuddyAccountBanClientResponse } from "./workbuddy-account-ban-response"
 import { applyAuxiliaryRouting } from "./auxiliary-routing"
 import {
   maybeRectifyUpstreamError,
@@ -213,6 +217,12 @@ function makeLog(params: {
     firstTokenMs: params.firstTokenMs,
     outputTokensPerSecond: params.outputTokensPerSecond,
     tokenUsage: params.tokenUsage,
+    ...(params.target.workbuddyAccount
+      ? {
+          workbuddyUid: params.target.workbuddyAccount.uid,
+          workbuddyRealm: params.target.workbuddyAccount.realm,
+        }
+      : {}),
     error: params.error,
     rawRequest: compactJson(params.body),
     rewrittenRequest: params.rewrittenBody
@@ -286,6 +296,7 @@ function makeEarlyFailureLog(params: {
 function appendLogDetached(log: RequestLog) {
   void appendRequestLogDetails(log).catch(() => undefined)
   void appendLanguagePolicyDiagnostic(log).catch(() => undefined)
+  void appendWorkbuddyCreditLedger(log).catch(() => undefined)
   void appendLog(log).catch(() => undefined)
 }
 
@@ -1305,7 +1316,12 @@ async function handleResponsesCompactFallback(params: {
     built = result.built
     upstream = result.response
   } catch (error) {
-    if (error instanceof WorkbuddyRateLimitError) throw error
+    if (
+      error instanceof WorkbuddyRateLimitError ||
+      error instanceof WorkbuddyAccountBanError
+    ) {
+      throw error
+    }
     const message = error instanceof Error ? error.message : String(error)
     const transformed = {
       error: {
@@ -1695,7 +1711,12 @@ async function handleRelayWebSearchResponses(params: {
       currentBuilt = result.built
       upstream = result.response
     } catch (error) {
-      if (error instanceof WorkbuddyRateLimitError) throw error
+      if (
+        error instanceof WorkbuddyRateLimitError ||
+        error instanceof WorkbuddyAccountBanError
+      ) {
+        throw error
+      }
       const message = error instanceof Error ? error.message : String(error)
       appendLogDetached(
         makeLog({
@@ -2151,11 +2172,16 @@ export async function handleProxyPost(parts: string[], request: Request) {
     const message = error instanceof Error ? error.message : String(error)
     const rateLimitError =
       error instanceof WorkbuddyRateLimitError ? error : undefined
+    const accountBanError =
+      error instanceof WorkbuddyAccountBanError ? error : undefined
     const status =
       rateLimitError?.status ??
+      accountBanError?.status ??
       (error instanceof ProxyRequestBodyError ? error.status : 502)
     const type = rateLimitError
       ? "rate_limit_error"
+      : accountBanError
+        ? "permission_error"
       : error instanceof ProxyRequestBodyError
         ? "invalid_request_error"
         : "server_error"
@@ -2189,6 +2215,36 @@ export async function handleProxyPost(parts: string[], request: Request) {
       )
     }
     if (requestWantsStream(body)) {
+      const rateLimitResponse = rateLimitError
+        ? workbuddyRateLimitClientResponse({
+            path: routePath,
+            status,
+            message,
+            headers: {
+              ...(target ? {
+                "x-codex-hot-switch-provider": target.provider.id,
+                "x-codex-hot-switch-model": target.modelId,
+              } : {}),
+              "x-codex-hot-switch-upstream-error": String(status),
+            },
+          })
+        : null
+      if (rateLimitResponse) return rateLimitResponse
+      const accountBanResponse = accountBanError
+        ? workbuddyAccountBanClientResponse({
+            path: routePath,
+            status,
+            message,
+            headers: {
+              ...(target ? {
+                "x-codex-hot-switch-provider": target.provider.id,
+                "x-codex-hot-switch-model": target.modelId,
+              } : {}),
+              "x-codex-hot-switch-upstream-error": String(status),
+            },
+          })
+        : null
+      if (accountBanResponse) return accountBanResponse
       return new Response(
         streamText(errorResponseSse({ model: target?.requestedModel || target?.modelId || "codex", message, type })),
         {
@@ -2206,7 +2262,16 @@ export async function handleProxyPost(parts: string[], request: Request) {
         },
       )
     }
-    return Response.json({ error: { message, type } }, { status })
+    return Response.json(
+      {
+        error: {
+          message,
+          type,
+          ...(accountBanError ? { code: String(accountBanError.ban.code) } : {}),
+        },
+      },
+      { status },
+    )
   }
 }
 

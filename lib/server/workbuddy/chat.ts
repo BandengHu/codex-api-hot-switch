@@ -123,30 +123,3 @@ export async function runWorkbuddyChat(
  clearTimeout(timeout)
  }
 }
-
-/** `black_cat`「夜猫子」计数窗口：本地时区23:00–08:00。 */
-export function inNightWindow(now = new Date()) {
- const hour = now.getHours()
- return hour >=23 || hour <8
-}
-
-/**夜猫子补足：发 need次 glm-5.2真实对话 +事件链上报，返回成功次数。 */
-export async function runNightChats(
- account: WorkbuddyAccount,
- need: number,
- reportModelChat: (conversationId: string) => Promise<void>,
-): Promise<number> {
- let ok =0
- for (let index =0; index < need; index++) {
- const conversationId = `wb-night-${Date.now()}-${index}`
- try {
- await runWorkbuddyChat(account, { model: "glm-5.2", conversationId })
- await reportModelChat(conversationId)
- ok++
- } catch {
- return ok
- }
- await new Promise((resolve) => setTimeout(resolve,4_000))
- }
- return ok
-}

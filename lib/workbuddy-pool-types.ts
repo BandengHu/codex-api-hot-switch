@@ -5,18 +5,47 @@ export interface WorkbuddyPoolBalance {
  packs: number
 }
 
+export interface WorkbuddyAccountBanView {
+  code: number
+  message: string
+  detectedAt: string
+}
+
 export interface WorkbuddyPoolEntryView {
- uid: string
- nickname: string
- source: "local" | "file"
- disabled: boolean
- balance?: WorkbuddyPoolBalance
- balanceError?: string
- dailyStatus?: {
-   lastRunDate: string
-   lastResult?: string
-   needsRun: boolean
- }
+  uid: string
+  nickname: string
+  source: "local" | "file"
+  disabled: boolean
+  /** 上游明确返回 11140 后的持久封禁；不会自动过期。 */
+  accountBan?: WorkbuddyAccountBanView
+  /** 仍在重置时间之前的账号级限频。 */
+  rateLimit?: {
+    message: string
+    resetAt: string
+  }
+  /** 已过期但尚未清理的历史恢复点；不参与可用账号判断。 */
+  recoveredRateLimit?: {
+    message: string
+    resetAt: string
+  }
+  balance?: WorkbuddyPoolBalance
+  balanceError?: string
+  dailyStatus?: {
+    lastRunDate: string
+    lastResult?: string
+    needsRun: boolean
+    /** true=官方确认已签；false=官方确认未签；null=状态未知。 */
+    todayCheckedIn?: boolean | null
+    todayCredit?: number
+    streakDays?: number
+    checkedAt?: string
+  }
+  creditUsageToday?: {
+    recordedRequests: number
+    knownCredits: number
+    unknownCredits: number
+    creditTotal: number
+  }
 }
 
 /**号池整体视图：条目列表 + 当前生效的转发账号。 */
@@ -31,6 +60,10 @@ export interface WorkbuddyPoolGrowthTask {
  title: string
  description: string
  taskDesc: string
+  /** 上游任务深链；仅用于识别动态专家，不会自动点击。 */
+  jumpUrl: string
+  /** auto 任务不接受接取，且可能作为其他任务的前置。 */
+  taskType: string
  rewardCredit: number
  rewardEnergy: number
  locked: boolean

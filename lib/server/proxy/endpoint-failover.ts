@@ -9,6 +9,10 @@ import {
   recordProviderEndpointSuccess,
 } from "@/lib/server/provider-endpoint-runtime"
 import {
+  WorkbuddyAccountBanError,
+  workbuddyAccountBanFromPayload,
+} from "@/lib/server/workbuddy/account-ban"
+import {
   WorkbuddyRateLimitError,
   workbuddyRateLimitFromPayload,
   workbuddyRateLimitFromText,
@@ -192,6 +196,11 @@ export async function fetchWithEndpointFailover(params: {
 
       const { payload, classification } = await classifyResponse(response)
       if (detectWorkbuddyRateLimit) {
+        const accountBan = workbuddyAccountBanFromPayload(
+          response.status,
+          payload,
+        )
+        if (accountBan) throw accountBan
         const rateLimit =
           workbuddyRateLimitFromPayload(payload) ??
           (typeof payload === "string"
@@ -228,7 +237,12 @@ export async function fetchWithEndpointFailover(params: {
       failoverReasons.push(`${endpoint.name}：${classification.message}`)
     } catch (error) {
       if (isClientCancellation(error, params.requestSignal)) throw error
-      if (error instanceof WorkbuddyRateLimitError) throw error
+      if (
+        error instanceof WorkbuddyRateLimitError ||
+        error instanceof WorkbuddyAccountBanError
+      ) {
+        throw error
+      }
       const classification =
         error instanceof EndpointAttemptError
           ? error

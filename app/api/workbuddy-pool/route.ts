@@ -11,10 +11,19 @@ import {
 } from "@/lib/server/workbuddy/task-pool-store"
 import { fetchBalance } from "@/lib/server/workbuddy/task-api"
 import {
+  accountBanOf,
+  activeRateLimitOf,
+} from "@/lib/server/workbuddy/pool-selection"
+import type { WorkbuddyAccountBan } from "@/lib/server/workbuddy/account-ban"
+import {
   formatScheduleDay,
   readDailyScheduleState,
 } from "@/lib/server/workbuddy/daily-scheduler"
 import { readPoolAccount } from "@/lib/server/workbuddy/task-pool-store"
+import {
+  summarizeWorkbuddyCreditsByUid,
+  type WorkbuddyCreditSummariesByUid,
+} from "@/lib/server/workbuddy/credit-ledger"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -24,12 +33,25 @@ interface PoolEntryWithBalance {
  nickname: string
  source: "local" | "file"
  disabled: boolean
+ accountBan?: WorkbuddyAccountBan
+ rateLimit?: { message: string; resetAt: string }
+  recoveredRateLimit?: { message: string; resetAt: string }
  balance?: { remain: number; used: number; size: number; packs: number }
  balanceError?: string
  dailyStatus?: {
    lastRunDate: string
    lastResult?: string
    needsRun: boolean
+   todayCheckedIn?: boolean | null
+   todayCredit?: number
+   streakDays?: number
+   checkedAt?: string
+ }
+ creditUsageToday?: {
+   recordedRequests: number
+   knownCredits: number
+   unknownCredits: number
+   creditTotal: number
  }
 }
 
@@ -41,6 +63,8 @@ export async function GET(request: Request) {
  const poolState = await readPoolState()
  const schedule = await readDailyScheduleState()
  const today = formatScheduleDay(new Date())
+ const creditUsageByUid: WorkbuddyCreditSummariesByUid =
+   await summarizeWorkbuddyCreditsByUid(today).catch(() => ({}))
  const enriched: PoolEntryWithBalance[] = []
  for (const entry of entries) {
  const item: PoolEntryWithBalance = {
@@ -49,7 +73,15 @@ export async function GET(request: Request) {
  source: entry.source,
  disabled: entry.disabled,
  }
- if (!entry.disabled) {
+ const rateLimit = activeRateLimitOf(poolState, entry.uid)
+ const previousRateLimit = poolState.rateLimits?.[entry.uid]
+ if (rateLimit) item.rateLimit = rateLimit
+ if (!rateLimit && previousRateLimit) {
+   item.recoveredRateLimit = previousRateLimit
+ }
+ const accountBan = accountBanOf(poolState, entry.uid)
+ if (accountBan) item.accountBan = accountBan
+ if (!entry.disabled && !accountBan) {
  try {
  const account = await readPoolAccount(entry.uid)
  const balance = await fetchBalance(account)
@@ -61,11 +93,23 @@ export async function GET(request: Request) {
  }
   const lastRunDate = schedule.lastRunByUid[entry.uid]
   const lastResult = schedule.lastResultByUid?.[entry.uid]
-  if (lastRunDate || lastResult) {
+  const rawCheckin = schedule.checkinByUid?.[entry.uid]
+  const checkin = rawCheckin?.day === today ? rawCheckin : undefined
+  const creditUsageToday = creditUsageByUid[entry.uid]
+  const retryAt = Date.parse(schedule.nextRetryAtByUid?.[entry.uid] ?? "")
+  if (creditUsageToday) item.creditUsageToday = creditUsageToday
+  if (lastRunDate || lastResult || checkin) {
     item.dailyStatus = {
       lastRunDate: lastRunDate ?? "",
       lastResult,
-      needsRun: lastRunDate !== today || schedule.retryPendingByUid?.[entry.uid] === true,
+      needsRun:
+        lastRunDate !== today ||
+        checkin?.todayCheckedIn !== true ||
+        (Number.isFinite(retryAt) && retryAt <= Date.now()),
+      todayCheckedIn: checkin?.todayCheckedIn,
+      todayCredit: checkin?.todayCredit,
+      streakDays: checkin?.streakDays,
+      checkedAt: checkin?.checkedAt,
     }
  }
  enriched.push(item)

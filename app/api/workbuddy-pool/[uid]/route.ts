@@ -5,6 +5,7 @@ import {
  readPoolAccount,
  removePoolAccount,
  setPoolAccountDisabled,
+ unbanPoolAccount,
 } from "@/lib/server/workbuddy/task-pool-store"
 import { claimGrowthReward, listAllGrowthTasks } from "@/lib/server/workbuddy/task-api"
 import { runAllAutomations, runTaskAutomation } from "@/lib/server/workbuddy/task-automation"
@@ -49,6 +50,10 @@ export async function POST(request: Request, context: RouteContext) {
  if (action === "disable" || action === "enable") {
  await setPoolAccountDisabled(uid, action === "disable")
  return NextResponse.json({ ok: true })
+ }
+ if (action === "unban") {
+   await unbanPoolAccount(uid)
+   return NextResponse.json({ ok: true })
  }
  if (action === "remove") {
  await removePoolAccount(uid)

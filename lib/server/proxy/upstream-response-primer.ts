@@ -6,6 +6,11 @@ import {
   type EndpointFailureClassification,
 } from "@/lib/server/provider-endpoint-runtime"
 import {
+  WorkbuddyAccountBanError,
+  workbuddyAccountBanFromPayload,
+} from "@/lib/server/workbuddy/account-ban"
+import {
+  isWorkbuddyRateLimitPrefix,
   WorkbuddyRateLimitError,
   workbuddyRateLimitFromPayload,
   workbuddyRateLimitFromText,
@@ -181,13 +186,15 @@ function throwIfWorkbuddyRateLimit(
   enabled: boolean,
 ) {
   if (!enabled) return
+  const accountBan = workbuddyAccountBanFromPayload(403, frame.payload)
+  if (accountBan) throw accountBan
   const rateLimit =
     workbuddyRateLimitFromPayload(frame.payload) ??
     workbuddyRateLimitFromText(frame.dataText)
   if (rateLimit) throw new WorkbuddyRateLimitError(rateLimit)
 }
 
-function throwIfBufferedWorkbuddyRateLimit(text: string) {
+function throwIfBufferedWorkbuddyRejection(text: string) {
   const direct = workbuddyRateLimitFromText(text)
   if (direct) throw new WorkbuddyRateLimitError(direct)
 
@@ -195,15 +202,66 @@ function throwIfBufferedWorkbuddyRateLimit(text: string) {
     ? text.split(/\r?\n\r?\n/)
     : [text]
   for (const rawFrame of frames) {
-    throwIfWorkbuddyRateLimit(parseSseFrame(rawFrame), true)
+    const frame = parseSseFrame(rawFrame)
+    const accountBan = workbuddyAccountBanFromPayload(403, frame.payload)
+    if (accountBan) throw accountBan
+    throwIfWorkbuddyRateLimit(frame, true)
   }
+}
+
+function streamContentText(value: unknown): string {
+  if (typeof value === "string") return value
+  if (!Array.isArray(value)) return ""
+  return value
+    .map((part) => {
+      if (typeof part === "string") return part
+      if (!isObject(part)) return ""
+      if (typeof part.text === "string") return part.text
+      return typeof part.content === "string" ? part.content : ""
+    })
+    .join("")
+}
+
+function chatCompletionContentDelta(payload: unknown) {
+  if (!isObject(payload) || !Array.isArray(payload.choices)) return ""
+  return payload.choices
+    .map((choice) => {
+      if (!isObject(choice)) return ""
+      const delta = isObject(choice.delta)
+        ? choice.delta
+        : isObject(choice.message)
+          ? choice.message
+          : {}
+      return streamContentText(delta.content)
+    })
+    .join("")
+}
+
+function chatCompletionHasFinishReason(payload: unknown) {
+  if (!isObject(payload) || !Array.isArray(payload.choices)) return false
+  return payload.choices.some(
+    (choice) =>
+      isObject(choice) &&
+      typeof choice.finish_reason === "string" &&
+      choice.finish_reason.trim().length > 0,
+  )
 }
 
 function frameIsSemantic(
   frame: ReturnType<typeof parseSseFrame>,
   detectWorkbuddyRateLimit = false,
+  workbuddyContent = { text: "" },
 ) {
   throwIfWorkbuddyRateLimit(frame, detectWorkbuddyRateLimit)
+  if (detectWorkbuddyRateLimit) {
+    const content = chatCompletionContentDelta(frame.payload)
+    if (content) {
+      workbuddyContent.text += content
+      const rateLimit = workbuddyRateLimitFromText(workbuddyContent.text)
+      if (rateLimit) throw new WorkbuddyRateLimitError(rateLimit)
+      if (isWorkbuddyRateLimitPrefix(workbuddyContent.text)) return false
+    }
+  }
   const failure = semanticFailureClassification({
     payload: frame.payload,
     event: frame.event,
@@ -256,6 +314,7 @@ function frameIsSemantic(
     }
   }
   if (Array.isArray(payload.choices)) {
+    if (chatCompletionHasFinishReason(payload)) return true
     return payload.choices.some((choice) => {
       if (!isObject(choice) || !isObject(choice.delta)) return false
       const delta = choice.delta
@@ -317,6 +376,8 @@ function inspectJsonDocument(
     return false
   }
   if (detectWorkbuddyRateLimit) {
+    const accountBan = workbuddyAccountBanFromPayload(403, payload)
+    if (accountBan) throw accountBan
     const rateLimit = workbuddyRateLimitFromPayload(payload)
     if (rateLimit) throw new WorkbuddyRateLimitError(rateLimit)
   }
@@ -370,7 +431,7 @@ async function prepareBufferedResponse(
     const text = new TextDecoder().decode(body)
     if (text.trim()) {
       inspectJsonDocument(text, detectWorkbuddyRateLimit)
-      if (detectWorkbuddyRateLimit) throwIfBufferedWorkbuddyRateLimit(text)
+      if (detectWorkbuddyRateLimit) throwIfBufferedWorkbuddyRejection(text)
     }
     return new Response(body, {
       status: response.status,
@@ -415,6 +476,7 @@ export async function prepareUpstreamResponse(
   let inspectedBytes = 0
   let semantic = false
   let controlError: Error | undefined
+  const workbuddyContent = { text: "" }
   const timeoutMs = Math.max(0, options.timeoutMs || 0)
   const cancelReader = (reason: string) => {
     void reader.cancel(reason).catch(() => undefined)
@@ -461,6 +523,7 @@ export async function prepareUpstreamResponse(
             frameIsSemantic(
               parseSseFrame(rawFrame),
               options.detectWorkbuddyRateLimit,
+              workbuddyContent,
             )
           ) {
             semantic = true
@@ -472,6 +535,7 @@ export async function prepareUpstreamResponse(
           semantic = frameIsSemantic(
             parseSseFrame(frameBuffer.trim()),
             options.detectWorkbuddyRateLimit,
+            workbuddyContent,
           )
         }
         if (!semantic) {
@@ -508,6 +572,7 @@ export async function prepareUpstreamResponse(
           frameIsSemantic(
             parseSseFrame(rawFrame),
             options.detectWorkbuddyRateLimit,
+            workbuddyContent,
           )
         ) {
           semantic = true

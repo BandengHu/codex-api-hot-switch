@@ -13,6 +13,8 @@ import {
   readGlobalPoolState,
   syncGlobalPoolFromDisk,
 } from "@/lib/server/workbuddy/global-pool-store"
+import { accountBanOf } from "@/lib/server/workbuddy/pool-selection"
+import type { WorkbuddyAccountBan } from "@/lib/server/workbuddy/account-ban"
 import { fetchBalance } from "@/lib/server/workbuddy/task-api"
 
 export const runtime = "nodejs"
@@ -31,6 +33,7 @@ interface GlobalPoolEntryWithBalance {
   domain: string
   disabled: boolean
   active: boolean
+  accountBan?: WorkbuddyAccountBan
   balance?: { remain: number; used: number; size: number; packs: number }
   balanceError?: string
 }
@@ -57,7 +60,9 @@ export async function GET(request: Request) {
         disabled: entry.disabled,
         active: entry.uid === activeUid,
       }
-      if (!entry.disabled) {
+      const accountBan = accountBanOf(state, entry.uid)
+      if (accountBan) item.accountBan = accountBan
+      if (!entry.disabled && !accountBan) {
         try {
           const account = await readGlobalPoolAccount(entry.uid)
           item.balance = await fetchBalance(account)

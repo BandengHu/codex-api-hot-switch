@@ -6,6 +6,7 @@ import {
   removeGlobalAccount,
   setActiveGlobalPoolAccount,
   setGlobalAccountDisabled,
+  unbanGlobalPoolAccount,
 } from "@/lib/server/workbuddy/global-pool-store"
 import { fetchBalance } from "@/lib/server/workbuddy/task-api"
 
@@ -25,6 +26,10 @@ export async function POST(request: Request, context: RouteContext) {
 
     if (action === "disable" || action === "enable") {
       await setGlobalAccountDisabled(uid, action === "disable")
+      return NextResponse.json({ ok: true })
+    }
+    if (action === "unban") {
+      await unbanGlobalPoolAccount(uid)
       return NextResponse.json({ ok: true })
     }
     if (action === "remove") {
