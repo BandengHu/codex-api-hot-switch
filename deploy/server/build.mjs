@@ -99,6 +99,26 @@ async function resolveInstalledPackage(name) {
   return ""
 }
 
+/**
+ * `ffprobe-static` 同时携带 win32/darwin/linux 多架构二进制。
+ * 服务器是 Linux x64，保留其它平台只会让部署包膨胀约 300MB。
+ */
+async function pruneForeignBinaries(nodeModules) {
+  const binDir = join(nodeModules, "ffprobe-static", "bin")
+  if (!(await exists(binDir))) return
+  for (const platform of await readdir(binDir)) {
+    if (platform !== "linux") {
+      await rm(join(binDir, platform), { recursive: true, force: true })
+      continue
+    }
+    for (const arch of await readdir(join(binDir, platform))) {
+      if (arch !== "x64") {
+        await rm(join(binDir, platform, arch), { recursive: true, force: true })
+      }
+    }
+  }
+}
+
 function git(args) {
   // 用 execFileSync 避免 Windows 下 shell 引号与路径转义问题。
   return execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim()
@@ -139,6 +159,7 @@ async function main() {
   // 所有链接已展开为实体，`.pnpm` 只是重复副本。
   await rm(join(nodeModules, ".pnpm"), { recursive: true, force: true })
   await ensurePackages(nodeModules)
+  await pruneForeignBinaries(nodeModules)
   await assertNoLinks(nodeModules)
 
   await rm(outDir, { recursive: true, force: true })
