@@ -97,6 +97,24 @@ function limitedStream() {
   )
 }
 
+function splitLimitedStream() {
+  const chunks = [
+    "您的使用量已超出",
+    "频率限制，将在 2026-10-30 ",
+    "10:43:32 UTC+8 重置，",
+    "您也可以切换其他模型继续使用。",
+  ]
+  return new Response(
+    chunks
+      .map(
+        (content) =>
+          `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`,
+      )
+      .join(""),
+    { headers: { "content-type": "text/event-stream" } },
+  )
+}
+
 const SUCCESS_STREAM = [
   "data: {\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\n",
   "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
@@ -212,6 +230,49 @@ test("WorkBuddy account failover", async (t) => {
       },
     )
     assert.equal(calls, 1)
+  } finally {
+    setProviderFetchForTesting(previousFetch)
+  }
+  })
+
+  await t.test("a split WorkBuddy rate limit freezes account A and retries with account B", async () => {
+  await rm(join(dataDir, "workbuddy-global-pool"), {
+    recursive: true,
+    force: true,
+  })
+  const prepared = await prepareAccounts("split-account-a", "split-account-b")
+  const seen: string[] = []
+  const previousFetch = setProviderFetchForTesting(async (_input, init) => {
+    const authorization = accountHeaders(init).get("authorization") || ""
+    seen.push(authorization)
+    if (authorization === "Bearer token-split-account-a") {
+      return splitLimitedStream()
+    }
+    return new Response(SUCCESS_STREAM, {
+      headers: { "content-type": "text/event-stream" },
+    })
+  })
+
+  try {
+    const result = await fetchWithWorkbuddyAccountFailover({
+      target: prepared.target,
+      path: "v1/chat/completions",
+      body: {
+        model: "glm-5.3",
+        stream: true,
+        messages: [{ role: "user", content: "hello" }],
+      },
+      requestIsStream: true,
+      capacityRetryEnabled: false,
+    })
+    assert.deepEqual(seen, [
+      "Bearer token-split-account-a",
+      "Bearer token-split-account-b",
+    ])
+    assert.equal(await result.response.text(), SUCCESS_STREAM)
+    const pool = await readGlobalPoolState()
+    assert.equal(pool.activeUid, "split-account-b")
+    assert.equal(pool.rateLimits?.["split-account-a"]?.message, MESSAGE)
   } finally {
     setProviderFetchForTesting(previousFetch)
   }

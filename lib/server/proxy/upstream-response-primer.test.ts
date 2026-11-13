@@ -160,6 +160,33 @@ test("WorkBuddy rate limits are detected before output but ignored after visible
   assert.equal(await prepared.text(), chunks.join(""))
 })
 
+test("WorkBuddy split rate-limit deltas are detected before visible output", async () => {
+  const chunks = [
+    "您的使用量已超出",
+    "频率限制，将在 2026-10-30 ",
+    "10:43:32 UTC+8 重置，",
+    "您也可以切换其他模型继续使用。",
+  ].map(
+    (content) =>
+      `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`,
+  )
+
+  await assert.rejects(
+    () =>
+      prepareUpstreamResponse(
+        streamedResponse(chunks, "text/event-stream"),
+        true,
+        { detectWorkbuddyRateLimit: true },
+      ),
+    (error) => {
+      assert.ok(error instanceof WorkbuddyRateLimitError)
+      assert.equal(error.status, 429)
+      assert.equal(error.message, WORKBUDDY_LIMIT)
+      return true
+    },
+  )
+})
+
 test("buffered WorkBuddy rate limits are detected from plain text", async () => {
   await assert.rejects(
     () =>

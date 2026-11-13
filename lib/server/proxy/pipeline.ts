@@ -102,6 +102,7 @@ import {
   type BuiltProxyRequest,
 } from "./request-builder"
 import { fetchWithWorkbuddyAccountFailover } from "./workbuddy-account-failover"
+import { workbuddyRateLimitClientResponse } from "./workbuddy-rate-limit-response"
 import { applyAuxiliaryRouting } from "./auxiliary-routing"
 import {
   maybeRectifyUpstreamError,
@@ -2189,6 +2190,21 @@ export async function handleProxyPost(parts: string[], request: Request) {
       )
     }
     if (requestWantsStream(body)) {
+      const rateLimitResponse = rateLimitError
+        ? workbuddyRateLimitClientResponse({
+            path: routePath,
+            status,
+            message,
+            headers: {
+              ...(target ? {
+                "x-codex-hot-switch-provider": target.provider.id,
+                "x-codex-hot-switch-model": target.modelId,
+              } : {}),
+              "x-codex-hot-switch-upstream-error": String(status),
+            },
+          })
+        : null
+      if (rateLimitResponse) return rateLimitResponse
       return new Response(
         streamText(errorResponseSse({ model: target?.requestedModel || target?.modelId || "codex", message, type })),
         {
