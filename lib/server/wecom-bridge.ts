@@ -6,6 +6,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
+import { resolveDataDir } from "@/lib/server/data-root"
 import type {
   WecomBridgeCommandHelpItem,
   WecomBridgeDiagnosticItem,
@@ -56,26 +57,8 @@ function defaultStateDir() {
   return join(homedir(), ".codexbridge")
 }
 
-function hotSwitchAppDataRoot() {
-  if (process.platform === "win32") {
-    return join(
-      process.env.APPDATA || join(homedir(), "AppData", "Roaming"),
-      "codex-api-hot-switch",
-    )
-  }
-  if (process.platform === "darwin") {
-    return join(homedir(), "Library", "Application Support", "codex-api-hot-switch")
-  }
-  return join(
-    process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"),
-    "codex-api-hot-switch",
-  )
-}
-
 function hotSwitchDataRoot() {
-  return process.env.CODEX_HOT_SWITCH_DATA_DIR
-    ? process.env.CODEX_HOT_SWITCH_DATA_DIR
-    : join(hotSwitchAppDataRoot(), "data")
+  return resolveDataDir()
 }
 
 function settingsPath() {

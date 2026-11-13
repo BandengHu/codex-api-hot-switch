@@ -1,8 +1,10 @@
 import {
+  accessAuthRequired,
+  accountFromApiKey,
   apiKeyRequiredResponse,
   authRequiredResponse,
-  isApiKeyAuthorized,
   isAuthorized,
+  withAccountContext,
 } from "@/lib/server/access-guard"
 import {
   dshSearchErrorResponse,
@@ -13,7 +15,15 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function POST(request: Request) {
-  if (!(await isApiKeyAuthorized(request))) return apiKeyRequiredResponse()
+  if (accessAuthRequired()) {
+    const context = await accountFromApiKey(request.headers)
+    if (!context) return apiKeyRequiredResponse()
+    return withAccountContext(context, () => handlePost(request))
+  }
+  return handlePost(request)
+}
+
+async function handlePost(request: Request) {
   try {
     return Response.json(
       await executeDshSearchMessages(await request.json(), request.signal),

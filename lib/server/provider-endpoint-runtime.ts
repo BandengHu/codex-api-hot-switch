@@ -2,8 +2,8 @@ import "server-only"
 
 import { createHash } from "node:crypto"
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
-import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+import { resolveDataDir } from "./data-root"
 import {
   effectiveEndpointBaseUrl,
   resolveProviderEndpoint,
@@ -50,31 +50,26 @@ type RuntimeFile = {
   states: ProviderEndpointRuntimeState[]
 }
 
-function defaultDataDir() {
-  if (process.platform === "win32") {
-    return join(
-      process.env.APPDATA || join(homedir(), "AppData", "Roaming"),
-      "codex-api-hot-switch",
-      "data",
-    )
-  }
-  if (process.platform === "darwin") {
-    return join(homedir(), "Library", "Application Support", "codex-api-hot-switch", "data")
-  }
-  return join(
-    process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"),
-    "codex-api-hot-switch",
-    "data",
-  )
+function runtimePath(dataDir = resolveDataDir()) {
+  return join(dataDir, "provider-endpoint-runtime.json")
 }
 
-const RUNTIME_PATH = join(
-  process.env.CODEX_HOT_SWITCH_DATA_DIR || defaultDataDir(),
-  "provider-endpoint-runtime.json",
-)
+/** 端点健康状态按数据目录分桶，不同账号的配额/封禁互不影响。 */
+interface RuntimeBucket {
+  cache: ProviderEndpointRuntimeState[] | null
+  queue: Promise<unknown>
+}
 
-let stateCache: ProviderEndpointRuntimeState[] | null = null
-let writeQueue: Promise<unknown> = Promise.resolve()
+const buckets = new Map<string, RuntimeBucket>()
+
+function bucketFor(dataDir = resolveDataDir()): RuntimeBucket {
+  let bucket = buckets.get(dataDir)
+  if (!bucket) {
+    bucket = { cache: null, queue: Promise.resolve() }
+    buckets.set(dataDir, bucket)
+  }
+  return bucket
+}
 
 function endpointKey(providerId: string, endpointId: string) {
   return `${providerId}:${endpointId}`
@@ -129,32 +124,39 @@ function normalizeState(value: unknown): ProviderEndpointRuntimeState | null {
   }
 }
 
-async function loadStates() {
-  if (stateCache) return stateCache
+async function loadStates(dataDir = resolveDataDir()) {
+  const bucket = bucketFor(dataDir)
+  if (bucket.cache) return bucket.cache
+  const path = runtimePath(dataDir)
   try {
-    const raw = await readFile(RUNTIME_PATH, "utf8")
+    const raw = await readFile(path, "utf8")
     const parsed = JSON.parse(raw) as Partial<RuntimeFile>
-    stateCache = Array.isArray(parsed.states)
+    bucket.cache = Array.isArray(parsed.states)
       ? parsed.states.map(normalizeState).filter((state): state is ProviderEndpointRuntimeState => Boolean(state))
       : []
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-    stateCache = []
+    bucket.cache = []
   }
-  return stateCache
+  return bucket.cache
 }
 
-async function persistStates(states: ProviderEndpointRuntimeState[]) {
-  await mkdir(dirname(RUNTIME_PATH), { recursive: true })
-  const tempPath = `${RUNTIME_PATH}.${process.pid}.${Date.now()}.tmp`
+async function persistStates(
+  states: ProviderEndpointRuntimeState[],
+  dataDir = resolveDataDir(),
+) {
+  const path = runtimePath(dataDir)
+  await mkdir(dirname(path), { recursive: true })
+  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`
   const value: RuntimeFile = { version: 1, states }
   await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8")
-  await rename(tempPath, RUNTIME_PATH)
+  await rename(tempPath, path)
 }
 
-function enqueueMutation<T>(task: () => Promise<T>) {
-  const run = writeQueue.catch(() => undefined).then(task)
-  writeQueue = run.then(
+function enqueueMutation<T>(task: () => Promise<T>, dataDir = resolveDataDir()) {
+  const bucket = bucketFor(dataDir)
+  const run = bucket.queue.catch(() => undefined).then(task)
+  bucket.queue = run.then(
     () => undefined,
     () => undefined,
   )
@@ -255,8 +257,9 @@ function compactRuntimeStates(
 }
 
 export async function getProviderEndpointRuntimeStates(providers: Provider[]) {
+  const dataDir = resolveDataDir()
   return enqueueMutation(async () => {
-    const states = await loadStates()
+    const states = await loadStates(dataDir)
     const next = compactRuntimeStates(states, providers)
     let changed = next.length !== states.length
     const result = providers.flatMap((provider) => {
@@ -286,16 +289,17 @@ export async function getProviderEndpointRuntimeStates(providers: Provider[]) {
       return providerStates.map(({ state }) => ({ ...state }))
     })
     if (changed) {
-      stateCache = next
-      await persistStates(next)
+      bucketFor(dataDir).cache = next
+      await persistStates(next, dataDir)
     }
     return result
-  })
+  }, dataDir)
 }
 
 async function getProviderRuntimeStates(provider: Provider) {
+  const dataDir = resolveDataDir()
   return enqueueMutation(async () => {
-    const states = await loadStates()
+    const states = await loadStates(dataDir)
     let changed = false
     const providerStates = provider.endpoints.map((endpoint) => {
       const existing = states.find(
@@ -319,18 +323,19 @@ async function getProviderRuntimeStates(provider: Provider) {
       }
     }
     if (changed) {
-      await persistStates(states)
+      await persistStates(states, dataDir)
     }
     return providerStates.map(({ state }) => ({ ...state }))
-  })
+  }, dataDir)
 }
 
 export async function resetProviderEndpointRuntime(
   providerId: string,
   endpointId: string,
 ) {
+  const dataDir = resolveDataDir()
   return enqueueMutation(async () => {
-    const states = await loadStates()
+    const states = await loadStates(dataDir)
     const state = states.find(
       (value) => value.providerId === providerId && value.endpointId === endpointId,
     )
@@ -341,16 +346,17 @@ export async function resetProviderEndpointRuntime(
     state.authDisabled = false
     delete state.lastError
     state.updatedAt = new Date().toISOString()
-    await persistStates(states)
-  })
+    await persistStates(states, dataDir)
+  }, dataDir)
 }
 
 export async function recordProviderEndpointSuccess(
   provider: Provider,
   endpoint: ProviderEndpoint,
 ) {
+  const dataDir = resolveDataDir()
   return enqueueMutation(async () => {
-    const states = await loadStates()
+    const states = await loadStates(dataDir)
     const state = stateFor(states, provider, endpoint)
     if (
       state.consecutiveFailures === 0 &&
@@ -365,8 +371,8 @@ export async function recordProviderEndpointSuccess(
     delete state.cooldownUntil
     delete state.lastError
     state.updatedAt = new Date().toISOString()
-    await persistStates(states)
-  })
+    await persistStates(states, dataDir)
+  }, dataDir)
 }
 
 export async function recordProviderEndpointFailure(
@@ -374,8 +380,9 @@ export async function recordProviderEndpointFailure(
   endpoint: ProviderEndpoint,
   classification: EndpointFailureClassification,
 ) {
+  const dataDir = resolveDataDir()
   return enqueueMutation(async () => {
-    const states = await loadStates()
+    const states = await loadStates(dataDir)
     const state = stateFor(states, provider, endpoint)
     state.updatedAt = new Date().toISOString()
     state.lastError = classification.message
@@ -385,7 +392,7 @@ export async function recordProviderEndpointFailure(
       state.quotaDisabled = shouldFailover
       state.consecutiveFailures = 0
       delete state.cooldownUntil
-      await persistStates(states)
+      await persistStates(states, dataDir)
       return { shouldFailover, state: { ...state } }
     }
 
@@ -394,12 +401,12 @@ export async function recordProviderEndpointFailure(
       state.authDisabled = shouldFailover
       state.consecutiveFailures = 0
       delete state.cooldownUntil
-      await persistStates(states)
+      await persistStates(states, dataDir)
       return { shouldFailover, state: { ...state } }
     }
 
     if (classification.kind !== "transient") {
-      await persistStates(states)
+      await persistStates(states, dataDir)
       return { shouldFailover: false, state: { ...state } }
     }
 
@@ -412,9 +419,9 @@ export async function recordProviderEndpointFailure(
     } else {
       delete state.cooldownUntil
     }
-    await persistStates(states)
+    await persistStates(states, dataDir)
     return { shouldFailover, state: { ...state } }
-  })
+  }, dataDir)
 }
 
 export async function availableProviderEndpoints(provider: Provider) {

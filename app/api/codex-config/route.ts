@@ -1,4 +1,4 @@
-import { authRequiredResponse, isAuthorized } from "@/lib/server/access-guard"
+import { authRequiredResponse, runAuthorized } from "@/lib/server/access-guard"
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError, readJsonBody } from "@/lib/server/http"
 import {
@@ -24,13 +24,15 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function GET(request: Request) {
-  if (!(await isAuthorized(request))) return authRequiredResponse()
-  try {
-    const snapshot = await getSnapshot()
-    return NextResponse.json(await getCodexConfigStatus(snapshot.settings))
-  } catch (error) {
-    return jsonError(`读取 Codex 接入状态失败：${errorMessage(error)}`)
-  }
+  const result = await runAuthorized(request, async () => {
+    try {
+      const snapshot = await getSnapshot()
+      return NextResponse.json(await getCodexConfigStatus(snapshot.settings))
+    } catch (error) {
+      return jsonError(`读取 Codex 接入状态失败：${errorMessage(error)}`)
+    }
+  })
+  return result ?? authRequiredResponse()
 }
 
 function stringValue(value: unknown) {
@@ -56,8 +58,8 @@ function subagentModelSlugs(value: unknown) {
 }
 
 export async function POST(request: Request) {
-  if (!(await isAuthorized(request))) return authRequiredResponse()
-  try {
+  const result = await runAuthorized(request, async () => {
+    try {
     const body = await readJsonBody<{
       action?: string
       note?: unknown
@@ -129,8 +131,10 @@ export async function POST(request: Request) {
         ),
       )
     }
-    return jsonError("未知 Codex 配置动作", 400)
-  } catch (error) {
-    return jsonError(`修改 Codex 配置失败：${errorMessage(error)}`, 400)
-  }
+      return jsonError("未知 Codex 配置动作", 400)
+    } catch (error) {
+      return jsonError(`修改 Codex 配置失败：${errorMessage(error)}`, 400)
+    }
+  })
+  return result ?? authRequiredResponse()
 }

@@ -3,6 +3,11 @@ import "server-only"
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { hotSwitchDataDir } from "@/lib/server/state-store"
+import {
+  accountDataDirPath,
+  listAccounts,
+} from "@/lib/server/accounts-store"
+import { isServerMode, runWithAccountDataDir } from "@/lib/server/data-root"
 import { isRetryableWorkbuddyTaskError } from "./api-client"
 import {
   dailyRunNeedsRetry,
@@ -400,8 +405,20 @@ async function runSchedulerCycle() {
   if (scope.__codexHotSwitchDailySchedulerCycleRunning) return
   scope.__codexHotSwitchDailySchedulerCycleRunning = true
   try {
-    await maybeRunDailyForAllAccounts()
-    await maybeRunNightOwlForAllAccounts()
+    if (!isServerMode()) {
+      await maybeRunDailyForAllAccounts()
+      await maybeRunNightOwlForAllAccounts()
+      return
+    }
+    //服务器模式：没有请求上下文，必须逐个账号显式注入数据目录，
+    //否则 resolveDataDir() 会抛错而整轮巡检被下面的 catch 静默吞掉。
+    const accounts = (await listAccounts()).filter((item) => item.status === "active")
+    for (const account of accounts) {
+      await runWithAccountDataDir(accountDataDirPath(account.id), async () => {
+        await maybeRunDailyForAllAccounts()
+        await maybeRunNightOwlForAllAccounts()
+      })
+    }
   } catch {
     //巡检失败不中断服务；下一分钟再检查到期状态。
   } finally {

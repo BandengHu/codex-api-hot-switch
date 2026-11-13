@@ -1,8 +1,8 @@
 import "server-only"
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
-import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+import { accountDataDir, resolveDataDir } from "./data-root"
 import {
   CODEX_AUTO_MODEL_SLUG,
   CODEX_SUBAGENT_ROLE_COUNT,
@@ -10,6 +10,7 @@ import {
   defaultCodexSubagentModelSlugs,
 } from "@/lib/codex-model-slug"
 import { initialSnapshot } from "@/lib/mock-data"
+import { blankSnapshot } from "./blank-snapshot"
 import { isChatModel, isImageGenerationModel } from "@/lib/model-capabilities"
 import { createProviderEndpoint } from "@/lib/provider-endpoints"
 import {
@@ -40,31 +41,32 @@ import type {
   WebSearchMode,
 } from "@/lib/types"
 
-function defaultDataDir() {
-  if (process.platform === "win32") {
-    return join(
-      process.env.APPDATA || join(homedir(), "AppData", "Roaming"),
-      "codex-api-hot-switch",
-      "data",
-    )
-  }
-  if (process.platform === "darwin") {
-    return join(homedir(), "Library", "Application Support", "codex-api-hot-switch", "data")
-  }
-  return join(
-    process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"),
-    "codex-api-hot-switch",
-    "data",
-  )
-}
-
-const DATA_DIR = process.env.CODEX_HOT_SWITCH_DATA_DIR || defaultDataDir()
-const STATE_PATH = join(DATA_DIR, "hot-switch-state.json")
 // 3 起内置供应商与内置模型只在升级那一次铺一遍，之后用户增删都算数。
 const STATE_VERSION = 3
 
-let writeQueue: Promise<unknown> = Promise.resolve()
-let snapshotCache: ConsoleSnapshot | null = null
+/**
+ * 缓存与写队列都按「数据目录」分桶。
+ * 单账号时就是一份；多账号时各账号互不影响，不能共用一个全局快照。
+ */
+interface StoreBucket {
+  writeQueue: Promise<unknown>
+  snapshotCache: ConsoleSnapshot | null
+}
+
+const buckets = new Map<string, StoreBucket>()
+
+function bucketFor(dataDir = resolveDataDir()): StoreBucket {
+  let bucket = buckets.get(dataDir)
+  if (!bucket) {
+    bucket = { writeQueue: Promise.resolve(), snapshotCache: null }
+    buckets.set(dataDir, bucket)
+  }
+  return bucket
+}
+
+function statePath(dataDir = resolveDataDir()) {
+  return join(dataDir, "hot-switch-state.json")
+}
 
 function cloneSnapshot(snapshot: ConsoleSnapshot): ConsoleSnapshot {
   return JSON.parse(JSON.stringify(snapshot)) as ConsoleSnapshot
@@ -395,9 +397,10 @@ function sortBuiltInModels(models: Model[]) {
   })
 }
 
-function normalizeSnapshot(value: Partial<ConsoleSnapshot>): ConsoleSnapshot {
+export function normalizeSnapshot(value: Partial<ConsoleSnapshot>): ConsoleSnapshot {
   const seed = cloneSnapshot(initialSnapshot)
   // 内置供应商（WorkBuddy 本机账号）只在老数据里没有它时补一次，之后用户增删都算数。
+  // 服务器的空白账号不补：那是给旧版单机安装做迁移用的，新用户必须从零开始。
   const seeded = seedWorkbuddyBuiltin(
     Array.isArray(value.providers)
       ? value.providers.map(normalizeProvider)
@@ -405,7 +408,7 @@ function normalizeSnapshot(value: Partial<ConsoleSnapshot>): ConsoleSnapshot {
     sortBuiltInModels(
       Array.isArray(value.models) ? value.models.map(normalizeModel) : seed.models,
     ),
-    Number(value.version) || 0,
+    accountDataDir() ? STATE_VERSION : Number(value.version) || 0,
   )
   const providers = seeded.providers
   const models = clampWorkbuddyModelContexts(seeded.models, providers)
@@ -503,13 +506,14 @@ function containsLegacyProviderCredentials(value: Partial<ConsoleSnapshot>) {
   })
 }
 
-async function ensureDataDir() {
-  await mkdir(DATA_DIR, { recursive: true })
+async function ensureDataDir(dataDir = resolveDataDir()) {
+  await mkdir(dataDir, { recursive: true })
 }
 
-async function writeState(snapshot: ConsoleSnapshot) {
-  await ensureDataDir()
-  const tempPath = `${STATE_PATH}.${process.pid}.${Date.now()}.tmp`
+async function writeState(snapshot: ConsoleSnapshot, dataDir = resolveDataDir()) {
+  await ensureDataDir(dataDir)
+  const path = statePath(dataDir)
+  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`
   const {
     logs: _logs,
     tokenStats: _tokenStats,
@@ -517,16 +521,18 @@ async function writeState(snapshot: ConsoleSnapshot) {
     ...configSnapshot
   } = snapshot
   await writeFile(tempPath, `${JSON.stringify(configSnapshot, null, 2)}\n`, "utf8")
-  await rename(tempPath, STATE_PATH)
+  await rename(tempPath, path)
 }
 
-async function loadSnapshot(): Promise<ConsoleSnapshot> {
-  if (snapshotCache) return snapshotCache
+async function loadSnapshot(dataDir = resolveDataDir()): Promise<ConsoleSnapshot> {
+  const bucket = bucketFor(dataDir)
+  if (bucket.snapshotCache) return bucket.snapshotCache
+  const path = statePath(dataDir)
   try {
-    const raw = await readFile(STATE_PATH, "utf8")
+    const raw = await readFile(path, "utf8")
     const parsed = JSON.parse(raw) as Partial<ConsoleSnapshot>
     const normalized = normalizeSnapshot(parsed)
-    snapshotCache = normalized
+    bucket.snapshotCache = normalized
     if (
       parsed.version !== STATE_VERSION ||
       Array.isArray(parsed.logs) ||
@@ -540,28 +546,37 @@ async function loadSnapshot(): Promise<ConsoleSnapshot> {
         },
         normalized.settings,
       )
-      await writeState(normalized)
+      await writeState(normalized, dataDir)
     }
-    return snapshotCache
+    return bucket.snapshotCache
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
     if (code !== "ENOENT") throw error
-    const seeded = normalizeSnapshot(cloneSnapshot(initialSnapshot))
-    snapshotCache = seeded
-    await writeState(seeded)
+    // 账号目录由审批流程创建；那里的空目录应视为“空白账号”，
+    // 不能再铺示例供应商，否则新用户会看到别人的占位配置。
+    const seeded = normalizeSnapshot(
+      cloneSnapshot(accountDataDir() ? blankSnapshot() : initialSnapshot),
+    )
+    bucket.snapshotCache = seeded
+    await writeState(seeded, dataDir)
     return seeded
   }
 }
 
-async function persistSnapshot(snapshot: ConsoleSnapshot) {
-  snapshotCache = snapshot
-  await writeState(snapshot)
+async function persistSnapshot(snapshot: ConsoleSnapshot, dataDir = resolveDataDir()) {
+  const bucket = bucketFor(dataDir)
+  bucket.snapshotCache = snapshot
+  await writeState(snapshot, dataDir)
   return snapshot
 }
 
-function enqueueStateMutation<T>(task: () => Promise<T>): Promise<T> {
-  const run = writeQueue.catch(() => undefined).then(task)
-  writeQueue = run.then(
+function enqueueStateMutation<T>(
+  task: () => Promise<T>,
+  dataDir = resolveDataDir(),
+): Promise<T> {
+  const bucket = bucketFor(dataDir)
+  const run = bucket.writeQueue.catch(() => undefined).then(task)
+  bucket.writeQueue = run.then(
     () => undefined,
     () => undefined,
   )
@@ -573,8 +588,9 @@ export async function flushPendingLogs(): Promise<void> {
 }
 
 export async function getSnapshot(): Promise<ConsoleSnapshot> {
-  await writeQueue.catch(() => undefined)
-  const snapshot = cloneSnapshot(await loadSnapshot())
+  const dataDir = resolveDataDir()
+  await bucketFor(dataDir).writeQueue.catch(() => undefined)
+  const snapshot = cloneSnapshot(await loadSnapshot(dataDir))
   return {
     ...snapshot,
     endpointStates: await getProviderEndpointRuntimeStates(snapshot.providers),
@@ -582,14 +598,15 @@ export async function getSnapshot(): Promise<ConsoleSnapshot> {
 }
 
 export async function getRoutingSnapshot(): Promise<RoutingSnapshot> {
-  return cloneRoutingSnapshot(await loadSnapshot())
+  return cloneRoutingSnapshot(await loadSnapshot(resolveDataDir()))
 }
 
 export async function saveSnapshot(snapshot: ConsoleSnapshot): Promise<ConsoleSnapshot> {
+  const dataDir = resolveDataDir()
   return enqueueStateMutation(async () => {
-    const current = await loadSnapshot()
+    const current = await loadSnapshot(dataDir)
     const normalized = normalizeSnapshot(snapshot)
-    await persistSnapshot(normalized)
+    await persistSnapshot(normalized, dataDir)
     const currentProviders = new Map(
       current.providers.map((provider) => [provider.id, provider]),
     )
@@ -621,10 +638,11 @@ export async function saveSnapshot(snapshot: ConsoleSnapshot): Promise<ConsoleSn
 export async function updateSnapshot(
   updater: (snapshot: ConsoleSnapshot) => ConsoleSnapshot,
 ): Promise<ConsoleSnapshot> {
+  const dataDir = resolveDataDir()
   return enqueueStateMutation(async () => {
-    const current = cloneSnapshot(await loadSnapshot())
+    const current = cloneSnapshot(await loadSnapshot(dataDir))
     const normalized = normalizeSnapshot(updater(current))
-    await persistSnapshot(normalized)
+    await persistSnapshot(normalized, dataDir)
     return cloneSnapshot(normalized)
   })
 }
@@ -667,11 +685,11 @@ export async function importSnapshotText(text: string): Promise<ConsoleSnapshot>
 }
 
 export function stateFilePath() {
-  return STATE_PATH
+  return statePath(resolveDataDir())
 }
 
 export function hotSwitchDataDir() {
-  return DATA_DIR
+  return resolveDataDir()
 }
 
 export async function ensureParentDir(path: string) {

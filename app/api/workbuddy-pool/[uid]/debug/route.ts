@@ -1,4 +1,4 @@
-import { authRequiredResponse, isAuthorized } from "@/lib/server/access-guard"
+import { authRequiredResponse, runAuthorized } from "@/lib/server/access-guard"
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError } from "@/lib/server/http"
 import { readPoolAccount } from "@/lib/server/workbuddy/task-pool-store"
@@ -10,14 +10,16 @@ export const dynamic = "force-dynamic"
 type RouteContext = { params: Promise<{ uid: string }> }
 
 export async function GET(request: Request, context: RouteContext) {
-  if (!(await isAuthorized(request))) return authRequiredResponse()
- const { uid } = await context.params
- try {
- const account = await readPoolAccount(uid)
- const streak = await fetchGrowthStreak(account)
- return NextResponse.json({ uid, streak })
- } catch (error) {
- return jsonError(`读取连登状态失败：${errorMessage(error)}`)
- }
+  const result = await runAuthorized(request, async () => {
+    try {
+      const { uid } = await context.params
+      const account = await readPoolAccount(uid)
+      const streak = await fetchGrowthStreak(account)
+      return NextResponse.json({ uid, streak })
+    } catch (error) {
+      return jsonError(`读取连登状态失败：${errorMessage(error)}`)
+    }
+  })
+  return result ?? authRequiredResponse()
 }
 

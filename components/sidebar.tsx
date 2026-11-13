@@ -13,6 +13,7 @@ import {
   Users,
   Zap,
   ScrollText,
+  ShieldCheck,
   Settings as SettingsIcon,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -38,6 +39,7 @@ const NAV_ITEMS: { key: ViewKey; label: string; icon: typeof LayoutDashboard }[]
   { key: "wecom-bridge", label: "企业微信机器人", icon: MessagesSquare },
   { key: "workbuddy-pool", label: "WorkBuddy 号池", icon: Users },
   { key: "workbuddy-global-pool", label: "WorkBuddy 国际号池", icon: Globe2 },
+  { key: "accounts", label: "账号审批", icon: ShieldCheck },
   { key: "settings", label: "设置", icon: SettingsIcon },
 ]
 

@@ -1,4 +1,4 @@
-import { authRequiredResponse, isAuthorized } from "@/lib/server/access-guard"
+import { authRequiredResponse, runAuthorized } from "@/lib/server/access-guard"
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError, readJsonBody } from "@/lib/server/http"
 import {
@@ -56,7 +56,7 @@ interface PoolEntryWithBalance {
 }
 
 export async function GET(request: Request) {
-  if (!(await isAuthorized(request))) return authRequiredResponse()
+  const result = await runAuthorized(request, async () => {
  try {
  await syncPoolFromDisk()
  const entries = await listPoolEntries()
@@ -119,15 +119,17 @@ export async function GET(request: Request) {
    entries: enriched,
    activeUid: availableUidOfState(poolState) ?? "",
  })
- } catch (error) {
- return jsonError(`读取号池失败：${errorMessage(error)}`)
- }
+    } catch (error) {
+      return jsonError(`读取号池失败：${errorMessage(error)}`)
+    }
+  })
+  return result ?? authRequiredResponse()
 }
 
 export async function POST(request: Request) {
-  if (!(await isAuthorized(request))) return authRequiredResponse()
- try {
- const body = await readJsonBody<{ credentials?: string; activeUid?: string }>(request)
+  const result = await runAuthorized(request, async () => {
+    try {
+      const body = await readJsonBody<{ credentials?: string; activeUid?: string }>(request)
  if (body.activeUid !== undefined) {
  const activeUid = await setActivePoolAccount(body.activeUid)
  return NextResponse.json({ ok: true, activeUid })
@@ -137,7 +139,9 @@ export async function POST(request: Request) {
  }
  const entry = await importPoolAccount(body.credentials.trim())
  return NextResponse.json({ ok: true, entry })
- } catch (error) {
- return jsonError(`导入失败：${errorMessage(error)}`,400)
- }
+    } catch (error) {
+      return jsonError(`导入失败：${errorMessage(error)}`, 400)
+    }
+  })
+  return result ?? authRequiredResponse()
 }

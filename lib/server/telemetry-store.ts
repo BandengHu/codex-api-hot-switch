@@ -1,11 +1,11 @@
 import "server-only"
 
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises"
-import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { compactTokenStats } from "@/lib/server/token-stat-retention"
 import { pruneRequestLogDetails } from "@/lib/server/request-log-details"
 import { tokenStatFromLog } from "@/lib/token-stats"
+import { resolveDataDir } from "@/lib/server/data-root"
 import type {
   ChatStreamTruth,
   RequestLog,
@@ -21,48 +21,47 @@ const MAX_STORED_LOG_FIELD_CHARS = 4000
 const MAX_LIST_LOG_FIELD_CHARS = 800
 const COMPACT_EVERY_WRITES = 50
 
-let telemetryQueue: Promise<unknown> = Promise.resolve()
-let recentLogsCache: RequestLog[] | null = null
-let recentTokenStatsCache: TokenStatEntry[] | null = null
-let writesSinceCompact = 0
+/**
+ * 遥测缓存与写队列按数据目录分桶，避免多个账号互相看到对方的日志与 Token 统计。
+ */
+interface TelemetryBucket {
+  queue: Promise<unknown>
+  logs: RequestLog[] | null
+  tokenStats: TokenStatEntry[] | null
+  writesSinceCompact: number
+}
 
-function defaultDataDir() {
-  if (process.platform === "win32") {
-    return join(
-      process.env.APPDATA || join(homedir(), "AppData", "Roaming"),
-      "codex-api-hot-switch",
-      "data",
-    )
+const buckets = new Map<string, TelemetryBucket>()
+
+function bucketFor(dataDir = resolveDataDir()): TelemetryBucket {
+  let bucket = buckets.get(dataDir)
+  if (!bucket) {
+    bucket = { queue: Promise.resolve(), logs: null, tokenStats: null, writesSinceCompact: 0 }
+    buckets.set(dataDir, bucket)
   }
-  if (process.platform === "darwin") {
-    return join(homedir(), "Library", "Application Support", "codex-api-hot-switch", "data")
-  }
-  return join(
-    process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"),
-    "codex-api-hot-switch",
-    "data",
-  )
+  return bucket
 }
 
-function telemetryRoot() {
-  return join(process.env.CODEX_HOT_SWITCH_DATA_DIR || defaultDataDir(), "telemetry")
+function telemetryRoot(dataDir = resolveDataDir()) {
+  return join(dataDir, "telemetry")
 }
 
-function requestLogsPath() {
-  return join(telemetryRoot(), "request-logs.jsonl")
+function requestLogsPath(dataDir = resolveDataDir()) {
+  return join(telemetryRoot(dataDir), "request-logs.jsonl")
 }
 
-function tokenStatsPath() {
-  return join(telemetryRoot(), "token-stats.jsonl")
+function tokenStatsPath(dataDir = resolveDataDir()) {
+  return join(telemetryRoot(dataDir), "token-stats.jsonl")
 }
 
-async function ensureTelemetryDir() {
-  await mkdir(telemetryRoot(), { recursive: true })
+async function ensureTelemetryDir(dataDir = resolveDataDir()) {
+  await mkdir(telemetryRoot(dataDir), { recursive: true })
 }
 
-function enqueueTelemetry<T>(task: () => Promise<T>): Promise<T> {
-  const run = telemetryQueue.catch(() => undefined).then(task)
-  telemetryQueue = run.then(
+function enqueueTelemetry<T>(task: () => Promise<T>, dataDir = resolveDataDir()): Promise<T> {
+  const bucket = bucketFor(dataDir)
+  const run = bucket.queue.catch(() => undefined).then(task)
+  bucket.queue = run.then(
     () => undefined,
     () => undefined,
   )
@@ -293,23 +292,24 @@ async function writeJsonlAtomic(path: string, items: unknown[]) {
   await rename(tempPath, path)
 }
 
-async function readStoredLogs() {
-  return readJsonl(requestLogsPath(), normalizeLogValue)
+async function readStoredLogs(dataDir = resolveDataDir()) {
+  return readJsonl(requestLogsPath(dataDir), normalizeLogValue)
 }
 
-async function readStoredTokenStats() {
-  return readJsonl(tokenStatsPath(), normalizeTokenStat)
+async function readStoredTokenStats(dataDir = resolveDataDir()) {
+  return readJsonl(tokenStatsPath(dataDir), normalizeTokenStat)
 }
 
-async function compactTelemetryFiles(settings: Settings) {
-  const logs = pruneLogs(await readStoredLogs(), settings)
-  const tokenStats = compactTokenStats(await readStoredTokenStats())
+async function compactTelemetryFiles(settings: Settings, dataDir = resolveDataDir()) {
+  const bucket = bucketFor(dataDir)
+  const logs = pruneLogs(await readStoredLogs(dataDir), settings)
+  const tokenStats = compactTokenStats(await readStoredTokenStats(dataDir))
   await Promise.all([
-    writeJsonlAtomic(requestLogsPath(), [...logs].reverse()),
-    writeJsonlAtomic(tokenStatsPath(), [...tokenStats].reverse()),
+    writeJsonlAtomic(requestLogsPath(dataDir), [...logs].reverse()),
+    writeJsonlAtomic(tokenStatsPath(dataDir), [...tokenStats].reverse()),
   ])
-  recentLogsCache = logs.slice(0, RECENT_LOG_CACHE).map(toListLog)
-  recentTokenStatsCache = tokenStats.slice(0, RECENT_TOKEN_STATS_CACHE)
+  bucket.logs = logs.slice(0, RECENT_LOG_CACHE).map(toListLog)
+  bucket.tokenStats = tokenStats.slice(0, RECENT_TOKEN_STATS_CACHE)
 
   // 全量请求日志的明细目录不归 jsonl 管，必须跟 pruneLogs 用同一份保留集合
   // 一起清；先落盘日志再清目录，崩溃时最坏留一批孤儿目录，不会出现“日志还在、
@@ -320,58 +320,67 @@ async function compactTelemetryFiles(settings: Settings) {
 }
 
 export async function appendTelemetryLog(log: RequestLog, settings: Settings) {
+  const dataDir = resolveDataDir()
+  const bucket = bucketFor(dataDir)
   return enqueueTelemetry(async () => {
-    await ensureTelemetryDir()
+    await ensureTelemetryDir(dataDir)
     const storedLog = normalizeStoredLog(log)
-    await appendFile(requestLogsPath(), `${JSON.stringify(storedLog)}\n`, "utf8")
+    await appendFile(requestLogsPath(dataDir), `${JSON.stringify(storedLog)}\n`, "utf8")
     const tokenStat = tokenStatFromLog(storedLog, settings.tokenStatsResetAt)
     if (tokenStat) {
-      await appendFile(tokenStatsPath(), `${JSON.stringify(tokenStat)}\n`, "utf8")
+      await appendFile(tokenStatsPath(dataDir), `${JSON.stringify(tokenStat)}\n`, "utf8")
     }
 
-    recentLogsCache = [toListLog(storedLog), ...(recentLogsCache ?? [])].slice(0, RECENT_LOG_CACHE)
+    bucket.logs = [toListLog(storedLog), ...(bucket.logs ?? [])].slice(0, RECENT_LOG_CACHE)
     if (tokenStat) {
-      recentTokenStatsCache = [tokenStat, ...(recentTokenStatsCache ?? [])].slice(
+      bucket.tokenStats = [tokenStat, ...(bucket.tokenStats ?? [])].slice(
         0,
         RECENT_TOKEN_STATS_CACHE,
       )
     }
 
-    writesSinceCompact += 1
-    if (writesSinceCompact >= COMPACT_EVERY_WRITES) {
-      writesSinceCompact = 0
-      await compactTelemetryFiles(settings)
+    bucket.writesSinceCompact += 1
+    if (bucket.writesSinceCompact >= COMPACT_EVERY_WRITES) {
+      bucket.writesSinceCompact = 0
+      await compactTelemetryFiles(settings, dataDir)
     }
-  })
+  }, dataDir)
 }
 
 export async function getRequestLogs(settings: Settings) {
-  await telemetryQueue.catch(() => undefined)
-  const logs = pruneLogs(await readStoredLogs(), settings).map(toListLog)
-  recentLogsCache = logs.slice(0, RECENT_LOG_CACHE)
+  const dataDir = resolveDataDir()
+  const bucket = bucketFor(dataDir)
+  await bucket.queue.catch(() => undefined)
+  const logs = pruneLogs(await readStoredLogs(dataDir), settings).map(toListLog)
+  bucket.logs = logs.slice(0, RECENT_LOG_CACHE)
   return logs
 }
 
 export async function getAllRequestLogs(settings: Settings) {
-  await telemetryQueue.catch(() => undefined)
-  return pruneLogs(await readStoredLogs(), settings)
+  const dataDir = resolveDataDir()
+  await bucketFor(dataDir).queue.catch(() => undefined)
+  return pruneLogs(await readStoredLogs(dataDir), settings)
 }
 
 export async function findRequestLog(id: string) {
-  await telemetryQueue.catch(() => undefined)
-  return (await readStoredLogs()).find((log) => log.id === id) ?? null
+  const dataDir = resolveDataDir()
+  await bucketFor(dataDir).queue.catch(() => undefined)
+  return (await readStoredLogs(dataDir)).find((log) => log.id === id) ?? null
 }
 
 export async function getTokenStats() {
-  await telemetryQueue.catch(() => undefined)
-  const tokenStats = compactTokenStats(await readStoredTokenStats())
-  recentTokenStatsCache = tokenStats.slice(0, RECENT_TOKEN_STATS_CACHE)
+  const dataDir = resolveDataDir()
+  const bucket = bucketFor(dataDir)
+  await bucket.queue.catch(() => undefined)
+  const tokenStats = compactTokenStats(await readStoredTokenStats(dataDir))
+  bucket.tokenStats = tokenStats.slice(0, RECENT_TOKEN_STATS_CACHE)
   return tokenStats
 }
 
 export async function getAllTokenStats() {
-  await telemetryQueue.catch(() => undefined)
-  return compactTokenStats(await readStoredTokenStats())
+  const dataDir = resolveDataDir()
+  await bucketFor(dataDir).queue.catch(() => undefined)
+  return compactTokenStats(await readStoredTokenStats(dataDir))
 }
 
 export async function importLegacyTelemetry(
@@ -381,6 +390,8 @@ export async function importLegacyTelemetry(
   },
   settings: Settings,
 ) {
+  const dataDir = resolveDataDir()
+  const bucket = bucketFor(dataDir)
   const legacyLogs = Array.isArray(value.logs)
     ? value.logs.map(normalizeLogValue).filter((log): log is RequestLog => Boolean(log))
     : []
@@ -395,33 +406,35 @@ export async function importLegacyTelemetry(
   if (legacyLogs.length === 0 && legacyTokenStats.length === 0) return
 
   await enqueueTelemetry(async () => {
-    await ensureTelemetryDir()
+    await ensureTelemetryDir(dataDir)
     const logById = new Map<string, RequestLog>()
-    for (const log of await readStoredLogs()) logById.set(log.id, log)
+    for (const log of await readStoredLogs(dataDir)) logById.set(log.id, log)
     for (const log of legacyLogs) logById.set(log.id, log)
 
     const tokenStatById = new Map<string, TokenStatEntry>()
-    for (const entry of await readStoredTokenStats()) tokenStatById.set(entry.id, entry)
+    for (const entry of await readStoredTokenStats(dataDir)) tokenStatById.set(entry.id, entry)
     for (const entry of legacyTokenStats) tokenStatById.set(entry.id, entry)
 
     const logs = pruneLogs([...logById.values()], settings)
     const tokenStats = compactTokenStats([...tokenStatById.values()])
     await Promise.all([
-      writeJsonlAtomic(requestLogsPath(), [...logs].reverse()),
-      writeJsonlAtomic(tokenStatsPath(), [...tokenStats].reverse()),
+      writeJsonlAtomic(requestLogsPath(dataDir), [...logs].reverse()),
+      writeJsonlAtomic(tokenStatsPath(dataDir), [...tokenStats].reverse()),
     ])
-    recentLogsCache = logs.slice(0, RECENT_LOG_CACHE).map(toListLog)
-    recentTokenStatsCache = tokenStats.slice(0, RECENT_TOKEN_STATS_CACHE)
-  })
+    bucket.logs = logs.slice(0, RECENT_LOG_CACHE).map(toListLog)
+    bucket.tokenStats = tokenStats.slice(0, RECENT_TOKEN_STATS_CACHE)
+  }, dataDir)
 }
 
 export async function compactTelemetry(settings: Settings) {
-  await enqueueTelemetry(async () => compactTelemetryFiles(settings))
+  const dataDir = resolveDataDir()
+  await enqueueTelemetry(async () => compactTelemetryFiles(settings, dataDir), dataDir)
 }
 
 export function telemetryFilePaths() {
+  const dataDir = resolveDataDir()
   return {
-    requestLogs: requestLogsPath(),
-    tokenStats: tokenStatsPath(),
+    requestLogs: requestLogsPath(dataDir),
+    tokenStats: tokenStatsPath(dataDir),
   }
 }

@@ -1,4 +1,4 @@
-import { authRequiredResponse, isAuthorized } from "@/lib/server/access-guard"
+import { authRequiredResponse, runAuthorized } from "@/lib/server/access-guard"
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError, readJsonBody } from "@/lib/server/http"
 import {
@@ -39,8 +39,8 @@ interface GlobalPoolEntryWithBalance {
 }
 
 export async function GET(request: Request) {
-  if (!(await isAuthorized(request))) return authRequiredResponse()
-  try {
+  const result = await runAuthorized(request, async () => {
+    try {
     await syncGlobalPoolFromDisk()
     const entries = await listGlobalPoolEntries()
     // 生效账号：显式选中的优先，否则回落池里第一个可用账号；池空时没有生效账号。
@@ -81,19 +81,23 @@ export async function GET(request: Request) {
         platform: GLOBAL_WORKBUDDY_PLATFORM,
       },
     })
-  } catch (error) {
-    return jsonError(`读取国际版号池失败：${errorMessage(error)}`)
-  }
+    } catch (error) {
+      return jsonError(`读取国际版号池失败：${errorMessage(error)}`)
+    }
+  })
+  return result ?? authRequiredResponse()
 }
 
 export async function POST(request: Request) {
-  if (!(await isAuthorized(request))) return authRequiredResponse()
-  try {
-    const body = await readJsonBody<{ credentials?: string }>(request)
-    if (!body.credentials?.trim()) return jsonError("缺少凭据内容", 400)
-    const entry = await importGlobalAccount(body.credentials.trim())
-    return NextResponse.json({ ok: true, entry })
-  } catch (error) {
-    return jsonError(`导入失败：${errorMessage(error)}`, 400)
-  }
+  const result = await runAuthorized(request, async () => {
+    try {
+      const body = await readJsonBody<{ credentials?: string }>(request)
+      if (!body.credentials?.trim()) return jsonError("缺少凭据内容", 400)
+      const entry = await importGlobalAccount(body.credentials.trim())
+      return NextResponse.json({ ok: true, entry })
+    } catch (error) {
+      return jsonError(`导入失败：${errorMessage(error)}`, 400)
+    }
+  })
+  return result ?? authRequiredResponse()
 }

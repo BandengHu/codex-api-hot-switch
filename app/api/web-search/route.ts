@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server"
-import { apiKeyRequiredResponse, isApiKeyAuthorized } from "@/lib/server/access-guard"
+import {
+  accessAuthRequired,
+  accountFromApiKey,
+  apiKeyRequiredResponse,
+  withAccountContext,
+} from "@/lib/server/access-guard"
 import { browseWebPages, searchWeb } from "@/lib/server/web"
 import { WebSearchError } from "@/lib/server/web/errors"
 import { errorMessage, readJsonBody } from "@/lib/server/http"
@@ -34,7 +39,15 @@ function errorResponse(error: unknown) {
 }
 
 export async function POST(request: Request) {
-  if (!(await isApiKeyAuthorized(request))) return apiKeyRequiredResponse()
+  if (accessAuthRequired()) {
+    const context = await accountFromApiKey(request.headers)
+    if (!context) return apiKeyRequiredResponse()
+    return withAccountContext(context, () => handlePost(request))
+  }
+  return handlePost(request)
+}
+
+async function handlePost(request: Request) {
   try {
     const body = await readJsonBody<unknown>(request)
     if (!isObject(body)) {

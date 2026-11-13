@@ -1,4 +1,4 @@
-import { authRequiredResponse, isAuthorized } from "@/lib/server/access-guard"
+import { authRequiredResponse, runAuthorized } from "@/lib/server/access-guard"
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError, readJsonBody } from "@/lib/server/http"
 import {
@@ -17,9 +17,9 @@ type RouteContext = { params: Promise<{ uid: string }> }
 
 /** 单个国际版账号的启停 / 移除 / 余额刷新 / 设为转发账号。 */
 export async function POST(request: Request, context: RouteContext) {
-  if (!(await isAuthorized(request))) return authRequiredResponse()
-  const { uid } = await context.params
-  try {
+  const result = await runAuthorized(request, async () => {
+    const { uid } = await context.params
+    try {
     const body = await readJsonBody<{ action?: string }>(request)
     const action = body.action?.trim()
     if (!action) return jsonError("缺少 action", 400)
@@ -46,7 +46,9 @@ export async function POST(request: Request, context: RouteContext) {
       return NextResponse.json({ ok: true, activeUid })
     }
     return jsonError(`未知 action：${action}`, 400)
-  } catch (error) {
-    return jsonError(`操作失败：${errorMessage(error)}`)
-  }
+    } catch (error) {
+      return jsonError(`操作失败：${errorMessage(error)}`)
+    }
+  })
+  return result ?? authRequiredResponse()
 }

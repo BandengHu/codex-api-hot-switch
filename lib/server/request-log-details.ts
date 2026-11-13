@@ -2,9 +2,9 @@ import "server-only"
 
 import type { Dirent } from "node:fs"
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
-import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import type { RequestLog, RequestLogDetail } from "@/lib/types"
+import { resolveDataDir } from "@/lib/server/data-root"
 
 interface RequestLogDetailSource {
   enabled?: boolean
@@ -26,30 +26,8 @@ const PRUNE_GRACE_MS = 10 * 60 * 1000
 // 一次要删几千个目录，串行 rm 会让压缩队列卡太久。
 const PRUNE_CONCURRENCY = 8
 
-function defaultDataDir() {
-  if (process.platform === "win32") {
-    return join(
-      process.env.APPDATA || join(homedir(), "AppData", "Roaming"),
-      "codex-api-hot-switch",
-      "data",
-    )
-  }
-  if (process.platform === "darwin") {
-    return join(homedir(), "Library", "Application Support", "codex-api-hot-switch", "data")
-  }
-  return join(
-    process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"),
-    "codex-api-hot-switch",
-    "data",
-  )
-}
-
 function requestDetailsRoot() {
-  return join(
-    process.env.CODEX_HOT_SWITCH_DATA_DIR || defaultDataDir(),
-    "logs",
-    "request-details",
-  )
+  return join(resolveDataDir(), "logs", "request-details")
 }
 
 function safeFileId(id: string) {

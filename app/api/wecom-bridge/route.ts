@@ -1,4 +1,4 @@
-import { authRequiredResponse, isAuthorized } from "@/lib/server/access-guard"
+import { authRequiredResponse, runAuthorized } from "@/lib/server/access-guard"
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError, readJsonBody } from "@/lib/server/http"
 import {
@@ -18,17 +18,19 @@ type Action =
   | "serve-stop"
 
 export async function GET(request: Request) {
-  if (!(await isAuthorized(request))) return authRequiredResponse()
-  try {
-    return NextResponse.json(await getWecomBridgeStatus())
-  } catch (error) {
-    return jsonError(`读取企业微信机器人状态失败：${errorMessage(error)}`)
-  }
+  const result = await runAuthorized(request, async () => {
+    try {
+      return NextResponse.json(await getWecomBridgeStatus())
+    } catch (error) {
+      return jsonError(`读取企业微信机器人状态失败：${errorMessage(error)}`)
+    }
+  })
+  return result ?? authRequiredResponse()
 }
 
 export async function POST(request: Request) {
-  if (!(await isAuthorized(request))) return authRequiredResponse()
-  try {
+  const result = await runAuthorized(request, async () => {
+    try {
     const body = await readJsonBody<{
       action?: Action
       settings?: Partial<WecomBridgeSettings>
@@ -47,8 +49,10 @@ export async function POST(request: Request) {
     if (action === "serve-stop") {
       return NextResponse.json(await stopWecomBridgeServe())
     }
-    return jsonError("未知企业微信机器人操作", 400)
-  } catch (error) {
-    return jsonError(`企业微信机器人操作失败：${errorMessage(error)}`, 400)
-  }
+      return jsonError("未知企业微信机器人操作", 400)
+    } catch (error) {
+      return jsonError(`企业微信机器人操作失败：${errorMessage(error)}`, 400)
+    }
+  })
+  return result ?? authRequiredResponse()
 }
