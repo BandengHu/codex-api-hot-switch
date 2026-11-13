@@ -17,6 +17,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -66,12 +67,22 @@ pub struct StartOptions {
     pub data_dir: Option<String>,
 }
 
+struct ManagedChild {
+    process: Child,
+    pid: u32,
+    session_id: u128,
+    endpoint: String,
+    stderr_log: PathBuf,
+}
+
 pub struct ServerRuntime {
-    child: Mutex<Option<Child>>,
+    child: Mutex<Option<ManagedChild>>,
     status: Mutex<ServerStatus>,
     node: Mutex<Option<NodeProbe>>,
-    /// `server.err.log` 所在目录。子进程崩溃时靠它把真实错误回传给引导页 ——
-    /// 否则外壳只探端口，进程死了也只会一直显示「正在启动」。
+    active_session: Mutex<Option<u128>>,
+    /// 当前会话的 stderr 文件，供状态页和生命周期日志回溯具体退出现场。
+    stderr_log: Mutex<Option<PathBuf>>,
+    /// `server-lifecycle.log` 所在目录，按会话保留启动、停止和退出事件。
     log_dir: Mutex<Option<PathBuf>>,
 }
 
@@ -86,6 +97,8 @@ impl Default for ServerRuntime {
                 owned: false,
             }),
             node: Mutex::new(None),
+            active_session: Mutex::new(None),
+            stderr_log: Mutex::new(None),
             log_dir: Mutex::new(None),
         }
     }
@@ -442,21 +455,145 @@ fn build_node_path(server_root: &Path) -> String {
         .unwrap_or_else(|_| vendor_nm.to_string_lossy().to_string())
 }
 
+static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn unix_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+fn next_session_id() -> u128 {
+    unix_millis() * 1_000
+        + u128::from(SESSION_COUNTER.fetch_add(1, Ordering::Relaxed) % 1_000)
+}
+
+fn open_session_log(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+}
+
+fn append_lifecycle(state: &ServerRuntime, message: &str) {
+    let path = state
+        .log_dir
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .map(|dir| dir.join("server-lifecycle.log"));
+    let Some(path) = path else {
+        eprintln!("[switchgate] lifecycle log unavailable: {message}");
+        return;
+    };
+    let result = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        writeln!(file, "[{}] {message}", unix_millis())?;
+        file.flush()
+    })();
+    if let Err(error) = result {
+        eprintln!("[switchgate] lifecycle log failed ({}): {error}", path.display());
+    }
+}
+
+fn is_owned_relay_endpoint(endpoint: &str) -> bool {
+    endpoint == "http://127.0.0.1:8787"
+}
+
+fn observe_child_exit(state: &ServerRuntime) -> bool {
+    let observed = {
+        let mut guard = state.child.lock().unwrap();
+        // 生命周期观察只允许 Rust 自己拉起的 127.0.0.1:8787 relay。
+        // 非该端点的进程不进入 try_wait，也不会被分类为 relay 退出。
+        if !guard
+            .as_ref()
+            .map(|record| is_owned_relay_endpoint(&record.endpoint))
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        let status = match guard.as_mut() {
+            Some(record) => match record.process.try_wait() {
+                Ok(status) => status,
+                Err(error) => {
+                    append_lifecycle(state, &format!("wait-error error={error}"));
+                    None
+                }
+            },
+            None => None,
+        };
+        status.and_then(|status| guard.take().map(|record| (record, status)))
+    };
+
+    let Some((record, status)) = observed else {
+        return false;
+    };
+    let code = status
+        .code()
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "signal".into());
+    append_lifecycle(
+        state,
+        &format!(
+            "exit pid={} session={} endpoint={} code={} observed=true",
+            record.pid, record.session_id, record.endpoint, code
+        ),
+    );
+    if !is_owned_relay_endpoint(&record.endpoint) {
+        append_lifecycle(
+            state,
+            &format!(
+                "exit-ignored pid={} session={} endpoint={} reason=not-owned-relay",
+                record.pid, record.session_id, record.endpoint
+            ),
+        );
+        return false;
+    }
+
+    let detail = read_stderr_tail_path(&record.stderr_log, 12)
+        .unwrap_or_else(|| "server stderr 为空，未发现退出详情".into());
+    // 保持 active_session 锁到状态更新完成，避免旧会话观察与新会话启动交错，
+    // 把新会话误标成 failed 或清掉新会话 ID。
+    let mut active = state.active_session.lock().unwrap();
+    if *active == Some(record.session_id) {
+        *active = None;
+        let mut current = state.status.lock().unwrap();
+        if current.state == "starting" || current.state == "running" {
+            current.state = "failed".into();
+            current.message = format!(
+                "本地中转服务已退出（PID {}，会话 {}，退出码 {}）。\\n{}",
+                record.pid, record.session_id, code, detail
+            );
+            current.owned = false;
+        }
+    }
+    true
+}
+
+fn start_runtime_monitor(app: tauri::AppHandle) {
+    std::thread::spawn(move || loop {
+        if let Some(state) = app.try_state::<ServerRuntime>() {
+            observe_child_exit(&state);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    });
+}
+
 #[tauri::command]
 fn start_server(
     app: tauri::AppHandle,
     state: State<'_, ServerRuntime>,
     options: StartOptions,
 ) -> Result<ServerStatus, String> {
-    // 已在跑就直接返回
-    {
-        let mut guard = state.child.lock().unwrap();
-        if let Some(child) = guard.as_mut() {
-            if child.try_wait().ok().flatten().is_none() {
-                return Ok(state.status.lock().unwrap().clone());
-            }
-            *guard = None;
-        }
+    observe_child_exit(&state);
+    // 已在跑就直接返回。退出观察由后台线程和本次 IPC 双重触发，避免竞态窗口。
+    if state.child.lock().unwrap().is_some() {
+        return Ok(state.status.lock().unwrap().clone());
     }
 
     let root = server_root(&app)?;
@@ -475,8 +612,13 @@ fn start_server(
     let host = options.host.unwrap_or_else(|| DEFAULT_HOST.to_string());
     let port = options.port.unwrap_or(DEFAULT_PORT);
     let endpoint = format!("http://{host}:{port}");
+    if !is_owned_relay_endpoint(&endpoint) {
+        return Err(format!(
+            "拒绝启动非本地中转端点 {endpoint}；Doudizhu 等其他服务不由 SwitchGate 管理"
+        ));
+    }
 
-    // 端口已经被别的实例占了 —— 直接复用，不重复拉起
+    // 端口已经被别的实例占了 —— 直接复用，不重复拉起，也不把它纳入 owned 生命周期。
     if health_ok(&endpoint) {
         let status = ServerStatus {
             state: "running".into(),
@@ -500,12 +642,26 @@ fn start_server(
         .parent()
         .map(|p| p.join("logs"))
         .unwrap_or_else(|| data_dir.clone());
-    std::fs::create_dir_all(&log_dir).ok();
-    // 记下来：子进程若崩溃，`server_status` 要到这里读错误尾部回传给引导页。
+    std::fs::create_dir_all(&log_dir)
+        .map_err(|e| format!("无法创建日志目录 {}：{e}", log_dir.display()))?;
     *state.log_dir.lock().unwrap() = Some(log_dir.clone());
 
-    let out_log = std::fs::File::create(log_dir.join("server.out.log")).ok();
-    let err_log = std::fs::File::create(log_dir.join("server.err.log")).ok();
+    let session_id = next_session_id();
+    let out_path = log_dir.join(format!("server-{session_id}.out.log"));
+    let err_path = log_dir.join(format!("server-{session_id}.err.log"));
+    let out_log = open_session_log(&out_path)
+        .map_err(|e| format!("无法打开 stdout 日志 {}：{e}", out_path.display()))?;
+    let err_log = open_session_log(&err_path)
+        .map_err(|e| format!("无法打开 stderr 日志 {}：{e}", err_path.display()))?;
+    *state.stderr_log.lock().unwrap() = Some(err_path.clone());
+    append_lifecycle(
+        &state,
+        &format!(
+            "spawn-attempt session={session_id} endpoint={endpoint} stdout={} stderr={}",
+            out_path.display(),
+            err_path.display()
+        ),
+    );
 
     let mut cmd = Command::new(&node.path);
     cmd.arg("--max-old-space-size=1024")
@@ -518,8 +674,8 @@ fn start_server(
         .env("CODEX_HOT_SWITCH_DATA_DIR", &data_dir)
         .env("NODE_PATH", build_node_path(&root))
         .stdin(Stdio::null())
-        .stdout(out_log.map(Stdio::from).unwrap_or_else(Stdio::null))
-        .stderr(err_log.map(Stdio::from).unwrap_or_else(Stdio::null));
+        .stdout(Stdio::from(out_log))
+        .stderr(Stdio::from(err_log));
 
     #[cfg(windows)]
     {
@@ -528,9 +684,10 @@ fn start_server(
         cmd.creation_flags(0x0800_0000);
     }
 
-    let child = cmd
-        .spawn()
-        .map_err(|e| format!("拉起 node 失败（{}）：{e}", node.path))?;
+    let child = cmd.spawn().map_err(|e| {
+        append_lifecycle(&state, &format!("spawn-error session={session_id} error={e}"));
+        format!("拉起 node 失败（{}）：{e}", node.path)
+    })?;
 
     // Windows：把子进程挂进一个 Job Object，并设「关闭即杀」。
     // 光靠 RunEvent 里 kill 不够——进程被强杀 / 崩溃 / 注销时那条路径不会执行，
@@ -538,17 +695,30 @@ fn start_server(
     #[cfg(windows)]
     attach_kill_on_close_job(&child);
 
-    *state.child.lock().unwrap() = Some(child);
+    let pid = child.id();
     let status = ServerStatus {
         state: "starting".into(),
         message: format!(
-            "正在启动本地中转服务：{host}:{port}（node {}）",
+            "正在启动本地中转服务：{host}:{port}（node {}，PID {pid}，会话 {session_id}）",
             node.version
         ),
-        endpoint,
+        endpoint: endpoint.clone(),
         owned: true,
     };
+    // 与退出观察保持 active_session -> status 的锁顺序，避免旧会话覆盖新会话状态。
+    *state.active_session.lock().unwrap() = Some(session_id);
     *state.status.lock().unwrap() = status.clone();
+    *state.child.lock().unwrap() = Some(ManagedChild {
+        process: child,
+        pid,
+        session_id,
+        endpoint,
+        stderr_log: err_path,
+    });
+    append_lifecycle(
+        &state,
+        &format!("spawned pid={pid} session={session_id}"),
+    );
     Ok(status)
 }
 
@@ -557,9 +727,8 @@ fn start_server(
 /// 这条路径是「进程崩了但外壳浑然不知」的唯一解药：`next` 加载失败、
 /// 端口占用、模块缺失之类的错误只会写进 stderr，而外壳原本只探端口，
 /// 于是引导页会**无报错地一直转圈**（真实踩过：`Cannot find module 'next'`）。
-fn read_stderr_tail(state: &State<'_, ServerRuntime>, max_lines: usize) -> Option<String> {
-    let dir = state.log_dir.lock().unwrap().clone()?;
-    let raw = std::fs::read_to_string(dir.join("server.err.log")).ok()?;
+fn read_stderr_tail_path(path: &Path, max_lines: usize) -> Option<String> {
+    let raw = std::fs::read_to_string(path).ok()?;
     let text = raw.trim();
     if text.is_empty() {
         return None;
@@ -587,45 +756,44 @@ fn filter_node_noise(text: &str) -> String {
 
 #[tauri::command]
 fn server_status(state: State<'_, ServerRuntime>) -> ServerStatus {
+    // 后台监测负责及时更新；IPC 查询再检查一次，避免刚退出时有轮询窗口。
+    observe_child_exit(&state);
     let mut status = state.status.lock().unwrap().clone();
 
-    // 端口通了就算成功（权威信号）。
+    // 端口通了就算成功（权威信号）。这只更新当前状态，不会接管外部进程。
     if status.state == "starting" && health_ok(&status.endpoint) {
         status.state = "running".into();
         status.message = format!("本地中转服务运行中：{}", status.endpoint);
         *state.status.lock().unwrap() = status.clone();
-        return status;
     }
-
-    // 还没到 running，但子进程已经退出了？那就是启动失败 —— 别让引导页傻等。
-    if status.state == "starting" {
-        let exited = {
-            let mut guard = state.child.lock().unwrap();
-            match guard.as_mut() {
-                Some(child) => child.try_wait().ok().flatten().is_some(),
-                // 没记录到子进程（比如复用了已在监听的实例后又断开）
-                None => false,
-            }
-        };
-        if exited {
-            let detail = read_stderr_tail(&state, 12)
-                .unwrap_or_else(|| "子进程已退出，但 server.err.log 为空".into());
-            status.state = "failed".into();
-            status.message = format!("本地中转服务启动失败：\n{detail}");
-            state.child.lock().unwrap().take();
-            *state.status.lock().unwrap() = status.clone();
-        }
-    }
-
     status
 }
 
-#[tauri::command]
-fn stop_server(state: State<'_, ServerRuntime>) -> Result<(), String> {
-    let mut guard = state.child.lock().unwrap();
-    if let Some(mut child) = guard.take() {
-        let _ = child.kill();
-        let _ = child.wait();
+fn stop_server_with_reason(state: &ServerRuntime, reason: &str) -> Result<(), String> {
+    let managed = state.child.lock().unwrap().take();
+    *state.active_session.lock().unwrap() = None;
+    if let Some(mut record) = managed {
+        append_lifecycle(
+            state,
+            &format!(
+                "stop-request pid={} session={} endpoint={} reason={reason}",
+                record.pid, record.session_id, record.endpoint
+            ),
+        );
+        let kill_result = record.process.kill();
+        let wait_result = record.process.wait();
+        append_lifecycle(
+            state,
+            &format!(
+                "stop-complete pid={} session={} kill={:?} wait={:?} reason={reason}",
+                record.pid,
+                record.session_id,
+                kill_result.as_ref().err(),
+                wait_result.as_ref().err()
+            ),
+        );
+    } else {
+        append_lifecycle(state, &format!("stop-request pid=none reason={reason}"));
     }
     let mut status = state.status.lock().unwrap();
     status.state = "stopped".into();
@@ -635,11 +803,16 @@ fn stop_server(state: State<'_, ServerRuntime>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn stop_server(state: State<'_, ServerRuntime>) -> Result<(), String> {
+    stop_server_with_reason(&state, "manual")
+}
+
+#[tauri::command]
 fn restart_server(
     app: tauri::AppHandle,
     state: State<'_, ServerRuntime>,
 ) -> Result<ServerStatus, String> {
-    stop_server(state.clone())?;
+    stop_server_with_reason(&state, "restart")?;
     std::thread::sleep(std::time::Duration::from_millis(600));
     start_server(
         app,
@@ -795,26 +968,16 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => reveal_main_window(app),
             "restart" => {
-                // 托盘菜单里没有 State 参数，这里手动取
+                // 托盘菜单里没有 State 参数，这里手动取。
                 if let Some(state) = app.try_state::<ServerRuntime>() {
-                    if let Ok(mut child) = state.child.lock().map(|mut g| g.take()).map_err(|_| ())
-                    {
-                        if let Some(mut c) = child.take() {
-                            let _ = c.kill();
-                            let _ = c.wait();
-                        }
-                    }
+                    let _ = stop_server_with_reason(&state, "tray-restart");
+                    std::thread::sleep(std::time::Duration::from_millis(600));
                     let _ = helper_start(app.clone(), state);
                 }
             }
             "quit" => {
                 if let Some(state) = app.try_state::<ServerRuntime>() {
-                    if let Ok(mut guard) = state.child.lock() {
-                        if let Some(mut child) = guard.take() {
-                            let _ = child.kill();
-                            let _ = child.wait();
-                        }
-                    }
+                    let _ = stop_server_with_reason(&state, "tray-quit");
                 }
                 app.exit(0);
             }
@@ -933,6 +1096,7 @@ pub fn run() {
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+            start_runtime_monitor(handle.clone());
             // 托盘失败不该让整个应用起不来 —— 记一笔继续。
             if let Err(e) = setup_tray(&handle) {
                 let dir = default_data_dir()
@@ -982,10 +1146,7 @@ pub fn run() {
             // 强杀/崩溃的兜底靠 spawn 时挂的 Job Object。
             RunEvent::Exit => {
                 if let Some(state) = app_handle.try_state::<ServerRuntime>() {
-                    if let Some(mut child) = state.child.lock().unwrap().take() {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                    }
+                    let _ = stop_server_with_reason(&state, "app-exit");
                 }
             }
             _ => {}
