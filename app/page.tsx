@@ -1,9 +1,10 @@
 import { AppRoot } from "@/components/app-root"
 import { resolveView } from "@/lib/console-views"
 import { redirect } from "next/navigation"
-import { cookies, headers } from "next/headers"
-import { ACCESS_COOKIE_NAME, readSessionCookie } from "@/lib/server/access-auth"
-import { isApiKeyAuthorizedHeaders } from "@/lib/server/access-guard"
+import { cookies } from "next/headers"
+import { ACCESS_COOKIE_NAME } from "@/lib/server/account-auth"
+import { accountFromRequest, accessAuthRequired } from "@/lib/server/access-guard"
+import { runWithAccountDataDir } from "@/lib/server/data-root"
 
 export default async function Page({
   searchParams,
@@ -12,18 +13,22 @@ export default async function Page({
 }) {
   const cookieStore = await cookies()
   const token = cookieStore.get(ACCESS_COOKIE_NAME)?.value ?? ""
-  const session = token
-    ? await readSessionCookie(`${ACCESS_COOKIE_NAME}=${token}`)
-    : null
-  // 控制台页面允许服务器 API Key 直接打开；登录 Cookie 只影响设置页。
-  const apiKeyAuthorized = await isApiKeyAuthorizedHeaders(await headers())
-  if (!session && !apiKeyAuthorized) redirect("/login")
   const params = searchParams ? await searchParams : {}
-  const serverMode = process.env.CODEX_HOT_SWITCH_SERVER_UI === "1"
-  return (
-    <AppRoot
-      initialView={resolveView(params.view, serverMode)}
-      serverMode={serverMode}
-    />
-  )
+  const serverMode = accessAuthRequired()
+  const view = resolveView(params.view, serverMode)
+
+  if (!serverMode) {
+    return <AppRoot initialView={view} serverMode={false} />
+  }
+
+  const request = new Request("http://localhost/", {
+    headers: token ? { cookie: `${ACCESS_COOKIE_NAME}=${token}` } : {},
+  })
+  const context = await accountFromRequest(request)
+  if (!context) redirect("/login")
+
+  // 服务端渲染时先绑定账号目录，避免首屏读到别人的配置。
+  return runWithAccountDataDir(context.dataDir, () => (
+    <AppRoot initialView={view} serverMode />
+  ))
 }
