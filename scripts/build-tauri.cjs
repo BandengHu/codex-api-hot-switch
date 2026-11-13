@@ -2,6 +2,7 @@
 const { spawnSync } = require("node:child_process")
 const fs = require("node:fs/promises")
 const path = require("node:path")
+const { createTauriInstallerConfig } = require("./tauri-installer-config.cjs")
 
 const root = path.resolve(__dirname, "..")
 const tauriProjectDir = path.join(root, "tauri", "src-tauri")
@@ -52,10 +53,14 @@ async function stageInstaller() {
   console.log(`Tauri 安装包：${path.relative(root, destination)}`)
 }
 
-function buildTauri() {
+async function buildTauri() {
+  const { configPath: installerConfig } = await createTauriInstallerConfig({
+    tauriProjectDir,
+    cargoTargetDir,
+  })
   const result = spawnSync(
     cargoCommand,
-    ["tauri", "build", "--bundles", "nsis"],
+    ["tauri", "build", "--bundles", "nsis", "--config", installerConfig],
     {
       cwd: tauriProjectDir,
       env: {
@@ -74,7 +79,7 @@ function buildTauri() {
 
 async function main() {
   if (!process.argv.includes("--stage-only")) {
-    buildTauri()
+    await buildTauri()
   }
   await stageInstaller()
 }

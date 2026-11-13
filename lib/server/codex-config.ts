@@ -1,7 +1,6 @@
 import "server-only"
 
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises"
-import { delimiter } from "node:path"
 import { dirname, join, resolve } from "node:path"
 import { CODEX_AUTO_MODEL_SLUG } from "@/lib/codex-model-slug"
 import type {
@@ -248,22 +247,18 @@ function providerBlock(providerId: string, baseUrl: string, providerName: string
   ].join("\n")
 }
 
-function selectedNodeCommand() {
+function configuredNodeCommand() {
   const candidates = [
     process.env.SWITCHGATE_MCP_NODE_PATH,
-    process.env.NODE_PATH && process.execPath,
-    process.execPath,
-    "node",
   ].filter((item): item is string => typeof item === "string" && item.trim().length > 0)
   return candidates[0]
 }
 
-function webSearchMcpEnvBlock(command: string, settings: Settings) {
+function webSearchMcpEnvBlock(settings: Settings) {
   const env: Record<string, string> = {
     CODEX_HOME: codexHome(),
     SWITCHGATE_WEB_API_URL: webSearchApiUrl(settings),
   }
-  if (process.env.NODE_PATH) env.NODE_PATH = process.env.NODE_PATH.split(delimiter).join(delimiter)
   const entries = Object.entries(env)
   if (!entries.length) return ""
   return [
@@ -273,17 +268,18 @@ function webSearchMcpEnvBlock(command: string, settings: Settings) {
 }
 
 function webSearchMcpBlock(settings: Settings) {
-  const command = selectedNodeCommand()
+  const command = configuredNodeCommand()
   const scriptPath = webSearchMcpScriptPath()
-  return [
+  const lines = [
     `[mcp_servers.${WEB_SEARCH_MCP_SERVER_NAME}]`,
-    `command = ${tomlString(command)}`,
+    ...(command ? [`command = ${tomlString(command)}`] : []),
     `args = ${JSON.stringify([scriptPath])}`,
     `startup_timeout_sec = 30`,
     `enabled = true`,
     "",
-    webSearchMcpEnvBlock(command, settings),
-  ].filter(Boolean).join("\n")
+    webSearchMcpEnvBlock(settings),
+  ]
+  return lines.filter(Boolean).join("\n")
 }
 
 function removeWebSearchMcpConfigText(current: string) {
@@ -292,7 +288,7 @@ function removeWebSearchMcpConfigText(current: string) {
   return `${next.trimEnd()}\n`
 }
 
-function installWebSearchMcpConfigText(current: string, settings: Settings) {
+export function installWebSearchMcpConfigText(current: string, settings: Settings) {
   const next = removeWebSearchMcpConfigText(current).trimEnd()
   return `${next ? `${next}\n\n` : ""}${webSearchMcpBlock(settings)}\n`
 }
@@ -305,7 +301,7 @@ function webSearchMcpStatus(text: string) {
   const scriptPath = webSearchMcpScriptPath()
   return {
     serverName: WEB_SEARCH_MCP_SERVER_NAME,
-    installed: Boolean(command && args.includes(scriptPath)),
+    installed: Boolean(args.includes(scriptPath)),
     enabled: enabled !== false,
     command,
     args,
