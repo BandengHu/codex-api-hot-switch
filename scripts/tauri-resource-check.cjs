@@ -15,14 +15,13 @@ const { spawnSync } = require("node:child_process")
 const MIN_NODE_MAJOR = 22
 const MIN_NODE_MINOR = 5
 
-const REQUIRED_RESOURCE_PATHS = [
+const REQUIRED_BASE_PATHS = [
   "server.js",
   "package.json",
-  ".next/BUILD_ID",
-  ".next/server",
-  ".next/static",
   "runtime/node.exe",
 ]
+
+const REQUIRED_FULL_PATHS = [".next/BUILD_ID", ".next/server", ".next/static"]
 
 function requiredVendorPackages(platformPackageName) {
   return [
@@ -71,14 +70,35 @@ async function assertNoLongPaths(root, limit = 250) {
   return maxLen
 }
 
-async function assertResourcesComplete(dir, platformPackageName) {
+async function assertResourcesComplete(
+  dir,
+  platformPackageName,
+  mode = "full",
+) {
+  if (mode !== "full" && mode !== "remote-shell") {
+    throw new Error(`资源检查模式只支持 full 或 remote-shell，收到：${mode}`)
+  }
+
+  const requiredPaths =
+    mode === "full" ? [...REQUIRED_BASE_PATHS, ...REQUIRED_FULL_PATHS] : REQUIRED_BASE_PATHS
   const missing = []
-  for (const rel of REQUIRED_RESOURCE_PATHS) {
+  for (const rel of requiredPaths) {
     try {
       await fs.stat(path.join(dir, rel))
     } catch {
       missing.push(rel)
     }
+  }
+
+  if (mode === "remote-shell") {
+    if (missing.length > 0) {
+      throw new Error(
+        `远程壳资源不完整，打包会得到一个跑不起来的安装包：\n` +
+          missing.map((item) => `  缺失：${item}`).join("\n") +
+          `\n目录：${dir}`,
+      )
+    }
+    return { apiRoutes: 0, chunks: 0 }
   }
 
   const apiDir = path.join(dir, ".next", "server", "app", "api")

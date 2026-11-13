@@ -25,6 +25,7 @@ const {
 
 const root = path.resolve(__dirname, "..")
 const standaloneDir = path.join(root, ".next", "standalone")
+const packageMode = process.argv[2] || "full"
 // 允许用环境变量换个输出目录。
 // 用途：万一 resources 目录被外部句柄占住（EPERM / ENOTEMPTY 清不掉），
 // 可以直接指到新目录继续打包，不必先去跟残留文件较劲。
@@ -415,33 +416,47 @@ async function main() {
     throw new Error("缺少 .next/standalone/server.js，请先运行 next build")
   }
 
+  if (packageMode !== "full" && packageMode !== "remote-shell") {
+    throw new Error(
+      `打包模式只支持 full 或 remote-shell，收到：${packageMode}`,
+    )
+  }
+
   await rmRetry(tauriResourcesDir, { recursive: true, force: true })
   await fs.mkdir(tauriResourcesDir, { recursive: true })
 
-  for (const artifact of tracedBuildArtifacts) {
-    await rmRetry(path.join(standaloneDir, artifact), { recursive: true, force: true })
+  if (packageMode === "remote-shell") {
+    await fs.copyFile(
+      path.join(root, "scripts", "remote-shell.cjs"),
+      path.join(standaloneDir, "server.js"),
+    )
+  } else {
+    for (const artifact of tracedBuildArtifacts) {
+      await rmRetry(path.join(standaloneDir, artifact), { recursive: true, force: true })
+    }
+    await copyDir(
+      path.join(root, ".next", "server", "chunks"),
+      path.join(standaloneDir, ".next", "server", "chunks"),
+    )
+    await copyDir(path.join(root, ".next", "static"), path.join(standaloneDir, ".next", "static"))
+    await copyDir(path.join(root, "public"), path.join(standaloneDir, "public"))
+    const flattened = await flattenPnpmStore(path.join(standaloneDir, "node_modules"))
+    if (flattened.moved > 0) {
+      console.log(`  源侧摊平 .pnpm：${flattened.moved} 个包移到顶层`)
+    }
   }
-  await copyDir(
-    path.join(root, ".next", "server", "chunks"),
-    path.join(standaloneDir, ".next", "server", "chunks"),
-  )
-  await copyDir(path.join(root, ".next", "static"), path.join(standaloneDir, ".next", "static"))
-  await copyDir(path.join(root, "public"), path.join(standaloneDir, "public"))
 
-  // 先在**源侧**把 `.pnpm` 摊平到顶层，再往目标拷（过滤掉已空的 `.pnpm`）。
-  //
-  // 为什么在源侧做：standalone 顶层那 11 个包多是**符号链接**指向 `.pnpm`，
-  // 而 `copyDir` 用 `dereference: true` 会把它们解引用成实体副本 ——
-  // 于是「顶层实体 + .pnpm 实体」两份并存，体积翻倍且解析路径仍可能踩坑。
-  // 先摊平则：真实包体落到顶层，符号链接被 rename 上位替换，`.pnpm` 只剩空壳。
-  //
-  // ⚠️ 源侧改动会写进 `.next/standalone`（构建产物，重新 next build 会覆盖，可接受）。
-  const flattened = await flattenPnpmStore(path.join(standaloneDir, "node_modules"))
-  if (flattened.moved > 0) {
-    console.log(`  源侧摊平 .pnpm：${flattened.moved} 个包移到顶层`)
-  }
   await copyDir(standaloneDir, targetServerDir)
   const bundledNodeRuntime = await copyBundledNodeRuntime(targetServerDir)
+
+  if (packageMode === "remote-shell") {
+    // 远程壳只部署 HTTP 反向代理，不携带供应商数据或完整 Next 运行时。
+    await rmRetry(path.join(targetServerDir, ".next"), { recursive: true, force: true })
+    await rmRetry(path.join(targetServerDir, "app"), { recursive: true, force: true })
+    await rmRetry(path.join(targetServerDir, "components"), { recursive: true, force: true })
+    await rmRetry(path.join(targetServerDir, "lib"), { recursive: true, force: true })
+    await rmRetry(path.join(targetServerDir, "vendor"), { recursive: true, force: true })
+  }
 
   // 补入运行时脚本与 integrations。
   await fs.mkdir(path.join(targetServerDir, "scripts"), { recursive: true })
@@ -496,18 +511,21 @@ async function main() {
   const rewrittenPaths = await rewriteBundledBuildPaths(targetServerDir)
 
   const maxLen = await assertNoLongPaths(targetServerDir)
-  const check = await assertResourcesComplete(targetServerDir, esbuildPlatformPackageName())
+  const check = await assertResourcesComplete(
+    targetServerDir,
+    esbuildPlatformPackageName(),
+    packageMode,
+  )
   const bundledNode = await assertBundledNodeRuntime(targetServerDir)
-  assertCodexBridgeStarts(targetServerDir, bundledNode.path)
+  if (packageMode === "full") {
+    assertCodexBridgeStarts(targetServerDir, bundledNode.path)
+  }
 
   const size = await dirSize(targetServerDir)
   // 体积护栏：只抓「量级错」的情况（自嵌套会把资源撑到 GB 级）。
   //
-  // ⚠️ 参考值随 vendor 内容变化，别拿它当「越小越好」的指标：
-  // - 正常值 **~237MB**，其中 vendor 约 192MB（next 161MB 是必须的，删了直接崩）；
-  // - 曾经误把 vendor 顶层包删光，掉到 46MB，看起来"更健康"实则打出的包跑不起来。
-  // 所以真正的正确性由 `assertResourcesComplete` 的 REQUIRED_VENDOR_PACKAGES 保证，
-  // 这里只拦 1GB 以上的离谱膨胀。
+  // 壳模式只携带反向代理与 Node 运行时，正常体积在 100MB 以内。
+  // 这里仍然只拦量级异常，避免把正常差异当成打包失败。
   if (size > 1024 * 1024 * 1024) {
     throw new Error(
       `资源树异常膨胀：${(size / 1024 / 1024).toFixed(0)}MB（正常约 237MB）。\n` +
@@ -517,7 +535,11 @@ async function main() {
   }
   console.log(`Tauri 资源已就绪：tauri/src-tauri/resources/server`)
   console.log(`  体积 ${(size / 1024 / 1024).toFixed(0)}MB，最长路径 ${maxLen} 字符`)
-  console.log(`  关键路径自检通过（api 路由 ${check.apiRoutes} 项，chunks ${check.chunks} 项）`)
+  console.log(
+    packageMode === "full"
+      ? `  关键路径自检通过（api 路由 ${check.apiRoutes} 项，chunks ${check.chunks} 项）`
+      : `  关键路径自检通过（壳入口与随包 Node）`,
+  )
   console.log(
     `  随包 Node ${bundledNodeRuntime.version}：${path.relative(root, bundledNodeRuntime.destination)}`,
   )
