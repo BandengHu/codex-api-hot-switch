@@ -11,17 +11,23 @@ import type { ConsoleSnapshot } from "@/lib/types"
 export function AppRoot({
   initialView = DEFAULT_VIEW,
   serverMode = false,
+  publicBaseUrl = "",
   initialSnapshot,
 }: {
   initialView?: ViewKey
   serverMode?: boolean
+  publicBaseUrl?: string
   initialSnapshot: ConsoleSnapshot
 }) {
   return (
     <ThemeProvider>
       <ConsoleProvider initialSnapshot={initialSnapshot}>
         <TooltipProvider>
-          <ConsoleShell initialView={initialView} serverMode={serverMode} />
+          <ConsoleShell
+            initialView={initialView}
+            serverMode={serverMode}
+            publicBaseUrl={publicBaseUrl}
+          />
           <Toaster position="bottom-right" />
         </TooltipProvider>
       </ConsoleProvider>

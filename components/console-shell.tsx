@@ -32,9 +32,11 @@ function viewFromUrl(serverMode: boolean) {
 export function ConsoleShell({
   initialView = DEFAULT_VIEW,
   serverMode = false,
+  publicBaseUrl = "",
 }: {
   initialView?: ViewKey
   serverMode?: boolean
+  publicBaseUrl?: string
 }) {
   const [view, setView] = useState<ViewKey>(initialView)
 
@@ -57,10 +59,12 @@ export function ConsoleShell({
     <div className="flex h-dvh w-full overflow-hidden bg-background text-foreground">
       <Sidebar active={view} onNavigate={navigate} serverMode={serverMode} />
       <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar />
+        <Topbar publicBaseUrl={publicBaseUrl} />
         <main className="flex-1 overflow-y-auto p-4 md:p-6">
           <div className="mx-auto w-full max-w-6xl">
-            {view === "dashboard" ? <DashboardView /> : null}
+            {view === "dashboard" ? (
+              <DashboardView publicBaseUrl={publicBaseUrl} />
+            ) : null}
             {view === "providers" ? <ProvidersView /> : null}
             {view === "models" ? <ModelsView /> : null}
             {view === "switch" ? <SwitchView /> : null}
@@ -74,7 +78,10 @@ export function ConsoleShell({
             {view === "workbuddy-global-pool" ? <WorkbuddyGlobalPoolView /> : null}
             {view === "accounts" && serverMode ? <AccountsView /> : null}
             {view === "settings" ? (
-              <SettingsView showServerAccess={serverMode} />
+              <SettingsView
+                showServerAccess={serverMode}
+                publicBaseUrl={publicBaseUrl}
+              />
             ) : null}
           </div>
         </main>

@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/field"
 import { Separator } from "@/components/ui/separator"
 import { ServerAccessCard } from "@/components/server-access-card"
+import { formatPublicEndpoint } from "@/lib/public-endpoint"
 import { useConsole } from "@/lib/console-store"
 import {
   isChatModel,
@@ -48,7 +49,13 @@ import { toast } from "sonner"
 
 const REASONING_OPTIONS: ReasoningEffort[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "auto"]
 
-export function SettingsView({ showServerAccess = false }: { showServerAccess?: boolean }) {
+export function SettingsView({
+  showServerAccess = false,
+  publicBaseUrl = "",
+}: {
+  showServerAccess?: boolean
+  publicBaseUrl?: string
+}) {
   const { settings, providers, modelsByProvider, updateSettings, replaceSnapshot } =
     useConsole()
   const [draft, setDraft] = useState(settings)
@@ -92,6 +99,13 @@ export function SettingsView({ showServerAccess = false }: { showServerAccess?: 
     !retentionError &&
     !imageModelError &&
     !auxiliaryModelError
+  // 服务器模式的监听地址是 TLS 代理后面的内部端口，改这里会让对外入口失效。
+  const serverManagedListen = Boolean(publicBaseUrl)
+  const endpoint = formatPublicEndpoint({
+    publicBaseUrl,
+    listenAddress: draft.listenAddress,
+    port: draft.port,
+  })
 
   function handleProviderChange(value: string | null) {
     if (!value) return
@@ -126,7 +140,11 @@ export function SettingsView({ showServerAccess = false }: { showServerAccess?: 
       return
     }
     updateSettings(draft)
-    toast.success("设置已保存。监听地址或端口会在重启服务后生效。")
+    toast.success(
+      serverManagedListen
+        ? "设置已保存。"
+        : "设置已保存。监听地址或端口会在重启服务后生效。",
+    )
   }
 
   async function handleRestartServer() {
@@ -209,13 +227,13 @@ export function SettingsView({ showServerAccess = false }: { showServerAccess?: 
               variant="outline"
               size="sm"
               onClick={handleRestartServer}
-              disabled={restartingServer}
+              disabled={restartingServer || serverManagedListen}
             >
               <RefreshCw
                 data-icon="inline-start"
                 className={restartingServer ? "animate-spin" : undefined}
               />
-              重启服务
+              {serverManagedListen ? "由 systemd 托管" : "重启服务"}
             </Button>
           </div>
         </CardHeader>
@@ -229,13 +247,20 @@ export function SettingsView({ showServerAccess = false }: { showServerAccess?: 
                   value={draft.listenAddress}
                   aria-invalid={!!addrError}
                   className="font-mono text-sm"
+                  disabled={serverManagedListen}
                   onChange={(e) =>
                     setDraft((d) => ({ ...d, listenAddress: e.target.value }))
                   }
                 />
-                {addrError ? <FieldError>{addrError}</FieldError> : null}
+                {addrError ? (
+                  <FieldError>{addrError}</FieldError>
+                ) : serverManagedListen ? (
+                  <FieldDescription>
+                    服务器模式下由 systemd 固定，对外入口走 HTTPS 反向代理。
+                  </FieldDescription>
+                ) : null}
               </Field>
-              <Field data-invalid={!!portError}>
+              <Field data-invalid={!!portError || serverManagedListen}>
                 <FieldLabel htmlFor="s-port">端口</FieldLabel>
                 <Input
                   id="s-port"
@@ -243,12 +268,17 @@ export function SettingsView({ showServerAccess = false }: { showServerAccess?: 
                   value={draft.port}
                   aria-invalid={!!portError}
                   className="font-mono text-sm"
+                  disabled={serverManagedListen}
                   onChange={(e) =>
                     setDraft((d) => ({ ...d, port: Number(e.target.value) }))
                   }
                 />
                 {portError ? (
                   <FieldError>{portError}</FieldError>
+                ) : serverManagedListen ? (
+                  <FieldDescription>
+                    实际监听由环境变量决定，对外只暴露 HTTPS 入口。
+                  </FieldDescription>
                 ) : (
                   <FieldDescription>
                     中转地址：http://{draft.listenAddress}:{draft.port}/v1；非本机监听需设置

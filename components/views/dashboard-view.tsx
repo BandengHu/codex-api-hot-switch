@@ -34,6 +34,7 @@ import {
 } from "@/components/status-badges"
 import { useConsole } from "@/lib/console-store"
 import { resetTokenStats, testProvider } from "@/lib/console-api"
+import { formatPublicEndpoint } from "@/lib/public-endpoint"
 import {
   formatDurationSeconds,
   formatIntegerCount,
@@ -50,7 +51,7 @@ import { toast } from "sonner"
 
 const RECENT_WINDOW_MS = 15 * 60 * 1000
 
-export function DashboardView() {
+export function DashboardView({ publicBaseUrl = "" }: { publicBaseUrl?: string }) {
   const {
     runtime,
     getProvider,
@@ -75,7 +76,11 @@ export function DashboardView() {
   const provider = getProvider(runtime.activeProviderId)
   const model = getModel(runtime.activeModelId)
   const isActive = runtime.takeover === "active"
-  const endpoint = `http://${settings.listenAddress}:${settings.port}/v1`
+  const endpoint = formatPublicEndpoint({
+    publicBaseUrl,
+    listenAddress: settings.listenAddress,
+    port: settings.port,
+  })
 
   const recentLogs = logs.filter((log) => {
     const timestamp = Date.parse(log.timestamp)
@@ -239,7 +244,9 @@ export function DashboardView() {
             </div>
           </div>
           <div className="flex flex-col gap-1">
-            <span className="text-xs text-muted-foreground">本地中转地址</span>
+            <span className="text-xs text-muted-foreground">
+              {publicBaseUrl ? "中转地址" : "本地中转地址"}
+            </span>
             <code className="rounded bg-muted px-2 py-1 font-mono text-xs">
               {endpoint}
             </code>
