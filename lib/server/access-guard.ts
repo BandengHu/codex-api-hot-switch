@@ -2,6 +2,14 @@ import "server-only"
 
 import { readSessionCookie, verifyApiKey } from "./access-auth"
 
+/**
+ * 只有服务器部署（systemd 设置 CODEX_HOT_SWITCH_SERVER_UI=1）才强制鉴权。
+ * 本地桌面/壳模式保持原来的免登录体验，避免两套代码分叉。
+ */
+function requiresAccessAuth() {
+  return process.env.CODEX_HOT_SWITCH_SERVER_UI === "1"
+}
+
 function bearerToken(header: string | null) {
   if (!header) return ""
   const match = /^Bearer\s+(.+)$/i.exec(header.trim())
@@ -16,6 +24,7 @@ export function apiKeyFromHeaders(headers: Pick<Headers, "get">) {
 }
 
 export async function isApiKeyAuthorizedHeaders(headers: Pick<Headers, "get">) {
+  if (!requiresAccessAuth()) return true
   const apiKey = apiKeyFromHeaders(headers)
   return Boolean(apiKey && (await verifyApiKey(apiKey)))
 }
@@ -33,6 +42,7 @@ export async function isApiKeyAuthorized(request: Request): Promise<boolean> {
  * 控制台/设置接口：API Key 或网页登录 Cookie 任一通过即可。
  */
 export async function isAuthorized(request: Request): Promise<boolean> {
+  if (!requiresAccessAuth()) return true
   if (await isApiKeyAuthorized(request)) return true
   return Boolean(await readSessionCookie(request.headers.get("cookie")))
 }

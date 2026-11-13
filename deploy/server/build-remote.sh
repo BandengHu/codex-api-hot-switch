@@ -12,10 +12,24 @@ REPO=${SWITCHGATE_REPO:-$ROOT/source}
 BRANCH=${SWITCHGATE_BRANCH:-main}
 DIST="$ROOT/dist-server"
 STAMP=$(date +%Y%m%d-%H%M%S)
+ARCHIVE=${SWITCHGATE_ARCHIVE:-}
 
 cd "$REPO"
-git fetch origin "$BRANCH"
-git checkout -f "origin/$BRANCH"
+
+# GitHub 的 Git smart-HTTP 在部分网络下会超时，codeload tar 更稳。
+# 有 SWITCHGATE_ARCHIVE 时直接用调用方给的主干快照，避免二次联网。
+if [ -n "$ARCHIVE" ]; then
+  git checkout -f --detach
+  rm -rf "$REPO"/*
+  tar -xzf "$ARCHIVE" -C "$REPO" --strip-components=1
+else
+  curl -fsSL --retry 5 --retry-all-errors \
+    "https://codeload.github.com/BandengHu/codex-api-hot-switch/tar.gz/refs/heads/$BRANCH" \
+    -o "$ROOT/source.tar.gz"
+  git checkout -f --detach
+  rm -rf "$REPO"/*
+  tar -xzf "$ROOT/source.tar.gz" -C "$REPO" --strip-components=1
+fi
 
 # 服务器只有 3.6GB 内存且无 swap；限制 worker 与堆，避免构建被 OOM 杀掉。
 export NEXT_TELEMETRY_DISABLED=1
