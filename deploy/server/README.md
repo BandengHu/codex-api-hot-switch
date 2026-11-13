@@ -3,6 +3,21 @@
 服务器只从 `main` 构建，不再维护独立业务分支。构建产物是**自包含目录**，
 服务器不需要 Git、pnpm 或源码，只需要 Node 运行时。
 
+## 服务器原生构建
+
+服务器从 `main` 构建，不保存业务分支：
+
+```bash
+SWITCHGATE_ROOT=/opt/switchgate sh deploy/server/build-remote.sh
+```
+
+脚本会 `git fetch` 指定分支、`npm ci`、`next build`、打包、停服务、
+替换 `/opt/switchgate/app`、再启动。旧版本保留为
+`/opt/switchgate/app.backup-<stamp>`。
+
+服务器只有 3.6GB 内存且没有 swap，脚本默认把堆限制在 2GB；
+如果构建仍被 OOM 杀掉，应先加 swap，而不是放宽限制。
+
 ## 目录布局
 
 ```text
