@@ -6,17 +6,28 @@ export interface WorkbuddyPoolBalance {
 }
 
 export interface WorkbuddyPoolEntryView {
- uid: string
- nickname: string
- source: "local" | "file"
- disabled: boolean
- balance?: WorkbuddyPoolBalance
- balanceError?: string
- dailyStatus?: {
-   lastRunDate: string
-   lastResult?: string
-   needsRun: boolean
- }
+  uid: string
+  nickname: string
+  source: "local" | "file"
+  disabled: boolean
+  balance?: WorkbuddyPoolBalance
+  balanceError?: string
+  dailyStatus?: {
+    lastRunDate: string
+    lastResult?: string
+    needsRun: boolean
+    /** true=官方确认已签；false=官方确认未签；null=状态未知。 */
+    todayCheckedIn?: boolean | null
+    todayCredit?: number
+    streakDays?: number
+    checkedAt?: string
+  }
+  creditUsageToday?: {
+    recordedRequests: number
+    knownCredits: number
+    unknownCredits: number
+    creditTotal: number
+  }
 }
 
 /**号池整体视图：条目列表 + 当前生效的转发账号。 */

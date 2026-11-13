@@ -7,6 +7,7 @@ import { isRetryableWorkbuddyTaskError } from "./api-client"
 import {
   dailyRunNeedsRetry,
   runDailyRewards,
+  type DailyCheckinConfirmation,
   type DailyRunResult,
 } from "./daily-automation"
 import { sleep } from "./task-query"
@@ -19,11 +20,16 @@ import {
 } from "./task-pool-store"
 
 export interface DailyScheduleState {
-  version: 2
+  version: 4
   /**CST 自然日；永久失败当天不再自动执行。 */
   lastRunByUid: Record<string, string>
   lastResultByUid?: Record<string, string>
-  retryPendingByUid?: Record<string, boolean>
+  /** 到期后才补跑；未到期前不重复打上游。ISO 时间。 */
+  nextRetryAtByUid?: Record<string, string>
+  /** 当前连续待重试次数；下轮据此从 10 分钟延长到 40 分钟。 */
+  retryCountByUid?: Record<string, number>
+  /** 当日官方签到确认；缺失表示未知，不能当成未签到或已签到。 */
+  checkinByUid?: Record<string, DailyCheckinConfirmation & { day: string }>
 }
 
 export interface DailySchedulerCycleResult {
@@ -32,10 +38,12 @@ export interface DailySchedulerCycleResult {
   locked: string[]
 }
 
-const SCHEDULE_INTERVAL_MS = 2 * 60 * 60 * 1000
+const SCHEDULE_INTERVAL_MS = 60 * 1000
 const STARTUP_DELAY_MS = 30 * 1000
 const ACCOUNT_GAP_MS = 1000
 const RESULT_PREVIEW_LIMIT = 300
+const FIRST_RETRY_MS = 10 * 60 * 1000
+const SECOND_RETRY_MS = 40 * 60 * 1000
 
 function scheduleDir() {
   return join(hotSwitchDataDir(), "workbuddy-pool")
@@ -56,10 +64,13 @@ export function formatScheduleDay(value: Date) {
 
 export function normalizeDailyScheduleState(value: unknown): DailyScheduleState {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { version: 2, lastRunByUid: {} }
+    return { version: 4, lastRunByUid: {} }
   }
   const raw = value as Record<string, unknown>
-  if (raw.version !== 1 && raw.version !== 2) return { version: 2, lastRunByUid: {} }
+  const version = raw.version
+  if (version !== 2 && version !== 3 && version !== 4) {
+    return { version: 4, lastRunByUid: {} }
+  }
   const normalizeMap = (input: unknown) => {
     if (!input || typeof input !== "object" || Array.isArray(input)) return undefined
     const output: Record<string, string> = {}
@@ -70,27 +81,66 @@ export function normalizeDailyScheduleState(value: unknown): DailyScheduleState 
   }
   const lastRunByUid = normalizeMap(raw.lastRunByUid) ?? {}
   const lastResultByUid = normalizeMap(raw.lastResultByUid)
-  const retryPendingByUid: Record<string, boolean> = {}
-  if (raw.version === 1) {
-    for (const [uid, summary] of Object.entries(lastResultByUid ?? {})) {
-      if (lastRunByUid[uid] && legacySummaryNeedsRetry(summary)) retryPendingByUid[uid] = true
-    }
-  } else if (raw.retryPendingByUid && typeof raw.retryPendingByUid === "object" && !Array.isArray(raw.retryPendingByUid)) {
-    for (const [uid, pending] of Object.entries(raw.retryPendingByUid)) {
-      if (uid && pending === true && lastRunByUid[uid]) retryPendingByUid[uid] = true
+  const nextRetryAtByUid = normalizeMap(raw.nextRetryAtByUid) ?? {}
+  const retryCountByUid = normalizeCountMap(raw.retryCountByUid)
+  const checkinByUid = normalizeCheckinMap(raw.checkinByUid)
+  if (version === 2) {
+    const legacyPending = raw.retryPendingByUid
+    const pendingEntries =
+      legacyPending && typeof legacyPending === "object" && !Array.isArray(legacyPending)
+        ? Object.entries(legacyPending as Record<string, unknown>)
+        : []
+    for (const [uid, pending] of pendingEntries) {
+      if (pending === true && lastRunByUid[uid] && !nextRetryAtByUid[uid]) {
+        nextRetryAtByUid[uid] = new Date().toISOString()
+      }
     }
   }
   return {
-    version: 2,
+    version: 4,
     lastRunByUid,
     ...(lastResultByUid ? { lastResultByUid } : {}),
-    ...(Object.keys(retryPendingByUid).length ? { retryPendingByUid } : {}),
+    ...(Object.keys(nextRetryAtByUid).length ? { nextRetryAtByUid } : {}),
+    ...(Object.keys(retryCountByUid).length ? { retryCountByUid } : {}),
+    ...(Object.keys(checkinByUid).length ? { checkinByUid } : {}),
   }
 }
 
-function legacySummaryNeedsRetry(summary: string) {
-  return /fetch failed|请求超时|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|HTTP (?:408|425|429|5\d\d)/i
-    .test(summary)
+function normalizeCountMap(input: unknown) {
+  const output: Record<string, number> = {}
+  if (!input || typeof input !== "object" || Array.isArray(input)) return output
+  for (const [uid, value] of Object.entries(input as Record<string, unknown>)) {
+    if (!uid || typeof value !== "number" || !Number.isInteger(value) || value <= 0) continue
+    output[uid] = value
+  }
+  return output
+}
+
+function normalizeCheckinMap(input: unknown) {
+  const output: Record<string, DailyCheckinConfirmation & { day: string }> = {}
+  if (!input || typeof input !== "object" || Array.isArray(input)) return output
+  for (const [uid, value] of Object.entries(input as Record<string, unknown>)) {
+    if (!uid || !value || typeof value !== "object" || Array.isArray(value)) continue
+    const item = value as Record<string, unknown>
+    const day = typeof item.day === "string" ? item.day.trim() : ""
+    const checkedAt = typeof item.checkedAt === "string" ? item.checkedAt.trim() : ""
+    if (!day || !checkedAt) continue
+    output[uid] = {
+      day,
+      checkedAt,
+      todayCheckedIn:
+        item.todayCheckedIn === true || item.todayCheckedIn === false
+          ? item.todayCheckedIn
+          : null,
+      ...(Number.isFinite(item.todayCredit) && Number(item.todayCredit) >= 0
+        ? { todayCredit: Number(item.todayCredit) }
+        : {}),
+      ...(Number.isFinite(item.streakDays) && Number(item.streakDays) >= 0
+        ? { streakDays: Number(item.streakDays) }
+        : {}),
+    }
+  }
+  return output
 }
 
 export async function readDailyScheduleState(): Promise<DailyScheduleState> {
@@ -98,7 +148,7 @@ export async function readDailyScheduleState(): Promise<DailyScheduleState> {
     const raw = await readFile(schedulePath(), "utf8")
     return normalizeDailyScheduleState(JSON.parse(raw))
   } catch {
-    return { version: 2, lastRunByUid: {} }
+    return { version: 4, lastRunByUid: {} }
   }
 }
 
@@ -110,16 +160,18 @@ export async function writeDailyScheduleState(state: DailyScheduleState) {
   await rename(tempPath, schedulePath())
 }
 
-/**挑出今天未运行或待重试的可用账号；禁用账号不参与自动化。 */
+/**挑出今天未运行或已到补跑时间的可用账号；禁用账号不参与自动化。 */
 export function pickAccountsNeedingRun(
   entries: WorkbuddyPoolEntry[],
   state: DailyScheduleState,
   today = formatScheduleDay(new Date()),
+  now = Date.now(),
 ) {
   return entries.filter((entry) => {
     if (entry.disabled) return false
     if (state.lastRunByUid[entry.uid] !== today) return true
-    return state.retryPendingByUid?.[entry.uid] === true
+    const retryAt = Date.parse(state.nextRetryAtByUid?.[entry.uid] ?? "")
+    return Number.isFinite(retryAt) && retryAt <= now
   })
 }
 
@@ -141,7 +193,13 @@ export function summarizeDailyRun(result: DailyRunResult) {
 export async function recordDailyRun(uid: string, result: DailyRunResult) {
   const state = await readDailyScheduleState()
   await writeDailyScheduleState(updateDailyRunState(
-    state, uid, summarizeDailyRun(result), dailyRunNeedsRetry(result),
+    state,
+    uid,
+    summarizeDailyRun(result),
+    dailyRunNeedsRetry(result),
+    formatScheduleDay(new Date()),
+    Date.now(),
+    result.checkin,
   ))
 }
 
@@ -151,15 +209,30 @@ export function updateDailyRunState(
   summary: string,
   retryable: boolean,
   day = formatScheduleDay(new Date()),
+  now = Date.now(),
+  checkin?: DailyCheckinConfirmation,
 ): DailyScheduleState {
-  const retryPendingByUid = { ...(state.retryPendingByUid ?? {}) }
-  if (retryable) retryPendingByUid[uid] = true
-  else delete retryPendingByUid[uid]
+  const nextRetryAtByUid = { ...(state.nextRetryAtByUid ?? {}) }
+  const retryCountByUid = { ...(state.retryCountByUid ?? {}) }
+  const checkinByUid = { ...(state.checkinByUid ?? {}) }
+  if (retryable) {
+    const retryCount = (retryCountByUid[uid] ?? 0) + 1
+    retryCountByUid[uid] = retryCount
+    const delay = retryCount > 1 ? SECOND_RETRY_MS : FIRST_RETRY_MS
+    nextRetryAtByUid[uid] = new Date(now + delay).toISOString()
+  } else {
+    delete nextRetryAtByUid[uid]
+    delete retryCountByUid[uid]
+  }
+  if (checkin) checkinByUid[uid] = { ...checkin, day }
+  else if (checkinByUid[uid]?.day !== day) delete checkinByUid[uid]
   return {
-    version: 2,
+    version: 4,
     lastRunByUid: { ...state.lastRunByUid, [uid]: day },
     lastResultByUid: { ...(state.lastResultByUid ?? {}), [uid]: summary },
-    ...(Object.keys(retryPendingByUid).length ? { retryPendingByUid } : {}),
+    ...(Object.keys(nextRetryAtByUid).length ? { nextRetryAtByUid } : {}),
+    ...(Object.keys(retryCountByUid).length ? { retryCountByUid } : {}),
+    ...(Object.keys(checkinByUid).length ? { checkinByUid } : {}),
   }
 }
 
@@ -172,7 +245,7 @@ function truncateResult(text: string) {
 }
 
 /**
- *启动检查一次，之后每 2 小时巡检一次所有账号。
+ * 启动检查一次，之后每分钟检查到期账号。
  *
  *与手动「一键领积分」共用账号锁：拿不到锁就本轮跳过，等下一轮再查，绝不并发打上游。
  *每跑完一个账号就立刻落盘，进程重启也不会重复领取。
@@ -185,9 +258,10 @@ export async function maybeRunDailyForAllAccounts(): Promise<DailySchedulerCycle
 
   let isFirstRun = true
   for (const entry of entries) {
-    const today = formatScheduleDay(new Date())
+    const now = Date.now()
+    const today = formatScheduleDay(new Date(now))
     const state = await readDailyScheduleState()
-    if (!pickAccountsNeedingRun([entry], state, today).length) continue
+    if (!pickAccountsNeedingRun([entry], state, today, now).length) continue
     if (!tryLockTaskAccount(entry.uid)) {
       result.locked.push(entry.uid)
       continue
@@ -238,7 +312,7 @@ async function runSchedulerCycle() {
   try {
     await maybeRunDailyForAllAccounts()
   } catch {
-    //巡检失败不中断服务；下一轮 2 小时后再试。
+    //巡检失败不中断服务；下一分钟再检查到期状态。
   } finally {
     scope.__codexHotSwitchDailySchedulerCycleRunning = false
   }

@@ -12,6 +12,7 @@ import {
  departTravel,
  drawLottery,
  fetchBuddy,
+  fetchCheckinActivityStatus,
  fetchLotteryChances,
  fetchStreakState,
  fetchTravelState,
@@ -60,6 +61,15 @@ export interface DailyRunResult {
  creditTotal: number
  /**连登天数（拿到时才有）。 */
  streakDays?: number
+  /** 今日签到的官方确认结果；未查询成功时为空。 */
+  checkin?: DailyCheckinConfirmation
+}
+
+export interface DailyCheckinConfirmation {
+  todayCheckedIn: boolean | null
+  todayCredit?: number
+  streakDays?: number
+  checkedAt: string
 }
 
 export async function runDailyRewards(account: WorkbuddyAccount): Promise<DailyRunResult> {
@@ -94,7 +104,7 @@ export async function runDailyRewards(account: WorkbuddyAccount): Promise<DailyR
 
  await stepActivity(account, push, fail)
  await stepMakeup(account, push, fail)
- await stepCheckin(account, push, fail)
+ const checkin = await stepCheckin(account, push, fail)
  await stepSchoolShare(account, push, fail)
  await stepGift(account, push, fail)
  await stepCompensation(account, push, fail)
@@ -103,7 +113,12 @@ export async function runDailyRewards(account: WorkbuddyAccount): Promise<DailyR
  await stepTravel(account, push, fail)
 
  const creditTotal = steps.reduce((sum, step) => sum + (step.credit ??0),0)
- return { steps, creditTotal, ...(streakDays === undefined ? {} : { streakDays }) }
+ return {
+   steps,
+   creditTotal,
+   ...(streakDays === undefined ? {} : { streakDays }),
+   ...(checkin ? { checkin } : {}),
+ }
 }
 
 export function dailyRunNeedsRetry(result: DailyRunResult) {
@@ -253,18 +268,99 @@ async function stepCheckin(
  account: WorkbuddyAccount,
  push: (step: DailyStepResult) => DailyStepResult,
  fail: (key: string, label: string, error: unknown) => DailyStepResult,
-) {
+): Promise<DailyCheckinConfirmation | undefined> {
  const label = "每日签到"
+ let receipt: Awaited<ReturnType<typeof dailyCheckin>> | undefined
+ let requestError: unknown
  try {
- await dailyCheckin(account)
- push({ key: "checkin", label, status: "done", message: "签到成功" })
+  receipt = await dailyCheckin(account)
  } catch (error) {
- if (isAlreadyDoneError(error)) {
- push({ key: "checkin", label, status: "skipped", message: "今天已签到" })
- return
+  requestError = error
  }
- fail("checkin", label, error)
+
+ let status: Awaited<ReturnType<typeof fetchCheckinActivityStatus>> | undefined
+ let statusError: unknown
+ try {
+  status = await fetchCheckinActivityStatus(account)
+ } catch (error) {
+  statusError = error
  }
+
+ if (status) {
+  const checkedAt = new Date().toISOString()
+  const confirmation: DailyCheckinConfirmation = {
+   todayCheckedIn: status.todayCheckedIn,
+   todayCredit: status.todayCredit,
+   streakDays: status.streakDays,
+   checkedAt,
+  }
+  if (status.todayCheckedIn) {
+   const credit =
+    receipt?.state === "checked" && receipt.creditKnown
+      ? receipt.credit
+      : undefined
+   push({
+    key: "checkin",
+    label,
+    status: receipt?.state === "already" ? "skipped" : "done",
+    message: `官方状态确认今日已签到，今日累计 +${status.todayCredit}分，连登 ${status.streakDays}天`,
+    ...(credit === undefined ? {} : { credit }),
+   })
+   return confirmation
+  }
+  push({
+   key: "checkin",
+   label,
+   status: "error",
+   message:
+    requestError
+      ? `签到请求失败：${requestError instanceof Error ? requestError.message : String(requestError)}；官方状态仍是今日未签到`
+      : receipt?.state === "pending"
+        ? `${receipt.message || "签到请求处理中"}；官方状态尚未确认`
+        : "官方状态确认今日未签到",
+   retryable: true,
+  })
+  return confirmation
+ }
+
+ if (requestError) {
+  fail("checkin", label, requestError)
+  return undefined
+ }
+ if (receipt?.state === "checked" || receipt?.state === "already") {
+  push({
+   key: "checkin",
+   label,
+   status: "skipped",
+   message: `签到回执为“${receipt.message || (receipt.state === "already" ? "今天已签到" : "签到成功")}”，但官方状态查询失败：${statusError instanceof Error ? statusError.message : String(statusError)}`,
+   retryable: true,
+  })
+  return undefined
+ }
+ if (receipt?.state === "pending") {
+  push({
+   key: "checkin",
+   label,
+   status: "skipped",
+   message: receipt.message || "签到请求处理中，稍后自动重试",
+   retryable: true,
+  })
+  return undefined
+ }
+ if (receipt?.state === "failed") {
+  push({
+   key: "checkin",
+   label,
+   status: "error",
+   message: receipt.message || "签到失败",
+   ...(isRetryableWorkbuddyTaskError(
+    new WorkbuddyTaskApiError(receipt.message || "签到失败", receipt.code),
+   )
+    ? { retryable: true }
+    : {}),
+  })
+ }
+ return undefined
 }
 
 /**活动补偿（有则领，通常无常驻活动）。 */

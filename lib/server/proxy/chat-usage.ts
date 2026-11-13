@@ -63,6 +63,10 @@ export function chatUsageToResponsesUsage(usage: unknown) {
     output_tokens: Number.isFinite(outputTokens) ? outputTokens : 0,
     total_tokens: Number.isFinite(totalTokens) ? totalTokens : 0,
   }
+  if (usage.credit != null && usage.credit !== "") {
+    const credit = Number(usage.credit)
+    if (Number.isFinite(credit) && credit >= 0) result.credit = credit
+  }
   if (hasCacheUsageFields && Number.isFinite(cachedTokens)) {
     result.input_tokens_details = { cached_tokens: cachedTokens }
   }

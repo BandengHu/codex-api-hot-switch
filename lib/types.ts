@@ -139,6 +139,8 @@ export interface TokenUsage {
   cacheCreationInputTokens?: number
   cacheUsageReported?: boolean
   reasoningTokens?: number
+  /** 上游明确返回的 WorkBuddy 积分；缺失表示未知，绝不按 token 推算。 */
+  credit?: number
   upstreamCost?: TokenCost
 }
 
@@ -220,6 +222,9 @@ export interface RequestLog {
   firstTokenMs?: number
   outputTokensPerSecond?: number
   tokenUsage?: TokenUsage
+  /** WorkBuddy 实际承载该请求的账号；非 WorkBuddy 请求为空。 */
+  workbuddyUid?: string
+  workbuddyRealm?: "cn" | "global"
   error?: string
   rawRequest: string
   rewrittenRequest: string

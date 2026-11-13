@@ -11,7 +11,7 @@ startOauth,
 } from "./oauth"
 import { importPoolAccount, readPoolAccount } from "./task-pool-store"
 import { fetchBalance } from "./task-api"
-import { dailyCheckin, isAlreadyDoneError } from "./daily-api"
+import { dailyCheckin, fetchCheckinActivityStatus } from "./daily-api"
 
 /**
  *号池「浏览器授权登录」会话管理（进程内）。
@@ -104,14 +104,25 @@ domain: tokens.domain || account.domain,
  let creditsTotal =0
  try {
  const saved = await readPoolAccount(entry.uid)
- await dailyCheckin(saved).catch((error: unknown) => {
- // 今天已签到属幂等，不算异常，提示文案原样带出去。
- checkinMessage = isAlreadyDoneError(error)
- ? "今天已签到"
- : error instanceof Error
- ? error.message
- : String(error)
+ const receipt = await dailyCheckin(saved).catch((error: unknown) => {
+  // 登录不应因签到失败而失败；回执分类在每日任务里负责调度。
+  checkinMessage = error instanceof Error ? error.message : String(error)
+  return undefined
  })
+ const checkinStatus = await fetchCheckinActivityStatus(saved).catch(() => undefined)
+ if (checkinStatus?.todayCheckedIn) {
+  checkinMessage = `官方状态确认今日已签到，今日累计 +${checkinStatus.todayCredit}分`
+ } else if (checkinStatus) {
+  checkinMessage = "签到请求已返回，但官方状态仍是今日未签到"
+ } else if (receipt?.state === "checked") {
+  checkinMessage = receipt.creditKnown
+   ? `签到回执 +${receipt.credit}分，官方状态查询失败`
+   : "签到回执成功，官方状态查询失败"
+ } else if (receipt?.state === "already") {
+  checkinMessage = "今天已签到"
+ } else if (receipt) {
+  checkinMessage = receipt.message || (receipt.state === "pending" ? "签到处理中" : "签到失败")
+ }
  const balance = await fetchBalance(saved).catch(() => undefined)
  if (balance) {
  credits = balance.remain

@@ -6,6 +6,7 @@ import {
   registerRequestLogDetailSource,
 } from "@/lib/server/request-log-details"
 import { withWorkbuddyTargetCredentials } from "@/lib/server/workbuddy/upstream"
+import { appendWorkbuddyCreditLedger } from "@/lib/server/workbuddy/credit-ledger"
 import { WorkbuddyRateLimitError } from "@/lib/server/workbuddy/rate-limit"
 import {
   buildCodexClientModelsResponse,
@@ -214,6 +215,12 @@ function makeLog(params: {
     firstTokenMs: params.firstTokenMs,
     outputTokensPerSecond: params.outputTokensPerSecond,
     tokenUsage: params.tokenUsage,
+    ...(params.target.workbuddyAccount
+      ? {
+          workbuddyUid: params.target.workbuddyAccount.uid,
+          workbuddyRealm: params.target.workbuddyAccount.realm,
+        }
+      : {}),
     error: params.error,
     rawRequest: compactJson(params.body),
     rewrittenRequest: params.rewrittenBody
@@ -287,6 +294,7 @@ function makeEarlyFailureLog(params: {
 function appendLogDetached(log: RequestLog) {
   void appendRequestLogDetails(log).catch(() => undefined)
   void appendLanguagePolicyDiagnostic(log).catch(() => undefined)
+  void appendWorkbuddyCreditLedger(log).catch(() => undefined)
   void appendLog(log).catch(() => undefined)
 }
 

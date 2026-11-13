@@ -14,6 +14,10 @@ import {
   readDailyScheduleState,
 } from "@/lib/server/workbuddy/daily-scheduler"
 import { readPoolAccount } from "@/lib/server/workbuddy/task-pool-store"
+import {
+  summarizeWorkbuddyCreditsByUid,
+  type WorkbuddyCreditSummariesByUid,
+} from "@/lib/server/workbuddy/credit-ledger"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -29,6 +33,16 @@ interface PoolEntryWithBalance {
    lastRunDate: string
    lastResult?: string
    needsRun: boolean
+   todayCheckedIn?: boolean | null
+   todayCredit?: number
+   streakDays?: number
+   checkedAt?: string
+ }
+ creditUsageToday?: {
+   recordedRequests: number
+   knownCredits: number
+   unknownCredits: number
+   creditTotal: number
  }
 }
 
@@ -39,6 +53,8 @@ export async function GET() {
  const poolState = await readPoolState()
  const schedule = await readDailyScheduleState()
  const today = formatScheduleDay(new Date())
+ const creditUsageByUid: WorkbuddyCreditSummariesByUid =
+   await summarizeWorkbuddyCreditsByUid(today).catch(() => ({}))
  const enriched: PoolEntryWithBalance[] = []
  for (const entry of entries) {
  const item: PoolEntryWithBalance = {
@@ -59,11 +75,23 @@ export async function GET() {
  }
   const lastRunDate = schedule.lastRunByUid[entry.uid]
   const lastResult = schedule.lastResultByUid?.[entry.uid]
-  if (lastRunDate || lastResult) {
+  const rawCheckin = schedule.checkinByUid?.[entry.uid]
+  const checkin = rawCheckin?.day === today ? rawCheckin : undefined
+  const creditUsageToday = creditUsageByUid[entry.uid]
+  const retryAt = Date.parse(schedule.nextRetryAtByUid?.[entry.uid] ?? "")
+  if (creditUsageToday) item.creditUsageToday = creditUsageToday
+  if (lastRunDate || lastResult || checkin) {
     item.dailyStatus = {
       lastRunDate: lastRunDate ?? "",
       lastResult,
-      needsRun: lastRunDate !== today || schedule.retryPendingByUid?.[entry.uid] === true,
+      needsRun:
+        lastRunDate !== today ||
+        checkin?.todayCheckedIn !== true ||
+        (Number.isFinite(retryAt) && retryAt <= Date.now()),
+      todayCheckedIn: checkin?.todayCheckedIn,
+      todayCredit: checkin?.todayCredit,
+      streakDays: checkin?.streakDays,
+      checkedAt: checkin?.checkedAt,
     }
  }
  enriched.push(item)

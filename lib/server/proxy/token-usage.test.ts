@@ -132,3 +132,37 @@ test("ignores Chat role-only chunks before visible output", () => {
   assert.equal(collector.firstOutputMs(1_000), 500)
   assert.equal(collector.terminal(), "completed")
 })
+
+test("keeps WorkBuddy credit, including an explicit zero", () => {
+  assert.equal(
+    normalizeTokenUsage({ total_tokens: 10, credit: 0.25 })?.credit,
+    0.25,
+  )
+  assert.equal(
+    normalizeTokenUsage({ total_tokens: 10, credit: 0 })?.credit,
+    0,
+  )
+  assert.equal(
+    normalizeTokenUsage({ total_tokens: 10 })?.credit,
+    undefined,
+  )
+})
+
+test("collects WorkBuddy credit from a final Chat SSE usage frame", () => {
+  const collector = new TokenUsageSseCollector()
+  collector.push(
+    encoder.encode(
+      'data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"OK"}}]}\n\n',
+    ),
+  )
+  collector.push(
+    encoder.encode(
+      'data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"credit":0.75}}\n\n',
+    ),
+  )
+  collector.push(encoder.encode("data: [DONE]\n\n"))
+  collector.finish()
+
+  assert.equal(collector.current()?.credit, 0.75)
+  assert.equal(collector.terminal(), "completed")
+})

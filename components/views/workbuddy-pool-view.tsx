@@ -357,12 +357,45 @@ export function WorkbuddyPoolView() {
 <TableCell>
 <div className="flex flex-col gap-1">
 {entry.dailyStatus?.lastRunDate ? (
-<Badge variant={entry.dailyStatus.needsRun ? "outline" : "secondary"}>
-{entry.dailyStatus.needsRun ? "待运行" : "已运行"}
+<Badge
+  variant={
+    entry.dailyStatus.todayCheckedIn === true
+      ? "secondary"
+      : entry.dailyStatus.todayCheckedIn === false
+        ? "destructive"
+        : "outline"
+  }
+>
+{entry.dailyStatus.todayCheckedIn === true
+  ? "今日已签到"
+  : entry.dailyStatus.todayCheckedIn === false
+    ? "今日未签到"
+    : "签到状态未知"}
 </Badge>
 ) : (
 <Badge variant="outline">待运行</Badge>
 )}
+{entry.dailyStatus?.todayCheckedIn !== undefined ? (
+  <span className="text-xs text-muted-foreground">
+    今日 +{entry.dailyStatus.todayCredit ?? 0}分
+    {entry.dailyStatus.streakDays === undefined
+      ? ""
+      : ` · 连登 ${entry.dailyStatus.streakDays}天`}
+  </span>
+) : null}
+{entry.creditUsageToday ? (
+  <span className="text-xs text-muted-foreground">
+    今日请求
+    {entry.creditUsageToday.knownCredits > 0
+      ? `消耗 ${entry.creditUsageToday.creditTotal} 分`
+      : "消耗未知"}
+    {" · "}已记录{" "}
+    {entry.creditUsageToday.recordedRequests} 个
+    {entry.creditUsageToday.unknownCredits > 0
+      ? ` · ${entry.creditUsageToday.unknownCredits} 个未返回积分`
+      : ""}
+  </span>
+) : null}
 {entry.dailyStatus?.lastResult ? (
 <span className="max-w-72 text-xs text-muted-foreground" title={entry.dailyStatus.lastResult}>
 {entry.dailyStatus.lastResult}
