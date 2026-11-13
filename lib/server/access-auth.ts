@@ -122,7 +122,7 @@ function signSession(expiresAt: number, secret: string) {
     .digest("base64url")
 }
 
-export async function issueSessionCookie() {
+export async function issueSessionCookie(options: { secure?: boolean } = {}) {
   const file = await readAuthFile()
   if (!file) throw new Error("服务器尚未初始化访问密钥")
   const expiresAt = Math.floor(Date.now() / 1000) + ACCESS_SESSION_TTL_SECONDS
@@ -135,6 +135,7 @@ export async function issueSessionCookie() {
       "Path=/",
       "HttpOnly",
       "SameSite=Lax",
+      ...(options.secure ? ["Secure"] : []),
       `Max-Age=${ACCESS_SESSION_TTL_SECONDS}`,
     ].join("; "),
   }
@@ -171,7 +172,22 @@ export async function accessAuthStatus() {
   }
 }
 
-export function clearSessionCookie() {
-  return `${ACCESS_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`
+export function clearSessionCookie(options: { secure?: boolean } = {}) {
+  return [
+    `${ACCESS_COOKIE_NAME}=`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    ...(options.secure ? ["Secure"] : []),
+    "Max-Age=0",
+  ].join("; ")
+}
+
+export function isSecureRequest(request: Request) {
+  const forwardedProto = request.headers.get("x-forwarded-proto")
+  if (forwardedProto) {
+    return forwardedProto.split(",")[0]?.trim().toLowerCase() === "https"
+  }
+  return new URL(request.url).protocol === "https:"
 }
 

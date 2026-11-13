@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { authRequiredResponse, isAuthorized } from "@/lib/server/access-guard"
 import { errorMessage, jsonError, readJsonBody } from "@/lib/server/http"
 import { getSnapshot, saveSnapshot } from "@/lib/server/state-store"
 import { startDailyScheduler } from "@/lib/server/workbuddy/daily-scheduler"
@@ -8,7 +9,8 @@ import type { ConsoleSnapshot } from "@/lib/types"
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-export async function GET() {
+export async function GET(request: Request) {
+  if (!(await isAuthorized(request))) return authRequiredResponse()
   startDailyScheduler()
   try {
     await autostartWecomBridgeServeIfEnabled()
@@ -19,6 +21,7 @@ export async function GET() {
 }
 
 export async function PUT(request: Request) {
+  if (!(await isAuthorized(request))) return authRequiredResponse()
   try {
     const snapshot = await readJsonBody<ConsoleSnapshot>(request)
     return NextResponse.json(await saveSnapshot(snapshot))

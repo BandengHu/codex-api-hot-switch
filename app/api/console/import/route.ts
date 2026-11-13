@@ -1,3 +1,4 @@
+import { authRequiredResponse, isAuthorized } from "@/lib/server/access-guard"
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError } from "@/lib/server/http"
 import { importSnapshotText } from "@/lib/server/state-store"
@@ -6,6 +7,7 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function POST(request: Request) {
+  if (!(await isAuthorized(request))) return authRequiredResponse()
   try {
     return NextResponse.json(await importSnapshotText(await request.text()))
   } catch (error) {

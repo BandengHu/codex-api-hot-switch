@@ -1,3 +1,4 @@
+import { authRequiredResponse, isAuthorized } from "@/lib/server/access-guard"
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError } from "@/lib/server/http"
 import { TASK_ACTIONS } from "@/lib/server/workbuddy/actions-registry"
@@ -6,7 +7,8 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 /**可自动完成的任务清单（前端据此标注哪些任务能一键完成）。 */
-export async function GET() {
+export async function GET(request: Request) {
+  if (!(await isAuthorized(request))) return authRequiredResponse()
  try {
  return NextResponse.json({
  actions: TASK_ACTIONS.map((action) => ({

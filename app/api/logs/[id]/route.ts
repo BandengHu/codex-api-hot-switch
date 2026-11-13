@@ -1,3 +1,4 @@
+import { authRequiredResponse, isAuthorized } from "@/lib/server/access-guard"
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError } from "@/lib/server/http"
 import { readRequestLogDetail } from "@/lib/server/request-log-details"
@@ -10,7 +11,8 @@ interface RouteContext {
   params: Promise<{ id: string }>
 }
 
-export async function GET(_request: Request, context: RouteContext) {
+export async function GET(request: Request, context: RouteContext) {
+  if (!(await isAuthorized(request))) return authRequiredResponse()
   try {
     const { id } = await context.params
     const log = await findRequestLog(id)

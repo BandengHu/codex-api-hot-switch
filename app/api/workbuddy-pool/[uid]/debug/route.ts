@@ -1,3 +1,4 @@
+import { authRequiredResponse, isAuthorized } from "@/lib/server/access-guard"
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError } from "@/lib/server/http"
 import { readPoolAccount } from "@/lib/server/workbuddy/task-pool-store"
@@ -8,7 +9,8 @@ export const dynamic = "force-dynamic"
 
 type RouteContext = { params: Promise<{ uid: string }> }
 
-export async function GET(_request: Request, context: RouteContext) {
+export async function GET(request: Request, context: RouteContext) {
+  if (!(await isAuthorized(request))) return authRequiredResponse()
  const { uid } = await context.params
  try {
  const account = await readPoolAccount(uid)

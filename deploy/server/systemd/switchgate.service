@@ -1,0 +1,22 @@
+[Unit]
+Description=Codex SwitchGate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/switchgate/app
+Environment=NODE_ENV=production
+Environment=CODEX_HOT_SWITCH_DATA_DIR=/opt/switchgate/data
+Environment=CODEX_HOT_SWITCH_HOST=127.0.0.1
+Environment=CODEX_HOT_SWITCH_PORT=54141
+Environment=CODEX_HOT_SWITCH_ALLOW_LAN=1
+Environment=CODEX_HOT_SWITCH_LOCAL_WORKBUDDY=0
+Environment=CODEX_HOT_SWITCH_SERVER_UI=1
+ExecStart=/usr/local/bin/node /opt/switchgate/app/start.cjs
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

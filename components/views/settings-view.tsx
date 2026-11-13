@@ -28,6 +28,7 @@ import {
   FieldError,
 } from "@/components/ui/field"
 import { Separator } from "@/components/ui/separator"
+import { ServerAccessCard } from "@/components/server-access-card"
 import { useConsole } from "@/lib/console-store"
 import {
   isChatModel,
@@ -651,6 +652,8 @@ export function SettingsView() {
           </FieldGroup>
         </CardContent>
       </Card>
+
+      <ServerAccessCard />
 
       <div className="flex justify-end">
         <Button onClick={handleSave} disabled={!valid}>

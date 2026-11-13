@@ -1,3 +1,4 @@
+import { authRequiredResponse, isAuthorized } from "@/lib/server/access-guard"
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError, readJsonBody } from "@/lib/server/http"
 import { updateSnapshot } from "@/lib/server/state-store"
@@ -31,6 +32,7 @@ function stringValue(value: unknown, field: string) {
 }
 
 export async function PATCH(request: Request) {
+  if (!(await isAuthorized(request))) return authRequiredResponse()
   try {
     const body = await readJsonBody<RuntimePatchBody>(request)
     const providerId =

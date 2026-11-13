@@ -1,4 +1,8 @@
-import { issueSessionCookie, verifyApiKey } from "@/lib/server/access-auth"
+import {
+  isSecureRequest,
+  issueSessionCookie,
+  verifyApiKey,
+} from "@/lib/server/access-auth"
 import { jsonError, readJsonBody } from "@/lib/server/http"
 
 export const runtime = "nodejs"
@@ -15,7 +19,7 @@ export async function POST(request: Request) {
     if (!apiKey || !(await verifyApiKey(apiKey))) {
       return jsonError("API Key 无效", 401)
     }
-    const session = await issueSessionCookie()
+    const session = await issueSessionCookie({ secure: isSecureRequest(request) })
     return Response.json(
       { ok: true, expiresAt: session.expiresAt },
       {

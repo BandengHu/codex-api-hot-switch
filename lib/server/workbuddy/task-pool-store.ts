@@ -177,8 +177,7 @@ export function preferredRateLimitOfState(
  * 这个函数只用于界面状态；真正转发前使用 `availableUidOfState` 再确认。
  */
 export function activeUidOf(state: WorkbuddyPoolState, now = Date.now()) {
- const entries = orderedEntries(state)
- return availableUidOf(state, entries, now) ?? ""
+ return availableUidOfState(state, now) ?? ""
 }
 
 /** 读取真正可转发的 uid，跳过已禁用、封禁和仍在限频冻结期内的账号。 */

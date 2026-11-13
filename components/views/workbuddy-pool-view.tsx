@@ -111,7 +111,7 @@ export function WorkbuddyPoolView() {
  const [entries, setEntries] = useState<WorkbuddyPoolEntryView[]>([])
  const [actions, setActions] = useState<Record<string, WorkbuddyTaskAction>>({})
  /**当前真正的转发账号（后端解出的值，切号只改它）。 */
- const [activeUid, setActiveUid] = useState("local")
+ const [activeUid, setActiveUid] = useState("")
  /**下拉框里正在查看的账号：只影响本页展示，不改转发出口。 */
  const [viewUid, setViewUid] = useState("")
  const [tasks, setTasks] = useState<WorkbuddyPoolGrowthTask[]>([])
@@ -174,6 +174,10 @@ export function WorkbuddyPoolView() {
  }, [])
 
  useEffect(() => {
+ if (!viewUid) {
+ setTasks([])
+ return
+ }
  void loadTasks(viewUid)
  }, [loadTasks, viewUid])
 
@@ -373,7 +377,7 @@ export function WorkbuddyPoolView() {
  <Card>
  <CardHeader>
  <CardTitle>账号列表</CardTitle>
- <CardDescription>本机账号始终存在；导入账号以文件形式保存在号池目录</CardDescription>
+ <CardDescription>本机模式始终显示本机账号；服务器模式只显示导入账号</CardDescription>
  </CardHeader>
  <CardContent>
  <Table>

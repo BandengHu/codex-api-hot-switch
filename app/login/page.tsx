@@ -70,6 +70,5 @@ export default function LoginPage() {
       </form>
     </main>
   )
-
   return <ThemeProvider>{content}</ThemeProvider>
 }

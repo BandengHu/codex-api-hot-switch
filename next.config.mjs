@@ -1,6 +1,7 @@
 const runtimeFileSystemTraceExcludes = [
   "./.git/**/*",
   "./.next/**/*",
+  "./.next-server/**/*",
   "./dist/**/*",
   "./next.config.mjs",
 ]

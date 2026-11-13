@@ -1,0 +1,8 @@
+[Unit]
+Description=Renew SwitchGate TLS certificate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/switchgate/acme-venv/bin/certbot renew --cert-name switch.ztsnss.cloud --quiet --no-random-sleep-on-renew

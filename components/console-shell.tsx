@@ -1,7 +1,13 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { DEFAULT_VIEW, Sidebar, isViewKey, type ViewKey } from "@/components/sidebar"
+import { Sidebar } from "@/components/sidebar"
+import {
+  DEFAULT_VIEW,
+  defaultViewForMode,
+  resolveView,
+  type ViewKey,
+} from "@/lib/console-views"
 import { Topbar } from "@/components/topbar"
 import { DashboardView } from "@/components/views/dashboard-view"
 import { ProvidersView } from "@/components/views/providers-view"
@@ -17,37 +23,38 @@ import { WorkbuddyGlobalPoolView } from "@/components/views/workbuddy-global-poo
 import { SettingsView } from "@/components/views/settings-view"
 import { McpView } from "@/components/views/mcp-view"
 
-function viewFromUrl() {
+function viewFromUrl(serverMode: boolean) {
   const params = new URLSearchParams(window.location.search)
-  const view = params.get("view")
-  return isViewKey(view) ? view : DEFAULT_VIEW
+  return resolveView(params.get("view"), serverMode)
 }
 
 export function ConsoleShell({
   initialView = DEFAULT_VIEW,
+  serverMode = false,
 }: {
   initialView?: ViewKey
+  serverMode?: boolean
 }) {
   const [view, setView] = useState<ViewKey>(initialView)
 
   useEffect(() => {
-    setView(viewFromUrl())
-    const handlePopState = () => setView(viewFromUrl())
+    setView(viewFromUrl(serverMode))
+    const handlePopState = () => setView(viewFromUrl(serverMode))
     window.addEventListener("popstate", handlePopState)
     return () => window.removeEventListener("popstate", handlePopState)
-  }, [])
+  }, [serverMode])
 
   const navigate = useCallback((nextView: ViewKey) => {
     setView(nextView)
     const url = new URL(window.location.href)
-    if (nextView === DEFAULT_VIEW) url.searchParams.delete("view")
+    if (nextView === defaultViewForMode(serverMode)) url.searchParams.delete("view")
     else url.searchParams.set("view", nextView)
     window.history.pushState(null, "", `${url.pathname}${url.search}${url.hash}`)
-  }, [])
+  }, [serverMode])
 
   return (
     <div className="flex h-dvh w-full overflow-hidden bg-background text-foreground">
-      <Sidebar active={view} onNavigate={navigate} />
+      <Sidebar active={view} onNavigate={navigate} serverMode={serverMode} />
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar />
         <main className="flex-1 overflow-y-auto p-4 md:p-6">

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { apiKeyRequiredResponse, isApiKeyAuthorized } from "@/lib/server/access-guard"
 import { browseWebPages, searchWeb } from "@/lib/server/web"
 import { WebSearchError } from "@/lib/server/web/errors"
 import { errorMessage, readJsonBody } from "@/lib/server/http"
@@ -33,6 +34,7 @@ function errorResponse(error: unknown) {
 }
 
 export async function POST(request: Request) {
+  if (!(await isApiKeyAuthorized(request))) return apiKeyRequiredResponse()
   try {
     const body = await readJsonBody<unknown>(request)
     if (!isObject(body)) {

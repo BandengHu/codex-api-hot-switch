@@ -1,3 +1,4 @@
+import { authRequiredResponse, isAuthorized } from "@/lib/server/access-guard"
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError } from "@/lib/server/http"
 import { beginPoolLogin, pollPoolLogin } from "@/lib/server/workbuddy/login-session"
@@ -6,7 +7,8 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 /**发起浏览器授权登录：返回授权 URL与 state。 */
-export async function POST() {
+export async function POST(request: Request) {
+  if (!(await isAuthorized(request))) return authRequiredResponse()
  try {
  const payload = await beginPoolLogin()
  return NextResponse.json(payload)
@@ -17,6 +19,7 @@ export async function POST() {
 
 /**轮询登录态：未完成 `{done:false}`；完成即已写入号池。 */
 export async function GET(request: Request) {
+  if (!(await isAuthorized(request))) return authRequiredResponse()
  const state = new URL(request.url).searchParams.get("state")?.trim()
  if (!state) return jsonError("缺少 state",400)
  try {

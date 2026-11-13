@@ -1,0 +1,22 @@
+[Unit]
+Description=SwitchGate HTTPS proxy
+After=network-online.target switchgate.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/node /opt/switchgate/tls-proxy.cjs
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=production
+Environment=SWITCHGATE_TLS_HOST=0.0.0.0
+Environment=SWITCHGATE_TLS_PORT=443
+Environment=SWITCHGATE_UPSTREAM_HOST=127.0.0.1
+Environment=SWITCHGATE_UPSTREAM_PORT=54141
+Environment=SWITCHGATE_TLS_CERT=/etc/letsencrypt/live/switch.ztsnss.cloud/fullchain.pem
+Environment=SWITCHGATE_TLS_KEY=/etc/letsencrypt/live/switch.ztsnss.cloud/privkey.pem
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

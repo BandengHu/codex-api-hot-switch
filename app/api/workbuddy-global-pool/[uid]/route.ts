@@ -1,3 +1,4 @@
+import { authRequiredResponse, isAuthorized } from "@/lib/server/access-guard"
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError, readJsonBody } from "@/lib/server/http"
 import {
@@ -16,6 +17,7 @@ type RouteContext = { params: Promise<{ uid: string }> }
 
 /** 单个国际版账号的启停 / 移除 / 余额刷新 / 设为转发账号。 */
 export async function POST(request: Request, context: RouteContext) {
+  if (!(await isAuthorized(request))) return authRequiredResponse()
   const { uid } = await context.params
   try {
     const body = await readJsonBody<{ action?: string }>(request)
