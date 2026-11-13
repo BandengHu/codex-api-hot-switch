@@ -14,6 +14,8 @@ node_modules
 .next/
 .data/
 dist/
+.next-server/
+.codex-tmp/
 tsconfig.tsbuildinfo
 .DS_Store
 # Local runtime / temporary files

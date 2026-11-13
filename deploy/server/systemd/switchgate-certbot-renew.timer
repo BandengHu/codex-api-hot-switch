@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily SwitchGate certificate renewal check
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+RandomizedDelaySec=30min
+Persistent=true
+Unit=switchgate-certbot-renew.service
+
+[Install]
+WantedBy=timers.target

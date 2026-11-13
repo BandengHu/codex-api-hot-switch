@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "next dev --port 8787",
     "build": "next build",
+    "build:server": "node deploy/server/build.mjs --with-next",
     "preview": "npm exec --yes pnpm@10.21.0 -- build && node scripts/start-standalone.cjs",
     "tauri:build": "npm exec --yes pnpm@10.21.0 -- build && node scripts/prepare-tauri-build.cjs && node scripts/build-tauri.cjs",
     "start": "node scripts/start-standalone.cjs",
