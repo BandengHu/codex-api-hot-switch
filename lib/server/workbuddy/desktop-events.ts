@@ -19,9 +19,6 @@ import { reportDesktopEvents } from "./report"
 
 /**桌面端 UI字符串常量（判据载荷里的固定值）。 */
 const FAST_MODEL = "fast-model"
-/**企鹅教师助手（Buddy_App_QQ判据应用）。 */
-const BUDDY_APP_ID = "cb_y5Dy46tPQGGWtueMxXbe"
-const BUDDY_APP_NAME = "企鹅教师助手"
 /**Hp_Appearance判据主题：和平精英激战金秋。 */
 export const HP_APPEARANCE_THEME = "theme-tkmw7j"
 /**Expert_lighthouse判据专家（腾讯轻量云）。 */
@@ -178,35 +175,6 @@ export function desktopChatSequence(
  rootRequestId: requestId,
  parentConversationId: conversationId,
  }),
- ]
-}
-
-/**
- * 「进入 Buddy应用」五连事件（实测两账号纯 API点亮 Buddy_App与 Buddy_App_QQ）：
- * discover → show → enter_click → auth_confirm → bindaccount_skip。
- */
-export function desktopBuddyAppSequence(
- buddyId = BUDDY_APP_ID,
- buddyName = BUDDY_APP_NAME,
-): UpstreamEvent[] {
- const mk = (eventCode: string, extra: UpstreamEvent = {}): UpstreamEvent => ({
- eventCode,
- mode: "LOCAL",
- buddyId,
- buddyName,
- ...extra,
- })
- return [
- mk("buddyapp_discover_click"),
- mk("buddyapp_show", { elementId: buddyId, elementName: buddyName, position:2 }),
- mk("buddyapp_enter_click", {
- elementId: buddyId,
- elementName: buddyName,
- position:2,
- isFirstPage: "1",
- }),
- mk("buddyapp_auth_confirm_click", { elementId: buddyId, elementName: buddyName }),
- mk("buddyapp_bindaccount_skip_click", { elementId: buddyId, elementName: buddyName }),
  ]
 }
 

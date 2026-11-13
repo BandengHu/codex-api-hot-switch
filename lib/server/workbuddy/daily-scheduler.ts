@@ -10,6 +10,8 @@ import {
   type DailyCheckinConfirmation,
   type DailyRunResult,
 } from "./daily-automation"
+import { runNightOwl, type NightOwlResult } from "./night-owl"
+import { isNightWindow, nightOwlShouldRun } from "./workbuddy-time"
 import { sleep } from "./task-query"
 import { tryLockTaskAccount, unlockTaskAccount } from "./task-lock"
 import {
@@ -30,6 +32,8 @@ export interface DailyScheduleState {
   retryCountByUid?: Record<string, number>
   /** 当日官方签到确认；缺失表示未知，不能当成未签到或已签到。 */
   checkinByUid?: Record<string, DailyCheckinConfirmation & { day: string }>
+  /** 夜猫子最近一次成功上报对应的上海“晚”键，防止跨午夜重复计数。 */
+  nightOwlByUid?: Record<string, string>
 }
 
 export interface DailySchedulerCycleResult {
@@ -84,6 +88,7 @@ export function normalizeDailyScheduleState(value: unknown): DailyScheduleState 
   const nextRetryAtByUid = normalizeMap(raw.nextRetryAtByUid) ?? {}
   const retryCountByUid = normalizeCountMap(raw.retryCountByUid)
   const checkinByUid = normalizeCheckinMap(raw.checkinByUid)
+  const nightOwlByUid = normalizeMap(raw.nightOwlByUid)
   if (version === 2) {
     const legacyPending = raw.retryPendingByUid
     const pendingEntries =
@@ -103,6 +108,9 @@ export function normalizeDailyScheduleState(value: unknown): DailyScheduleState 
     ...(Object.keys(nextRetryAtByUid).length ? { nextRetryAtByUid } : {}),
     ...(Object.keys(retryCountByUid).length ? { retryCountByUid } : {}),
     ...(Object.keys(checkinByUid).length ? { checkinByUid } : {}),
+    ...(nightOwlByUid && Object.keys(nightOwlByUid).length
+      ? { nightOwlByUid }
+      : {}),
   }
 }
 
@@ -189,6 +197,10 @@ export function summarizeDailyRun(result: DailyRunResult) {
   return Array.from(text).slice(0, RESULT_PREVIEW_LIMIT).join("")
 }
 
+export function summarizeNightOwlRun(result: NightOwlResult) {
+  return truncateResult(result.message)
+}
+
 /**记录结果和结构化待重试状态；非瞬时错误当天不重复。 */
 export async function recordDailyRun(uid: string, result: DailyRunResult) {
   const state = await readDailyScheduleState()
@@ -201,6 +213,27 @@ export async function recordDailyRun(uid: string, result: DailyRunResult) {
     Date.now(),
     result.checkin,
   ))
+}
+
+export async function recordNightOwlRun(uid: string, day: string) {
+  const state = await readDailyScheduleState()
+  await writeDailyScheduleState({
+    ...state,
+    nightOwlByUid: {
+      ...(state.nightOwlByUid ?? {}),
+      [uid]: day,
+    },
+  })
+}
+
+export function clearNightOwlRun(state: DailyScheduleState, uid: string): DailyScheduleState {
+  const nightOwlByUid = { ...state.nightOwlByUid }
+  delete nightOwlByUid[uid]
+  const { nightOwlByUid: _nightOwlByUid, ...rest } = state
+  return {
+    ...rest,
+    ...(Object.keys(nightOwlByUid).length ? { nightOwlByUid } : {}),
+  }
 }
 
 export function updateDailyRunState(
@@ -295,6 +328,48 @@ export async function maybeRunDailyForAllAccounts(): Promise<DailySchedulerCycle
   return result
 }
 
+/**
+ * 夜猫子巡检独立于普通每日排程：普通任务一天只跑一次，而夜猫子只在
+ * 23:00-08:00 开放，并且同一晚必须最多计数一次。
+ */
+export async function maybeRunNightOwlForAllAccounts(
+  now = new Date(),
+): Promise<DailySchedulerCycleResult> {
+  const result: DailySchedulerCycleResult = { checked: 0, ran: [], locked: [] }
+  if (!isNightWindow(now)) return result
+
+  await syncPoolFromDisk()
+  const entries = await listPoolEntries()
+  result.checked = entries.length
+  for (const entry of entries) {
+    if (entry.disabled) continue
+    const state = await readDailyScheduleState()
+    if (!nightOwlShouldRun(now, state.nightOwlByUid?.[entry.uid])) continue
+    if (!tryLockTaskAccount(entry.uid)) {
+      result.locked.push(entry.uid)
+      continue
+    }
+    try {
+      const account = await readPoolAccount(entry.uid)
+      const night: NightOwlResult = await runNightOwl(account, now)
+      if (night.status === "done") {
+        await recordNightOwlRun(entry.uid, night.key)
+      }
+      result.ran.push({ uid: entry.uid, result: summarizeNightOwlRun(night) })
+    } catch (error) {
+      const stateAfterFailure = await readDailyScheduleState()
+      await writeDailyScheduleState(clearNightOwlRun(stateAfterFailure, entry.uid))
+      result.ran.push({
+        uid: entry.uid,
+        result: truncateResult(`夜猫子执行失败：${errorText(error)}`),
+      })
+    } finally {
+      unlockTaskAccount(entry.uid)
+    }
+  }
+  return result
+}
+
 async function recordDailyRunError(uid: string, summary: string, retryable: boolean) {
   const state = await readDailyScheduleState()
   await writeDailyScheduleState(updateDailyRunState(state, uid, summary, retryable))
@@ -311,6 +386,7 @@ async function runSchedulerCycle() {
   scope.__codexHotSwitchDailySchedulerCycleRunning = true
   try {
     await maybeRunDailyForAllAccounts()
+    await maybeRunNightOwlForAllAccounts()
   } catch {
     //巡检失败不中断服务；下一分钟再检查到期状态。
   } finally {

@@ -410,7 +410,7 @@ export interface TravelState {
  state: string
  /**今日已派出过（自然日 00:00 CST 重置）。 */
  dailyLimitReached: boolean
- /**在途/到站记录 id，领奖必带。 */
+ /**上游返回的在途/到站记录 id；仅用于诊断，官方领奖不依赖它。 */
  recordId: number
  /**到站可领的积分。 */
  rewardCredit: number
@@ -449,13 +449,13 @@ export async function departTravel(account: WorkbuddyAccount, locationId = 4) {
  )
 }
 
-/**领取到站的旅行奖励，返回入账积分。 */
-export async function claimTravel(account: WorkbuddyAccount, recordId: number): Promise<number> {
+/**领取到站的旅行奖励，返回入账积分。官方前端发送空 body。 */
+export async function claimTravel(account: WorkbuddyAccount): Promise<number> {
  const base = realmBase(account)
  const record = await taskFetch(
  account,
  `${base.chat}/activity/growth/buddy/travel/claim`,
- { method: "POST", body: { record_id: recordId } },
+ { method: "POST", body: {} },
  "领取旅行奖励",
  )
  return asNumber((record.data as Record<string, unknown> | undefined)?.reward_credit) ??0

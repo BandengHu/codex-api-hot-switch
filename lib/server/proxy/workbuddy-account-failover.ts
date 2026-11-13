@@ -31,9 +31,10 @@ export async function fetchWithWorkbuddyAccountFailover(params: {
   requestSignal?: AbortSignal
   requestIsStream: boolean
   capacityRetryEnabled: boolean
+  attemptedUids?: string[]
 }): Promise<EndpointFailoverResult> {
   let target = params.target
-  const attemptedUids = new Set<string>()
+  const attemptedUids = new Set(params.attemptedUids ?? [])
 
   while (true) {
     try {
@@ -54,6 +55,7 @@ export async function fetchWithWorkbuddyAccountFailover(params: {
       if (!nextUid || attemptedUids.has(nextUid)) throw error
 
       target = await withWorkbuddyTargetCredentials(target, nextUid)
+      params.attemptedUids?.push(account.uid)
       delete target.attemptedEndpointIds
       delete target.failoverReason
     }

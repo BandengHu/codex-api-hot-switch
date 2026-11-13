@@ -6,6 +6,7 @@ import test from "node:test"
 import {
   formatScheduleDay,
   normalizeDailyScheduleState,
+  clearNightOwlRun,
   pickAccountsNeedingRun,
   summarizeDailyRun,
   updateDailyRunState,
@@ -194,4 +195,15 @@ test("每日排程：分享进度暂未点亮仍保留自动补跑", () => {
     creditTotal: 0,
     steps: [{ key: "school_share", label: "开学季分享", status: "skipped", message: "进度未点亮", retryable: true }],
   }), /等待自动重试/)
+})
+
+test("每日排程：夜猫子晚键独立于普通每日执行记录持久化", () => {
+  const normalized = normalizeDailyScheduleState({
+    version: 4,
+    lastRunByUid: { local: "2026-11-13" },
+    nightOwlByUid: { local: "2026-11-13" },
+  })
+  assert.equal(normalized.nightOwlByUid?.local, "2026-11-13")
+  assert.equal(clearNightOwlRun(normalized, "local").nightOwlByUid, undefined)
+  assert.equal(clearNightOwlRun(normalized, "other").nightOwlByUid?.local, "2026-11-13")
 })

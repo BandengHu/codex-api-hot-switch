@@ -2,6 +2,10 @@ import "server-only"
 
 import type { WorkbuddyAccount } from "./account"
 import {
+  resolveWorkbuddyDynamicExpertTask,
+  type WorkbuddyDynamicExpert,
+} from "@/lib/workbuddy-dynamic-expert"
+import {
  acceptGrowthTasks,
  claimGrowthReward,
  claimGrowthRewardMp,
@@ -69,17 +73,39 @@ export function findTaskFor(account: WorkbuddyAccount, taskCode: string) {
 export async function findTaskWaiting(
  account: WorkbuddyAccount,
  taskCode: string,
+ expectedExpert?: Pick<WorkbuddyDynamicExpert, "expertId">,
 ): Promise<WorkbuddyGrowthTask | undefined> {
  let task = await findTaskFor(account, taskCode)
- if (!task || task.claimable || task.claimed) return task
+ if (
+  !task ||
+  task.claimable ||
+ task.claimed ||
+ (expectedExpert && resolveExpectedExpertMismatch(task, expectedExpert))
+ ) {
+  return task
+ }
  for (let attempt =1; attempt < CLAIM_POLL_ATTEMPTS; attempt++) {
  await sleep(CLAIM_POLL_GAP_MS)
  const next = await findTaskFor(account, taskCode).catch(() => undefined)
  if (!next) continue
  task = next
- if (task.claimable || task.claimed) return task
+ if (
+  task.claimable ||
+ task.claimed ||
+ (expectedExpert && resolveExpectedExpertMismatch(task, expectedExpert))
+ ) {
+  return task
+ }
  }
  return task
+}
+
+function resolveExpectedExpertMismatch(
+  task: WorkbuddyGrowthTask,
+  expectedExpert: Pick<WorkbuddyDynamicExpert, "expertId">,
+) {
+  const resolved = resolveWorkbuddyDynamicExpertTask(task)
+  return !resolved || resolved.expertId !== expectedExpert.expertId
 }
 
 /** accept（幂等：失败不阻塞——行为事件才是进度唯一判据）。 */

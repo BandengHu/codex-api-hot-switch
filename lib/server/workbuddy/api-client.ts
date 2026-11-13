@@ -79,6 +79,10 @@ export interface TaskFetchInit {
  platform?: "web" | "miniprogram"
  /** web指纹的 Referer页面地址。 */
  pageUrl?: string
+  /** 在客户端指纹默认头上覆盖或追加请求头。 */
+  headers?: Record<string, string>
+  /** 2xx空响应视为成功，返回空对象。 */
+  allowEmptyBody?: boolean
  /**成功时是否跳过 {code,msg,data}信封校验（默认校验）。 */
  skipEnvelope?: boolean
  debug?: boolean
@@ -156,6 +160,7 @@ export function buildHeaders(
  if (init.platform) {
  headers["x-client-platform"] = init.platform
  }
+ if (init.headers) Object.assign(headers, init.headers)
  return headers
 }
 
@@ -207,6 +212,8 @@ export async function taskFetch(
      response.status,
     )
    }
+
+   if (init.allowEmptyBody && !text.trim()) return {}
 
    let payload: unknown
    try {

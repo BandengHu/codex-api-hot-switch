@@ -10,6 +10,16 @@ export interface WorkbuddyPoolEntryView {
   nickname: string
   source: "local" | "file"
   disabled: boolean
+  /** 仍在重置时间之前的账号级限频。 */
+  rateLimit?: {
+    message: string
+    resetAt: string
+  }
+  /** 已过期但尚未清理的历史恢复点；不参与可用账号判断。 */
+  recoveredRateLimit?: {
+    message: string
+    resetAt: string
+  }
   balance?: WorkbuddyPoolBalance
   balanceError?: string
   dailyStatus?: {
@@ -42,6 +52,10 @@ export interface WorkbuddyPoolGrowthTask {
  title: string
  description: string
  taskDesc: string
+  /** 上游任务深链；仅用于识别动态专家，不会自动点击。 */
+  jumpUrl: string
+  /** auto 任务不接受接取，且可能作为其他任务的前置。 */
+  taskType: string
  rewardCredit: number
  rewardEnergy: number
  locked: boolean

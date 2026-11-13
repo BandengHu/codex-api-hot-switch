@@ -149,6 +149,7 @@ test("WorkBuddy account failover", async (t) => {
   })
 
   try {
+    const attemptedUids: string[] = []
     const result = await fetchWithWorkbuddyAccountFailover({
       target: prepared.target,
       path: "v1/chat/completions",
@@ -159,6 +160,7 @@ test("WorkBuddy account failover", async (t) => {
       },
       requestIsStream: true,
       capacityRetryEnabled: false,
+      attemptedUids,
     })
 
     assert.deepEqual(
@@ -184,6 +186,7 @@ test("WorkBuddy account failover", async (t) => {
       realm: "global",
     })
     assert.equal(await result.response.text(), SUCCESS_STREAM)
+    assert.deepEqual(attemptedUids, ["account-a"])
 
     const pool = await readGlobalPoolState()
     assert.equal(pool.activeUid, "account-b")
@@ -233,6 +236,34 @@ test("WorkBuddy account failover", async (t) => {
   } finally {
     setProviderFetchForTesting(previousFetch)
   }
+  })
+
+  await t.test("already attempted accounts cannot be selected again", async () => {
+    await rm(join(dataDir, "workbuddy-global-pool"), {
+      recursive: true,
+      force: true,
+    })
+    const prepared = await prepareAccounts("loop-account-a", "loop-account-b")
+    const previousFetch = setProviderFetchForTesting(async (_input, init) => {
+      return accountHeaders(init).get("authorization") === "Bearer token-loop-account-a"
+        ? limitedStream()
+        : Response.json({ error: { message: "unexpected retry" } }, { status: 500 })
+    })
+    try {
+      await assert.rejects(
+        fetchWithWorkbuddyAccountFailover({
+          target: prepared.target,
+          path: "v1/chat/completions",
+          body: { model: "glm-5.3", stream: true },
+          requestIsStream: true,
+          capacityRetryEnabled: false,
+          attemptedUids: ["loop-account-b"],
+        }),
+        WorkbuddyRateLimitError,
+      )
+    } finally {
+      setProviderFetchForTesting(previousFetch)
+    }
   })
 
   await t.test("a split WorkBuddy rate limit freezes account A and retries with account B", async () => {

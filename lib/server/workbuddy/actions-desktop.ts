@@ -6,13 +6,11 @@ import { adoptFirstBuddy, agreeBuddyTerms, isBuddyTaskIncomplete } from "./buddy
 import {
  desktopAppearanceApplyEvent,
  desktopAutomationCreateEvent,
- desktopBuddyAppSequence,
  desktopChatSequence,
  desktopDesignCanvasSequence,
  desktopExpertActualUseEvent,
  desktopExpertSummonSequence,
  desktopPlaybookPromptSequence,
- desktopTemplateUseSequence,
  desktopChatWithExpert,
  fetchMarketExperts,
  HP_APPEARANCE_THEME,
@@ -30,7 +28,6 @@ import { EXPERT_SUMMON_GAP_MS, findTask, REPORT_GAP_MS } from "./task-query"
  *
  *全部按 `workbuddy2api-panel`（GitHub开源项目）实测口径照搬：
  * - RichMeow_Chat：桌面完整对话事件链（三账号实测点亮）；
- * - Buddy_App / Buddy_App_QQ：buddyapp五连事件（两账号实测）；
  * - automation_1：`automated_task_create_suc`（两账号实测）；
  * - Library_read：web域 `web_element_click(library_doc_intro_click)`（三账号实测）；
  * - template_5 / playbook_prompt / create_canvas：asar逆向判据事件（三账号实测）；
@@ -52,12 +49,6 @@ export async function runRichMeow(account: WorkbuddyAccount): Promise<string> {
  return "已按桌面端指纹上报完整对话事件链（agent_task_created→chat_response）"
 }
 
-/**完成 Buddy_App / Buddy_App_QQ（进入 Buddy应用）。 */
-export async function runBuddyApp(account: WorkbuddyAccount): Promise<string> {
- await sendDesktopEvents(account, desktopBuddyAppSequence())
- return "已上报 buddyapp进入五连事件（同时覆盖 Buddy_App与 Buddy_App_QQ）"
-}
-
 /**完成 automation_1（设置自动化任务）。 */
 export async function runAutomationCreate(account: WorkbuddyAccount): Promise<string> {
  await sendDesktopEvents(account, [desktopAutomationCreateEvent("wb2api自动化")])
@@ -69,28 +60,6 @@ export async function runLibraryRead(account: WorkbuddyAccount): Promise<string>
  const docUrl = "https://www.workbuddy.cn/space/d/o0KWYeynteVv06UnAZqIFm"
  await reportWebEvent(account, "web_element_click", docUrl, "library_doc_intro_click", "WorkBuddy资料库介绍")
  return "已上报资料库介绍阅读事件"
-}
-
-/**完成 template_5（使用5个模板创建任务）。 */
-export async function runTemplateUse(account: WorkbuddyAccount): Promise<string> {
- const templates: Array<[string, string]> = [
- ["1", "深度研究"],
- ["2", "周报生成"],
- ["3", "竞品分析"],
- ["4", "活动策划"],
- ["5", "代码评审"],
- ]
- for (const [index, template] of templates.entries()) {
- const ids = newDesktopChatIds(`wb-tpl-${index}`)
- const events = desktopTemplateUseSequence(ids.conversationId, ids.requestId, template[0], template[1])
- try {
- await sendDesktopEvents(account, events)
- } catch (error) {
- return `第 ${index +1}组模板事件上报失败：${error instanceof Error ? error.message : String(error)}`
- }
- await sleep(300)
- }
- return "已上报 template_used ×5"
 }
 
 /**完成 playbook_prompt（灵感案例 Dialog中发送 Prompt）。 */

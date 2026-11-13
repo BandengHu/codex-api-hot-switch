@@ -15,7 +15,7 @@ import {
  * `workbuddy2api-panel`的实测结论）：
  * - `chat`：CLI域 `{billing}/v2/report`，`chat_request_send`事件（chat_5 /连登 /
  * first_buddy前置）；
- * - `desktop`：`{chat}/v2/report`，桌面端事件链（RichMeow_Chat / Buddy_App /
+ * - `desktop`：`{chat}/v2/report`，桌面端事件链（RichMeow_Chat /
  * automation_1 / template_5 / expert_5等）；
  * - `web`：`{web}/v2/report`，浏览器形状事件（Library_read）；
  * - `mp`：`{billing}/v2/report` +小程序平台头（school_season / Sequential_Tasks_*）。
@@ -89,7 +89,12 @@ export async function reportDesktopEvents(
  await taskFetch(
  account,
  `${base.chat}/v2/report`,
- { method: "POST", fingerprint: "desktop", body: mergeEvents(desktopFingerprint(account), events) },
+ {
+ method: "POST",
+ fingerprint: "desktop",
+ allowEmptyBody: true,
+ body: mergeEvents(desktopFingerprint(account), events),
+ },
  "上报桌面端事件",
  )
 }
@@ -158,6 +163,7 @@ export async function reportChatActivity(
  requestId: string,
  modelId = "deepseek-v4-flash",
  modelName = "DeepSeek V4 Flash",
+ mode = "craft",
 ): Promise<void> {
  const base = realmBase(account)
  const now = Date.now()
@@ -169,7 +175,15 @@ export async function reportChatActivity(
  fingerprint: "desktop",
  debug: process.env.WORKBUDDY_TASK_DEBUG === "1",
  body: [
- createChatRequestEvent(account, conversationId, requestId || conversationId, now, modelId, modelName),
+  createChatRequestEvent(
+   account,
+   conversationId,
+   requestId || conversationId,
+   now,
+   modelId,
+   modelName,
+   mode,
+  ),
  ],
  },
  "上报对话活跃",
@@ -184,12 +198,13 @@ export function createChatRequestEvent(
  now: number,
  modelId: string,
  modelName: string,
+ mode = "craft",
 ): UpstreamEvent {
  return {
  eventCode: "chat_request_send",
  timestamp: now,
  reportDelay:0,
- mode: "craft",
+ mode,
  conversationId,
  requestId,
  inputLength:12,

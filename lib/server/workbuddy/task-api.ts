@@ -50,6 +50,10 @@ export interface WorkbuddyGrowthTask {
  title: string
  description: string
  taskDesc: string
+  /** 上游任务深链；临时专家任务用它携带真实 expertId。 */
+  jumpUrl: string
+  /** auto 任务不接受 accept，且必须先于 single 任务完成。 */
+  taskType: string
  rewardCredit: number
  rewardEnergy: number
  locked: boolean
@@ -112,6 +116,8 @@ export async function listGrowthTasks(
  title: typeof item.title === "string" ? item.title : taskCode,
  description: typeof item.description === "string" ? item.description : "",
  taskDesc: typeof item.task_desc === "string" ? item.task_desc : "",
+    jumpUrl: typeof item.jump_url === "string" ? item.jump_url : "",
+    taskType: typeof item.task_type === "string" ? item.task_type : "",
  rewardCredit: asNumber(item.reward_credit) ??0,
  rewardEnergy: asNumber(item.reward_energy) ??0,
  locked: item.locked === true,

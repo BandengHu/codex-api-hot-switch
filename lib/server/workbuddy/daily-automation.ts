@@ -3,7 +3,6 @@ import "server-only"
 import type { WorkbuddyAccount } from "./account"
 import { isRetryableWorkbuddyTaskError, uniqueId, WorkbuddyTaskApiError } from "./api-client"
 import {
- adoptFirstBuddy,
  agreeBuddyTerms,
  claimCompensation,
  claimGift,
@@ -22,6 +21,8 @@ import {
  useMakeupCard,
  yesterdayDay,
 } from "./daily-api"
+import { openBuddyBoxes } from "./buddy-rewards"
+import { adoptFirstBuddy } from "./buddy"
 import { reportChatActivity } from "./report"
 import { isGlobalAccount } from "./task-api"
 import { REPORT_GAP_MS, sleep } from "./task-query"
@@ -500,18 +501,88 @@ async function stepTravel(
  return
  }
 
- const travel = await fetchTravelState(account)
+ let travel = await fetchTravelState(account)
  if (travel.state === "arrived") {
- if (travel.recordId === 0) {
- push({ key: "travel", label, status: "skipped", message: "已到站但没有记录 id，无法领奖" })
- return
- }
- const credit = await claimTravel(account, travel.recordId)
- push({ key: "travel", label, status: "done", message: `已领到站奖励 +${credit}分`, credit })
- return
+  const credit = await claimTravel(account)
+  push({
+    key: "travel",
+    label,
+    status: "done",
+    message: `已领到站奖励 +${credit}分`,
+    credit,
+  })
+  let opened = 0
+  try {
+    const boxes = await openBuddyBoxes(account)
+    opened = boxes?.count ?? 0
+    if (opened) {
+      push({
+        key: "buddy_box",
+        label: "Buddy盲盒",
+        status: "done",
+        message: `消耗成长能量开启 ${opened} 个盲盒${boxes?.names.length ? `：${boxes.names.join("、")}` : ""}`,
+      })
+    } else {
+      push({
+        key: "buddy_box",
+        label: "Buddy盲盒",
+        status: "skipped",
+        message: "成长能量不足，暂不开启盲盒",
+      })
+    }
+  } catch (error) {
+    fail("buddy_box", "Buddy盲盒", error)
+  }
+
+  try {
+    travel = await fetchTravelState(account)
+  } catch (error) {
+    push({
+      key: "travel_state",
+      label: "猫猫旅行状态",
+      status: "error",
+      message: `奖励已领取，但旅行状态回读失败：${error instanceof Error ? error.message : String(error)}`,
+      ...(isRetryableWorkbuddyTaskError(error) ? { retryable: true } : {}),
+    })
+    return
+  }
+  if (travel.state === "idle" && !travel.dailyLimitReached) {
+    try {
+      await departTravel(account)
+      push({
+        key: "travel_depart",
+        label: "猫猫旅行派出",
+        status: "done",
+        message: `已派出下一轮旅行${opened ? `，本轮到站后开盒 ${opened} 个` : ""}`,
+      })
+    } catch (error) {
+      fail("travel_depart", "猫猫旅行派出", error)
+    }
+  }
+  return
  }
 
  if (travel.state === "idle") {
+  try {
+    const boxes = await openBuddyBoxes(account)
+    if (boxes?.count) {
+      push({
+        key: "buddy_box",
+        label: "Buddy盲盒",
+        status: "done",
+        message: `消耗成长能量开启 ${boxes.count} 个盲盒${boxes.names.length ? `：${boxes.names.join("、")}` : ""}`,
+      })
+    } else {
+      push({
+        key: "buddy_box",
+        label: "Buddy盲盒",
+        status: "skipped",
+        message: "成长能量不足，暂不开启盲盒",
+      })
+    }
+  } catch (error) {
+    fail("buddy_box", "Buddy盲盒", error)
+  }
  if (travel.dailyLimitReached) {
  push({ key: "travel", label, status: "skipped", message: "今日已派出过，等明天" })
  return

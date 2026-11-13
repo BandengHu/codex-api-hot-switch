@@ -5,11 +5,11 @@ import { join } from "node:path"
 import { hotSwitchDataDir } from "@/lib/server/state-store"
 import { parseWorkbuddyAccount, type WorkbuddyAccount } from "./account"
 import {
+  activeRateLimitOf,
   availableUidOf,
   nextAvailableUidOf,
   preferredRateLimitOf,
   pruneExpiredRateLimits,
-  selectedUidOf,
   type WorkbuddyAccountRateLimit,
 } from "./pool-selection"
 import { WorkbuddyRateLimitError } from "./rate-limit"
@@ -104,31 +104,37 @@ export async function writePoolState(state: WorkbuddyPoolState) {
  await rename(tempPath, poolStatePath())
 }
 
-/**列出池里所有账号（本机账号始终在第一位）。 */
-export async function listPoolEntries(): Promise<WorkbuddyPoolEntry[]> {
- const state = await readPoolState()
- const local: WorkbuddyPoolEntry = {
- uid: "local",
- nickname: "",
- source: "local",
- disabled: false,
- }
- return [local, ...state.entries]
-}
-
-/**本机账号的固定 uid（池里永远存在，代表桌面端登录态）。 */
+/**本机账号的固定 uid（桌面端登录态）。 */
 export const LOCAL_POOL_UID = "local"
 
+/**
+ * 服务器部署用 `CODEX_HOT_SWITCH_LOCAL_WORKBUDDY=0` 关闭本机落档，
+ * 避免全部导入账号不可用时错误回落到服务器上不存在的桌面端登录态。
+ */
+export function localWorkbuddyPoolEnabled() {
+ return process.env.CODEX_HOT_SWITCH_LOCAL_WORKBUDDY !== "0"
+}
+
+function localEntry(): WorkbuddyPoolEntry | null {
+ if (!localWorkbuddyPoolEnabled()) return null
+ return {
+   uid: LOCAL_POOL_UID,
+   nickname: "",
+   source: "local",
+   disabled: false,
+ }
+}
+
+/**列出池里所有账号；本机落档开启时始终在第一位。 */
+export async function listPoolEntries(): Promise<WorkbuddyPoolEntry[]> {
+ const state = await readPoolState()
+ const local = localEntry()
+ return local ? [local, ...state.entries] : state.entries
+}
+
 function orderedEntries(state: WorkbuddyPoolState): WorkbuddyPoolEntry[] {
- return [
-   {
-     uid: LOCAL_POOL_UID,
-     nickname: "",
-     source: "local",
-     disabled: false,
-   },
-   ...state.entries,
- ]
+ const local = localEntry()
+ return local ? [local, ...state.entries] : state.entries
 }
 
 /** 当前真正可用于上游请求的 uid；全部禁用或限频时返回 undefined。 */
@@ -162,7 +168,8 @@ export function preferredRateLimitOfState(
  * 这个函数只用于界面状态；真正转发前使用 `availableUidOfState` 再确认。
  */
 export function activeUidOf(state: WorkbuddyPoolState, now = Date.now()) {
- return selectedUidOf(state, orderedEntries(state)) ?? LOCAL_POOL_UID
+ const entries = orderedEntries(state)
+ return availableUidOf(state, entries, now) ?? ""
 }
 
 /** 读取真正可转发的 uid，跳过已禁用和仍在限频冻结期内的账号。 */
@@ -206,13 +213,25 @@ export async function freezePoolAccount(
  */
 export async function setActivePoolAccount(uid: string) {
  const state = await readPoolState()
- const target = uid.trim() || LOCAL_POOL_UID
- if (target !== LOCAL_POOL_UID) {
+ const target = uid.trim() || (localWorkbuddyPoolEnabled() ? LOCAL_POOL_UID : "")
+ if (target === LOCAL_POOL_UID && !localWorkbuddyPoolEnabled()) {
+   throw new Error("服务器模式没有本机 WorkBuddy 登录态，请选择导入账号")
+ }
+ if (target && target !== LOCAL_POOL_UID) {
  const entry = state.entries.find((candidate) => candidate.uid === target)
  if (!entry) throw new Error(`号池里没有 uid=${target} 的账号`)
  if (entry.disabled) throw new Error(`账号 ${entry.nickname || target} 已禁用，请先启用再切换`)
  }
- state.activeUid = target
+ if (target) {
+   const rateLimit = activeRateLimitOf(state, target)
+   if (rateLimit) {
+     throw new Error(
+       `账号 ${target === LOCAL_POOL_UID ? "本机账号" : target} 当前限频中，请在 ${rateLimit.resetAt} 后重试`,
+     )
+   }
+ }
+ if (target) state.activeUid = target
+ else delete state.activeUid
  await writePoolState(state)
  return target
 }
@@ -280,6 +299,9 @@ export async function setPoolAccountDisabled(uid: string, disabled: boolean) {
 /**读取某个账号的登录态（local →桌面端文件；file → 号池目录）。 */
 export async function readPoolAccount(uid: string): Promise<WorkbuddyAccount> {
  if (uid === "local") {
+   if (!localWorkbuddyPoolEnabled()) {
+     throw new Error("服务器模式没有本机 WorkBuddy 登录态，请使用号池里的导入账号")
+   }
  const { readWorkbuddyAccount } = await import("./account")
  return readWorkbuddyAccount()
  }

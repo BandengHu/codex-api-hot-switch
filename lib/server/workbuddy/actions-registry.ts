@@ -4,7 +4,6 @@ import type { WorkbuddyAccount } from "./account"
 import {
  runAppearance,
  runAutomationCreate,
- runBuddyApp,
  runChat5Action,
  runCreateCanvas,
  runExpertBatch,
@@ -15,8 +14,8 @@ import {
  runPlaybookPrompt,
  runRichMeow,
  runSkillFresh,
- runTemplateUse,
 } from "./actions-desktop"
+import { FIXED_EXPERT_TASKS, runFixedExpert } from "./actions-experts"
 import {
  runMiniExpert,
  runSchoolSeason,
@@ -27,9 +26,9 @@ import {
  runSequentialModelChat,
  runSequentialPlaybook,
 } from "./actions-mp"
-import { inNightWindow, runNightChats } from "./chat"
-import { reportChatActivity } from "./report"
-import { findTask, findTaskWaiting } from "./task-query"
+import { runNightOwl } from "./night-owl"
+import { runSkillShare } from "./skill-share"
+import { runTemplateUse } from "./template-tasks"
 
 /**
  *可自动化任务动作表。
@@ -50,34 +49,9 @@ export interface TaskAction {
  run: (account: WorkbuddyAccount) => Promise<string>
 }
 
-/**
- *夜猫子补足（black_cat）。
- *
- *上游口径是「23:00–08:00内**每天计 1 次**，累计 3 天」——同一天重复对话不再叠加。
- *所以这里**一次只补一次**：按差额连跑 N 次只会把配额烧在同一个计数位上（实测第二轮
- *两次对话后进度仍是 1/3）。补完回读，进度没动就说明今天这一格已经计过。
- */
 async function runBlackCat(account: WorkbuddyAccount): Promise<string> {
- if (!inNightWindow()) {
- return "当前不在23:00–08:00计数窗口，行为不计分；等夜间再试"
- }
- const task = await findTask(account, "black_cat")
- if (!task) return "该账号没有这个任务"
- const target = task.target ||3
- const before = task.current
- if (before >= target) return "进度已达标，无需补足"
-
- const ok = await runNightChats(account,1, async (conversationId) => {
- await reportChatActivity(account, conversationId, "", "glm-5.2", "GLM-5.2")
- })
- if (!ok) return "夜间对话或上报失败，请稍后重试"
-
- const after = await findTaskWaiting(account, "black_cat").catch(() => undefined)
- const current = after?.current ?? before
- if (current <= before) {
- return `本次对话未让进度前移（仍为 ${current}/${target}）：该任务每天只计 1 次，需明天夜间再来；还差 ${target - current}天`
- }
- return `已完成本次夜间对话并上报（进度 ${current}/${target}）`
+ const result = await runNightOwl(account)
+ return result.message
 }
 
 export const TASK_ACTIONS: TaskAction[] = [
@@ -102,16 +76,6 @@ export const TASK_ACTIONS: TaskAction[] = [
  run: runRichMeow,
  },
  {
- taskCode: "Buddy_App",
- desc: "上报「进入 Buddy应用」事件链（已验证：纯 API可点亮）",
- run: runBuddyApp,
- },
- {
- taskCode: "Buddy_App_QQ",
- desc: "上报「进入企鹅教师助手」事件链（已验证：纯 API可点亮）",
- run: runBuddyApp,
- },
- {
  taskCode: "automation_1",
  desc: "上报「定时任务创建」事件（已验证：纯 API可点亮）",
  run: runAutomationCreate,
@@ -123,7 +87,7 @@ export const TASK_ACTIONS: TaskAction[] = [
  },
  {
  taskCode: "template_5",
- desc: "上报「使用模板创建任务」事件组 ×5（已验证：点亮）",
+ desc: "读取服务端场景，逐组上报并回读模板进度",
  run: runTemplateUse,
  },
  {
@@ -157,13 +121,18 @@ export const TASK_ACTIONS: TaskAction[] = [
  run: runSkillFresh,
  },
  {
+ taskCode: "skill_share",
+ desc: "创建真实技能分享渠道并上报渠道动作",
+ run: runSkillShare,
+ },
+ {
  taskCode: "Expert_lighthouse",
  desc: "真实轻量云专家召唤+使用链（chat链带 has_expert）",
  run: runExpertLighthouse,
  },
  {
  taskCode: "black_cat",
- desc: "夜猫子：23:00–08:00窗口内 glm-5.2对话补足（窗口外提示稍后再试）",
+ desc: "夜猫子：23:00–08:00窗口内上报一次夜间事件（达标后领奖）",
  attempt: true,
  run: runBlackCat,
  },
@@ -207,6 +176,11 @@ export const TASK_ACTIONS: TaskAction[] = [
  desc: "体验灵感功能（预留，疑 PC口径）：accept →灵感事件组（PC+mp双形态）→领奖",
  run: runSequentialPlaybook,
  },
+ ...FIXED_EXPERT_TASKS.map((task) => ({
+ taskCode: task.taskCode,
+ desc: `真实召唤「${task.expertName}」并完成一次对话`,
+ run: (account: WorkbuddyAccount) => runFixedExpert(account, task.taskCode),
+ })),
 ]
 
 const ACTION_BY_CODE = new Map(TASK_ACTIONS.map((action) => [action.taskCode, action]))

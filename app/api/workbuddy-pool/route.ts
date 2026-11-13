@@ -9,6 +9,7 @@ import {
  syncPoolFromDisk,
 } from "@/lib/server/workbuddy/task-pool-store"
 import { fetchBalance } from "@/lib/server/workbuddy/task-api"
+import { activeRateLimitOf } from "@/lib/server/workbuddy/pool-selection"
 import {
   formatScheduleDay,
   readDailyScheduleState,
@@ -27,6 +28,8 @@ interface PoolEntryWithBalance {
  nickname: string
  source: "local" | "file"
  disabled: boolean
+ rateLimit?: { message: string; resetAt: string }
+  recoveredRateLimit?: { message: string; resetAt: string }
  balance?: { remain: number; used: number; size: number; packs: number }
  balanceError?: string
  dailyStatus?: {
@@ -62,6 +65,12 @@ export async function GET() {
  nickname: entry.nickname,
  source: entry.source,
  disabled: entry.disabled,
+ }
+ const rateLimit = activeRateLimitOf(poolState, entry.uid)
+ const previousRateLimit = poolState.rateLimits?.[entry.uid]
+ if (rateLimit) item.rateLimit = rateLimit
+ if (!rateLimit && previousRateLimit) {
+   item.recoveredRateLimit = previousRateLimit
  }
  if (!entry.disabled) {
  try {

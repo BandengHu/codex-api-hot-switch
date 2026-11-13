@@ -68,6 +68,8 @@ import type {
  WorkbuddyPoolGrowthTask,
  WorkbuddyTaskAction,
 } from "@/lib/workbuddy-pool-types"
+import { resolveWorkbuddyDynamicExpertTask } from "@/lib/workbuddy-dynamic-expert"
+import { formatWorkbuddyRateLimitRecovery } from "@/lib/workbuddy-rate-limit-display"
 import { toast } from "sonner"
 import { WorkbuddyPoolLoginDialog } from "./workbuddy-pool-login-dialog"
 
@@ -77,13 +79,24 @@ type BusyAction =
  | "switch"
  | { uid: string; action: string; taskCode?: string }
 
+function isTaskAutoable(
+  task: WorkbuddyPoolGrowthTask,
+  actions: Record<string, WorkbuddyTaskAction>,
+) {
+  return (
+    !task.claimed &&
+    !task.locked &&
+    (Boolean(actions[task.taskCode]) || Boolean(resolveWorkbuddyDynamicExpertTask(task)))
+  )
+}
+
 export function WorkbuddyPoolView() {
  const [entries, setEntries] = useState<WorkbuddyPoolEntryView[]>([])
  const [actions, setActions] = useState<Record<string, WorkbuddyTaskAction>>({})
  /**当前真正的转发账号（后端解出的值，切号只改它）。 */
  const [activeUid, setActiveUid] = useState("local")
  /**下拉框里正在查看的账号：只影响本页展示，不改转发出口。 */
- const [viewUid, setViewUid] = useState("local")
+ const [viewUid, setViewUid] = useState("")
  const [tasks, setTasks] = useState<WorkbuddyPoolGrowthTask[]>([])
  const [dailySteps, setDailySteps] = useState<WorkbuddyDailyStep[] | null>(null)
  const [busy, setBusy] = useState<BusyAction | null>("refresh")
@@ -100,6 +113,12 @@ export function WorkbuddyPoolView() {
  const snapshot = await fetchPoolEntries()
  setEntries(snapshot.entries)
  setActiveUid(snapshot.activeUid)
+  setViewUid((current) => {
+   const selectable = snapshot.entries.filter((entry) => !entry.disabled && !entry.rateLimit)
+   return selectable.some((entry) => entry.uid === current)
+    ? current
+    : selectable[0]?.uid ?? ""
+  })
  } catch (error) {
  toast.error(error instanceof Error ? error.message : String(error))
  } finally {
@@ -118,6 +137,11 @@ export function WorkbuddyPoolView() {
  * 那样账号一多页面就被几十个卡片淹掉。
  */
  const loadTasks = useCallback(async (uid: string) => {
+  if (!uid.trim()) {
+   setTasks([])
+   setDailySteps(null)
+   return
+  }
  setBusy("refresh")
  setDailySteps(null)
  try {
@@ -248,14 +272,12 @@ export function WorkbuddyPoolView() {
  (sum, entry) => sum + (entry.balance?.remain ??0),
  0,
  )
- const activeCount = entries.filter((entry) => !entry.disabled).length
- /**下拉里可选来做操作的账号（禁用的不出现在列表里）。 */
- const selectableEntries = entries.filter((entry) => !entry.disabled)
+ const activeCount = entries.filter((entry) => !entry.disabled && !entry.rateLimit).length
+ /**下拉里可选来做操作的账号（禁用和有效限频账号不出现）。 */
+ const selectableEntries = entries.filter((entry) => !entry.disabled && !entry.rateLimit)
  const viewEntry = entries.find((entry) => entry.uid === viewUid)
  const viewTaskList = tasks
- const viewAutoable = viewTaskList.filter(
- (task) => !task.claimed && !task.locked && Boolean(actions[task.taskCode]),
- )
+  const viewAutoable = viewTaskList.filter((task) => isTaskAutoable(task, actions))
  const activeEntry = entries.find((entry) => entry.uid === activeUid)
 
  return (
@@ -348,6 +370,20 @@ export function WorkbuddyPoolView() {
 <TableCell>
 {entry.disabled ? (
 <Badge variant="outline">已禁用</Badge>
+) : entry.rateLimit ? (
+<div className="flex flex-col gap-1">
+<Badge variant="destructive">限频中</Badge>
+<span className="text-xs text-muted-foreground">
+{formatWorkbuddyRateLimitRecovery(entry.rateLimit.resetAt) || "等待恢复"}
+</span>
+</div>
+ ) : entry.recoveredRateLimit && !entry.balanceError ? (
+ <div className="flex flex-col gap-1">
+ <Badge variant="secondary">正常</Badge>
+ <span className="text-xs text-muted-foreground">
+{formatWorkbuddyRateLimitRecovery(entry.recoveredRateLimit.resetAt)}
+ </span>
+ </div>
 ) : entry.balanceError ? (
 <Badge variant="destructive">凭据异常</Badge>
 ) : (
@@ -411,7 +447,7 @@ export function WorkbuddyPoolView() {
  variant="ghost"
  size="sm"
  onClick={() => void handleSwitchActive(entry.uid)}
- disabled={entry.disabled || busy !== null}
+ disabled={entry.disabled || Boolean(entry.rateLimit) || busy !== null}
  >
  {busy === "switch" ? <Spinner className="size-4" /> : null}
  设为转发
@@ -459,7 +495,7 @@ export function WorkbuddyPoolView() {
   <CardHeader>
   <CardTitle className="text-base">账号任务</CardTitle>
   <CardDescription>
-  {activeEntry ? `当前转发：${activeEntry.nickname || activeEntry.uid}` : "当前转发：本机账号"}
+  {activeEntry ? `当前转发：${activeEntry.nickname || activeEntry.uid}` : "当前无可用转发账号"}
   </CardDescription>
   <CardAction>
   <div className="flex flex-wrap items-center gap-2">
@@ -483,7 +519,7 @@ export function WorkbuddyPoolView() {
   size="sm"
   variant="outline"
   onClick={() => void handleDailyRewards(viewUid)}
-  disabled={busy !== null || viewEntry?.disabled}
+  disabled={busy !== null || Boolean(viewEntry?.disabled) || Boolean(viewEntry?.rateLimit)}
   >
   {isBusyFor(viewUid, "daily") ? <Spinner className="size-4" /> : <Sun className="size-4" />}
   一键领积分
@@ -527,6 +563,7 @@ export function WorkbuddyPoolView() {
   <div className="flex flex-col gap-2">
   {viewTaskList.map((task) => {
   const action = actions[task.taskCode]
+  const dynamicExpert = resolveWorkbuddyDynamicExpertTask(task)
   return (
   <div key={task.taskCode} className="flex items-center justify-between gap-2 rounded-md border p-2">
   <div className="min-w-0 flex-1">
@@ -539,16 +576,16 @@ export function WorkbuddyPoolView() {
   ) : task.locked ? (
   <Badge variant="outline">未解锁</Badge>
   ) : null}
-  {action ? (
-  <Badge variant={action.attempt ? "outline" : "secondary"}>
-  {action.attempt ? "可尝试" : "可自动"}
+   {action || dynamicExpert ? (
+   <Badge variant={action?.attempt ? "outline" : "secondary"}>
+   {action?.attempt ? "可尝试" : "可自动"}
   </Badge>
   ) : (
   <Badge variant="outline">需手动</Badge>
   )}
   </div>
   <div className="text-xs text-muted-foreground">
-  {action?.desc || task.taskDesc || task.description || task.taskCode}
+   {action?.desc || (dynamicExpert ? `真实召唤「${dynamicExpert.expertName}」并完成一次对话` : task.taskDesc || task.description || task.taskCode)}
   {task.target >0 ? ` · ${task.current}/${task.target}` : ""}
   {task.rewardCredit >0 ? ` · +${task.rewardCredit}分` : ""}
   </div>
@@ -558,7 +595,7 @@ export function WorkbuddyPoolView() {
   size="sm"
   variant="outline"
   onClick={() => void handleTaskAction(viewUid, "automate", task.taskCode)}
-  disabled={busy !== null || task.claimed || task.locked || !action}
+   disabled={busy !== null || !isTaskAutoable(task, actions)}
   >
   {isBusyFor(viewUid, "automate", task.taskCode) ? <Spinner className="size-4" /> : null}
   自动完成
