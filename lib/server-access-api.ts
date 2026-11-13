@@ -6,6 +6,12 @@ export interface ServerAccessStatus {
   configured: boolean
   updatedAt: string
   sessionTtlSeconds: number
+  localMode?: boolean
+  account?: {
+    id: string
+    username: string
+    role: "admin" | "member"
+  } | null
 }
 
 export interface RotatedApiKey extends ServerAccessStatus {

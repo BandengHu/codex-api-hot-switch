@@ -1,5 +1,7 @@
 import "server-only"
 
+import { accountDataDir } from "@/lib/server/data-root"
+
 /**
  *号池账号级任务互斥。
  *
@@ -16,19 +18,28 @@ import "server-only"
 
 const running = new Set<string>()
 
+/**
+ * 锁键：同一 WorkBuddy uid 在管理员与普通账号的号池里可能重复，
+ * 多账号部署时必须按账号目录隔离，否则两个账号会自动互相挡住。
+ */
+function lockKey(uid: string) {
+  return `${accountDataDir() ?? "local"}\u0000${uid}`
+}
+
 /**尝试占用账号锁；该账号已有任务在跑时返回 false。 */
 export function tryLockTaskAccount(uid: string): boolean {
- if (running.has(uid)) return false
- running.add(uid)
+ const key = lockKey(uid)
+ if (running.has(key)) return false
+ running.add(key)
  return true
 }
 
 /**释放账号锁（与 `tryLockTaskAccount`配对，必须在 finally里调用）。 */
 export function unlockTaskAccount(uid: string) {
- running.delete(uid)
+ running.delete(lockKey(uid))
 }
 
 /**占用中的账号快照（诊断用）。 */
 export function busyTaskAccounts(): string[] {
- return [...running]
+ return [...running].map((key) => key.slice(key.indexOf("\u0000") + 1))
 }

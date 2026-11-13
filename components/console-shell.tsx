@@ -21,6 +21,7 @@ import { WecomBridgeView } from "@/components/views/wecom-bridge-view"
 import { WorkbuddyPoolView } from "@/components/views/workbuddy-pool-view"
 import { WorkbuddyGlobalPoolView } from "@/components/views/workbuddy-global-pool-view"
 import { SettingsView } from "@/components/views/settings-view"
+import { AccountsView } from "@/components/views/accounts-view"
 import { McpView } from "@/components/views/mcp-view"
 
 function viewFromUrl(serverMode: boolean) {
@@ -71,6 +72,7 @@ export function ConsoleShell({
             {view === "wecom-bridge" ? <WecomBridgeView /> : null}
             {view === "workbuddy-pool" ? <WorkbuddyPoolView /> : null}
             {view === "workbuddy-global-pool" ? <WorkbuddyGlobalPoolView /> : null}
+            {view === "accounts" && serverMode ? <AccountsView /> : null}
             {view === "settings" ? <SettingsView /> : null}
           </div>
         </main>

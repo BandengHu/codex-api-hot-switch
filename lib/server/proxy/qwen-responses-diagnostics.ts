@@ -1,8 +1,8 @@
 import "server-only"
 
 import { appendFile, mkdir, writeFile } from "node:fs/promises"
-import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+import { resolveDataDir } from "@/lib/server/data-root"
 import type { ProxyTarget } from "./common"
 import { readDecodedResponseText } from "./content-encoding"
 import { extractTokenUsage } from "./token-usage"
@@ -26,27 +26,9 @@ interface FrameInfo {
   terminal?: "completed" | "failed" | "done"
 }
 
-function defaultDataDir() {
-  if (process.platform === "win32") {
-    return join(
-      process.env.APPDATA || join(homedir(), "AppData", "Roaming"),
-      "codex-api-hot-switch",
-      "data",
-    )
-  }
-  if (process.platform === "darwin") {
-    return join(homedir(), "Library", "Application Support", "codex-api-hot-switch", "data")
-  }
-  return join(
-    process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"),
-    "codex-api-hot-switch",
-    "data",
-  )
-}
-
 function diagnosticsDir() {
   return join(
-    process.env.CODEX_HOT_SWITCH_DATA_DIR || defaultDataDir(),
+    resolveDataDir(),
     "logs",
     "qwen-responses-diagnostics",
   )
@@ -54,7 +36,7 @@ function diagnosticsDir() {
 
 function diagnosticsIndexPath() {
   return join(
-    process.env.CODEX_HOT_SWITCH_DATA_DIR || defaultDataDir(),
+    resolveDataDir(),
     "logs",
     "qwen-responses-diagnostics.jsonl",
   )

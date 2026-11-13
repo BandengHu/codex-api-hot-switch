@@ -254,6 +254,7 @@ async function main() {
     "codex-desktop-plugins-runner.cjs",
     "codex-desktop-model-whitelist-runner.cjs",
     "switchgate-web-search-mcp.cjs",
+    "bootstrap-accounts.cjs",
   ]) {
     await cp(join(root, "scripts", runner), join(runnerDir, runner))
   }

@@ -1,9 +1,9 @@
 import "server-only"
 
 import { appendFile, mkdir, writeFile } from "node:fs/promises"
-import { homedir } from "node:os"
 import { dirname, join, relative } from "node:path"
 import type { RequestLog } from "@/lib/types"
+import { resolveDataDir } from "@/lib/server/data-root"
 
 const CHINESE_LANGUAGE_POLICY_MARKER = "必须使用用户的主要对话语言"
 const OLD_ENGLISH_LANGUAGE_POLICY_MARKER = "Use the user's primary conversational language"
@@ -24,27 +24,9 @@ interface DiagnosticSource {
 
 const rawSources = new WeakMap<RequestLog, DiagnosticSource>()
 
-function defaultDataDir() {
-  if (process.platform === "win32") {
-    return join(
-      process.env.APPDATA || join(homedir(), "AppData", "Roaming"),
-      "codex-api-hot-switch",
-      "data",
-    )
-  }
-  if (process.platform === "darwin") {
-    return join(homedir(), "Library", "Application Support", "codex-api-hot-switch", "data")
-  }
-  return join(
-    process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"),
-    "codex-api-hot-switch",
-    "data",
-  )
-}
-
 function diagnosticsPath() {
   return join(
-    process.env.CODEX_HOT_SWITCH_DATA_DIR || defaultDataDir(),
+    resolveDataDir(),
     "logs",
     "language-policy-missing-diagnostics.jsonl",
   )
@@ -52,7 +34,7 @@ function diagnosticsPath() {
 
 function diagnosticsDir() {
   return join(
-    process.env.CODEX_HOT_SWITCH_DATA_DIR || defaultDataDir(),
+    resolveDataDir(),
     "logs",
     "language-policy-missing-diagnostics",
   )
@@ -102,7 +84,7 @@ function safeFileId(id: string) {
 }
 
 function relativeFromDataDir(path: string) {
-  return relative(process.env.CODEX_HOT_SWITCH_DATA_DIR || defaultDataDir(), path)
+  return relative(resolveDataDir(), path)
 }
 
 export function registerLanguagePolicyDiagnosticSource(

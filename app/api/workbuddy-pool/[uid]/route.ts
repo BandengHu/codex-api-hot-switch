@@ -1,4 +1,4 @@
-import { authRequiredResponse, isAuthorized } from "@/lib/server/access-guard"
+import { authRequiredResponse, runAuthorized } from "@/lib/server/access-guard"
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError, readJsonBody } from "@/lib/server/http"
 import {
@@ -28,21 +28,23 @@ type RouteContext = { params: Promise<{ uid: string }> }
 const AUTOMATE_ALL_TIMEOUT_MS =5 *60 *1000
 
 export async function GET(request: Request, context: RouteContext) {
-  if (!(await isAuthorized(request))) return authRequiredResponse()
- const { uid } = await context.params
- try {
- const account = await readPoolAccount(uid)
- const tasks = await listAllGrowthTasks(account)
- return NextResponse.json({ uid, tasks })
- } catch (error) {
- return jsonError(`读取任务失败：${errorMessage(error)}`)
- }
+  const result = await runAuthorized(request, async () => {
+    const { uid } = await context.params
+    try {
+      const account = await readPoolAccount(uid)
+      const tasks = await listAllGrowthTasks(account)
+      return NextResponse.json({ uid, tasks })
+    } catch (error) {
+      return jsonError(`读取任务失败：${errorMessage(error)}`)
+    }
+  })
+  return result ?? authRequiredResponse()
 }
 
 export async function POST(request: Request, context: RouteContext) {
-  if (!(await isAuthorized(request))) return authRequiredResponse()
- const { uid } = await context.params
- try {
+  const result = await runAuthorized(request, async () => {
+    const { uid } = await context.params
+    try {
  const body = await readJsonBody<{ action?: string; taskCode?: string }>(request)
  const action = body.action?.trim()
  if (!action) return jsonError("缺少 action",400)
@@ -123,7 +125,9 @@ export async function POST(request: Request, context: RouteContext) {
  } finally {
  if (timer) clearTimeout(timer)
  }
- } catch (error) {
- return jsonError(`操作失败：${errorMessage(error)}`)
- }
+    } catch (error) {
+      return jsonError(`操作失败：${errorMessage(error)}`)
+    }
+  })
+  return result ?? authRequiredResponse()
 }

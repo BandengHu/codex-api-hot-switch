@@ -1,4 +1,4 @@
-import { clearSessionCookie, isSecureRequest } from "@/lib/server/access-auth"
+import { clearSessionCookie, isSecureRequest } from "@/lib/server/account-auth"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"

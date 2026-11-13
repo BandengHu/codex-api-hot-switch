@@ -11,6 +11,7 @@ export type ViewKey =
   | "wecom-bridge"
   | "workbuddy-pool"
   | "workbuddy-global-pool"
+  | "accounts"
   | "settings"
 
 export const DEFAULT_VIEW: ViewKey = "codex-desktop"
@@ -27,6 +28,11 @@ export const SERVER_HIDDEN_VIEWS: ReadonlySet<ViewKey> = new Set<ViewKey>([
   "wecom-bridge",
 ])
 
+/** 账号审批只属于服务器多用户部署，本机桌面版没有这个概念。 */
+export const LOCAL_ONLY_HIDDEN_VIEWS: ReadonlySet<ViewKey> = new Set<ViewKey>([
+  "accounts",
+])
+
 export const VIEW_KEYS: readonly ViewKey[] = [
   "dashboard",
   "providers",
@@ -40,6 +46,7 @@ export const VIEW_KEYS: readonly ViewKey[] = [
   "wecom-bridge",
   "workbuddy-pool",
   "workbuddy-global-pool",
+  "accounts",
   "settings",
 ]
 
@@ -52,7 +59,8 @@ export function defaultViewForMode(serverMode: boolean): ViewKey {
 }
 
 export function isViewVisible(view: ViewKey, serverMode: boolean) {
-  return !serverMode || !SERVER_HIDDEN_VIEWS.has(view)
+  if (serverMode) return !SERVER_HIDDEN_VIEWS.has(view)
+  return !LOCAL_ONLY_HIDDEN_VIEWS.has(view)
 }
 
 export function resolveView(value: unknown, serverMode: boolean): ViewKey {

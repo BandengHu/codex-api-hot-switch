@@ -76,18 +76,22 @@ export function ServerAccessCard() {
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
           <ShieldCheck className="size-4" />
-          访问密钥
+          账号与访问密钥
         </CardTitle>
         <CardDescription>
-          API 调用只认 API Key；网页登录只用于控制台，会话有效 24 小时。
+          每个账号的配置互不可见；API 调用只认本账号的 API Key，网页登录只用于控制台，会话有效 24 小时。
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         <div className="grid gap-3 text-sm sm:grid-cols-2">
           <div className="rounded-lg border border-border p-3">
-            <div className="text-muted-foreground">访问状态</div>
+            <div className="text-muted-foreground">当前账号</div>
             <div className="mt-1 font-medium">
-              {status?.authenticated ? "已登录" : "未登录"}
+              {status?.localMode
+                ? "本机模式（免登录）"
+                : status?.account
+                  ? `${status.account.username}${status.account.role === "admin" ? "（管理员）" : ""}`
+                  : "未登录"}
             </div>
           </div>
           <div className="rounded-lg border border-border p-3">

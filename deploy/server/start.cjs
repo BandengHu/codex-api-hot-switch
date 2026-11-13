@@ -10,4 +10,7 @@ process.env.NODE_ENV = "production"
 process.env.HOSTNAME = host
 process.env.PORT = String(port)
 
+// 服务器首次启动时创建管理员账号，并可按需把现有配置迁入该账号。
+require(path.join(root, "scripts", "bootstrap-accounts.cjs"))
+
 require(path.join(root, "server.js"))
