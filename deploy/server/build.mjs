@@ -136,18 +136,67 @@ function readGitBuildInfo() {
   }
 }
 
+/**
+ * server.js 顶部内嵌了整份 nextConfig。这里只断言两个运行字段：
+ * - `distDir`：Next 读取构建产物的目录
+ * - `distDirRoot`：standalone 推导相对路径的根
+ * 其它位置保留的构建期目录名（如 outputFileTracingExcludes glob）不影响运行。
+ */
+function assertStandaloneDistDir(serverSource) {
+  const match = serverSource.match(/const nextConfig = (\{.*?\})\r?\n/s)
+  if (!match) {
+    throw new Error("server.js 中找不到 nextConfig，无法校验构建目录")
+  }
+  let config
+  try {
+    config = JSON.parse(match[1])
+  } catch (error) {
+    throw new Error(
+      `server.js 中的 nextConfig 无法解析：${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
+  if (config.distDir !== "./.next") {
+    throw new Error(`server.js 的 distDir 仍是 ${String(config.distDir)}`)
+  }
+  if (config.distDirRoot !== ".next") {
+    throw new Error(`server.js 的 distDirRoot 仍是 ${String(config.distDirRoot)}`)
+  }
+}
+
 async function readNextBuildId() {
   const text = await readFile(join(nextDir, "BUILD_ID"), "utf8")
   return text.trim()
 }
 
+/**
+ * `next build` 会把 next-env.d.ts 的 routes 引用改写成当前 distDir。
+ * 服务器构建使用 `.next-server`，但工作区应保持指向 `.next`，
+ * 否则每次发布都会留下一个与业务无关的脏文件。
+ */
+async function restoreNextEnv(nextEnvPath, original) {
+  if (original === null) {
+    await rm(nextEnvPath, { force: true })
+    return
+  }
+  await writeFile(nextEnvPath, original, "utf8")
+}
+
 async function main() {
+  const nextEnvPath = join(root, "next-env.d.ts")
+  const originalNextEnv = (await exists(nextEnvPath))
+    ? await readFile(nextEnvPath, "utf8")
+    : null
+
   if (process.argv.includes("--with-next")) {
-    execFileSync("node", [join(root, "node_modules", "next", "dist", "bin", "next"), "build"], {
-      cwd: root,
-      stdio: "inherit",
-      env: { ...process.env, NEXT_DIST_DIR: distDirName },
-    })
+    try {
+      execFileSync("node", [join(root, "node_modules", "next", "dist", "bin", "next"), "build"], {
+        cwd: root,
+        stdio: "inherit",
+        env: { ...process.env, NEXT_DIST_DIR: distDirName },
+      })
+    } finally {
+      await restoreNextEnv(nextEnvPath, originalNextEnv)
+    }
   }
 
   if (!(await exists(join(standalone, "server.js")))) {
@@ -189,15 +238,14 @@ async function main() {
   })
 
   // standalone 的 server.js 内嵌了 distDir；部署包里统一用 `.next`，
-  // 必须把这两个值同步改写，否则启动会去找不到不存在的目录。
+  // 必须把这两个运行字段同步改写，否则启动会去找不到不存在的目录。
+  // outputFileTracingExcludes 里的构建期 glob 不参与运行，不能据此误判。
   const serverPath = join(outDir, "server.js")
   const serverSource = await readFile(serverPath, "utf8")
   const rewritten = serverSource
     .replaceAll(`"./${distDirName}"`, '"./.next"')
     .replaceAll(`distDirRoot":"${distDirName}"`, 'distDirRoot":".next"')
-  if (rewritten.includes(distDirName)) {
-    throw new Error(`server.js 内仍残留构建目录 ${distDirName}`)
-  }
+  assertStandaloneDistDir(rewritten)
   await writeFile(serverPath, rewritten, "utf8")
 
   const runnerDir = join(outDir, "scripts")
@@ -235,7 +283,8 @@ async function main() {
 
   const info = {
     ...readGitBuildInfo(),
-    distDir: distDirName,
+    buildDir: distDirName,
+    distDir: ".next",
     nextBuildId: await readNextBuildId(),
     builtAt: new Date().toISOString(),
     node: process.version,
