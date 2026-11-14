@@ -155,7 +155,7 @@ function poolState(active?: string, entries: Array<Partial<WorkbuddyPoolState["e
  uid: entry.uid ?? "u",
  nickname: entry.nickname ?? "",
  source: entry.source ?? ("file" as const),
- ...(entry.filePath ? { filePath: entry.filePath } : {}),
+  ...(entry.fileName ? { fileName: entry.fileName } : {}),
  disabled: entry.disabled ?? false,
  })),
  ...(active === undefined ? {} : { activeUid: active }),

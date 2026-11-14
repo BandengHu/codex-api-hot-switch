@@ -207,3 +207,16 @@ test("每日排程：夜猫子晚键独立于普通每日执行记录持久化",
   assert.equal(clearNightOwlRun(normalized, "local").nightOwlByUid, undefined)
   assert.equal(clearNightOwlRun(normalized, "other").nightOwlByUid?.local, "2026-11-13")
 })
+
+test("每日排程：服务器模式读状态时清掉本机登录态的历史失败记录", async () => {
+  const { readDailyScheduleState } = await import("./daily-scheduler")
+  const previous = process.env.CODEX_HOT_SWITCH_LOCAL_WORKBUDDY
+  process.env.CODEX_HOT_SWITCH_LOCAL_WORKBUDDY = "0"
+  try {
+    const state = await readDailyScheduleState()
+    assert.equal("local" in state.lastRunByUid, false)
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_HOT_SWITCH_LOCAL_WORKBUDDY
+    else process.env.CODEX_HOT_SWITCH_LOCAL_WORKBUDDY = previous
+  }
+})

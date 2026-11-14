@@ -32,8 +32,13 @@ export interface WorkbuddyPoolEntry {
  nickname: string
  /** 来源：`local` = 本机桌面端，`file` = 号池目录文件。 */
  source: "local" | "file"
- /**凭据文件路径（file 来源才有）。 */
- filePath?: string
+ /**
+  * 凭据文件定位只用 uid，不持久化绝对路径。
+  *
+  * 账号隔离改造后数据目录会迁移（例如由共享目录改为 `accounts/<id>/`），
+  * 存下来的绝对路径会立刻失效，签到会以 ENOENT 静默失败一整天。
+  */
+ fileName?: string
  /** 是否已禁用（禁用后不参与自动化和轮转）。 */
  disabled: boolean
 }
@@ -60,6 +65,16 @@ function poolDir() {
 
 function poolStatePath() {
  return join(poolDir(), "pool.json")
+}
+
+/**
+ * 凭据文件位置只由**当前**号池目录和 uid 推导，不读历史绝对路径。
+ *
+ * 这样账号目录整体迁移（共享目录 → accounts/<id>/）后不需要修数据，
+ * 也不会因为一个过期的 filePath 让整天的签到全部 ENOENT。
+ */
+function accountFilePath(uid: string) {
+ return join(poolDir(), `${uid}.json`)
 }
 
 function emptyPoolState(): WorkbuddyPoolState {
@@ -301,7 +316,7 @@ export async function importPoolAccount(raw: string): Promise<WorkbuddyPoolEntry
  uid: account.uid,
  nickname: account.nickname,
  source: "file",
- filePath,
+ fileName: `${account.uid}.json`,
  disabled: existing?.disabled ?? false,
  }
  if (existing) {
@@ -357,10 +372,11 @@ export async function readPoolAccount(uid: string): Promise<WorkbuddyAccount> {
  return readWorkbuddyAccount()
  }
  const entry = state.entries.find((candidate) => candidate.uid === uid)
- if (!entry?.filePath) throw new Error(`号池里没有 uid=${uid} 的账号`)
+ if (!entry) throw new Error(`号池里没有 uid=${uid} 的账号`)
+ const filePath = accountFilePath(uid)
  const { readFile: readFileFn } = await import("node:fs/promises")
- const raw = await readFileFn(entry.filePath, "utf8")
- return parseWorkbuddyAccount(raw, entry.filePath)
+ const raw = await readFileFn(filePath, "utf8")
+ return parseWorkbuddyAccount(raw, filePath)
 }
 
 /**扫号池目录下还没登记进 pool.json 的凭据文件（手工拷贝进来的场景）。 */
@@ -376,6 +392,7 @@ export async function syncPoolFromDisk(): Promise<number> {
  const state = await readPoolState()
  const known = new Set(state.entries.map((entry) => entry.uid))
  let added =0
+  let repaired = 0
  for (const name of files) {
  const filePath = join(poolDir(), name)
  try {
@@ -386,7 +403,7 @@ export async function syncPoolFromDisk(): Promise<number> {
  uid: account.uid,
  nickname: account.nickname,
  source: "file",
- filePath,
+ fileName: name,
  disabled: false,
  })
  added++
@@ -395,6 +412,16 @@ export async function syncPoolFromDisk(): Promise<number> {
  // 不合法的凭据文件跳过，不让一个坏文件拖垮整个池。
  }
  }
- if (added) await writePoolState(state)
+  // 旧版本把绝对路径写进 pool.json，目录一迁移就全部失效；这里按 uid 就地修正。
+  for (const entry of state.entries) {
+    if (entry.source !== "file") continue
+    const expected = `${entry.uid}.json`
+    const legacyPath = (entry as { filePath?: unknown }).filePath
+    if (entry.fileName === expected && legacyPath === undefined) continue
+    entry.fileName = expected
+    delete (entry as { filePath?: unknown }).filePath
+    repaired++
+  }
+  if (added || repaired) await writePoolState(state)
  return added
 }

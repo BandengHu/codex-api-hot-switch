@@ -21,6 +21,7 @@ import { sleep } from "./task-query"
 import { tryLockTaskAccount, unlockTaskAccount } from "./task-lock"
 import {
   listPoolEntries,
+  localWorkbuddyPoolEnabled,
   readPoolAccount,
   readPoolState,
   syncPoolFromDisk,
@@ -160,10 +161,32 @@ function normalizeCheckinMap(input: unknown) {
 export async function readDailyScheduleState(): Promise<DailyScheduleState> {
   try {
     const raw = await readFile(schedulePath(), "utf8")
-    return normalizeDailyScheduleState(JSON.parse(raw))
+    return dropDisabledLocalRuns(normalizeDailyScheduleState(JSON.parse(raw)))
   } catch {
     return { version: 4, lastRunByUid: {} }
   }
+}
+
+/**
+ * 服务器模式不跑本机登录态，历史留下的 `local` 记录只会永远显示失败。
+ * 读状态时清掉，顺带让下次巡检不再把它当成待跑账号。
+ */
+function dropDisabledLocalRuns(state: DailyScheduleState): DailyScheduleState {
+  if (localWorkbuddyPoolEnabled()) return state
+  if (!("local" in state.lastRunByUid)) return state
+  const { local: _lastRun, ...lastRunByUid } = state.lastRunByUid
+  const next: DailyScheduleState = { ...state, lastRunByUid }
+  const drop = <T,>(map: Record<string, T> | undefined) => {
+    if (!map || !("local" in map)) return map
+    const { local: _ignored, ...rest } = map
+    return Object.keys(rest).length ? rest : undefined
+  }
+  next.lastResultByUid = drop(state.lastResultByUid)
+  next.nextRetryAtByUid = drop(state.nextRetryAtByUid)
+  next.retryCountByUid = drop(state.retryCountByUid)
+  next.checkinByUid = drop(state.checkinByUid)
+  next.nightOwlByUid = drop(state.nightOwlByUid)
+  return next
 }
 
 export async function writeDailyScheduleState(state: DailyScheduleState) {
@@ -406,24 +429,46 @@ async function runSchedulerCycle() {
   scope.__codexHotSwitchDailySchedulerCycleRunning = true
   try {
     if (!isServerMode()) {
-      await maybeRunDailyForAllAccounts()
-      await maybeRunNightOwlForAllAccounts()
+      const daily = await maybeRunDailyForAllAccounts()
+      const night = await maybeRunNightOwlForAllAccounts()
+      logCycle("local", daily, night)
       return
     }
     //服务器模式：没有请求上下文，必须逐个账号显式注入数据目录，
     //否则 resolveDataDir() 会抛错而整轮巡检被下面的 catch 静默吞掉。
     const accounts = (await listAccounts()).filter((item) => item.status === "active")
     for (const account of accounts) {
-      await runWithAccountDataDir(accountDataDirPath(account.id), async () => {
-        await maybeRunDailyForAllAccounts()
-        await maybeRunNightOwlForAllAccounts()
-      })
+      const outcome = await runWithAccountDataDir(
+        accountDataDirPath(account.id),
+        async () => ({
+          daily: await maybeRunDailyForAllAccounts(),
+          night: await maybeRunNightOwlForAllAccounts(),
+        }),
+      )
+      logCycle(account.username, outcome.daily, outcome.night)
     }
-  } catch {
+  } catch (error) {
     //巡检失败不中断服务；下一分钟再检查到期状态。
+    console.error(
+      `[daily-scheduler] cycle failed: ${error instanceof Error ? error.message : String(error)}`,
+    )
   } finally {
     scope.__codexHotSwitchDailySchedulerCycleRunning = false
   }
+}
+
+/** 只在真的有动作时打日志，避免每分钟刷屏。 */
+function logCycle(
+  scope: string,
+  daily: DailySchedulerCycleResult,
+  night: DailySchedulerCycleResult,
+) {
+  if (!daily.ran.length && !night.ran.length) return
+  console.log(
+    `[daily-scheduler] ${scope} daily=${daily.ran.length} night=${night.ran.length} locked=${
+      daily.locked.length + night.locked.length
+    }`,
+  )
 }
 
 export function startDailyScheduler() {
@@ -431,6 +476,7 @@ export function startDailyScheduler() {
   if (scope.__codexHotSwitchDailySchedulerStarted) return
   scope.__codexHotSwitchDailySchedulerStarted = true
 
+  console.log("[daily-scheduler] started (interval 60s)")
   const startupTimer = setTimeout(() => {
     void runSchedulerCycle()
   }, STARTUP_DELAY_MS)
