@@ -38,6 +38,21 @@ export class WorkbuddyAccountError extends Error {
   }
 }
 
+/**
+ * 登录态已过期。单独成类是因为它**可以换号**：
+ * 号池里换一个未过期账号就能继续服务；凭据损坏、解不开这类错误换号也没用。
+ */
+export class WorkbuddyCredentialExpiredError extends WorkbuddyAccountError {
+  /** 账号登录态的过期时间戳（ms）。 */
+  readonly expiresAt: number
+
+  constructor(message: string, expiresAt: number) {
+    super(message)
+    this.name = "WorkbuddyCredentialExpiredError"
+    this.expiresAt = expiresAt
+  }
+}
+
 export function workbuddyCredentialPath() {
   const localAppData =
     process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local")
@@ -124,8 +139,9 @@ export async function parseWorkbuddyAccount(raw: string, path: string): Promise<
   }
   const expiresAt = asNumber(auth.expiresAt)
   if (expiresAt > 0 && expiresAt <= Date.now()) {
-    throw new WorkbuddyAccountError(
+    throw new WorkbuddyCredentialExpiredError(
       `WorkBuddy 登录态已过期（${formatTime(expiresAt)}），请在 WorkBuddy 桌面端重新登录后再试。`,
+      expiresAt,
     )
   }
   return {

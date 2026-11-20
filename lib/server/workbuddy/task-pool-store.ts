@@ -9,11 +9,17 @@ import {
   accountBanOf,
   activeRateLimitOf,
   availableUidOf,
-  nextAvailableUidOf,
   preferredRateLimitOf,
   pruneExpiredRateLimits,
+  selectableUidsAfter,
+  selectableUidsOf,
   type WorkbuddyAccountRateLimit,
 } from "./pool-selection"
+import {
+  firstReadableAccount,
+  firstReadableUid,
+  type ReadablePoolAccount,
+} from "./pool-probe"
 import { WorkbuddyRateLimitError } from "./rate-limit"
 
 /**
@@ -161,6 +167,27 @@ function orderedEntries(state: WorkbuddyPoolState): WorkbuddyPoolEntry[] {
  return local ? [local, ...state.entries] : state.entries
 }
 
+/**
+ * 当前池状态里**允许尝试**的候选 uid，按尝试顺序排列。
+ *
+ * 只做禁用/封禁/限频过滤；登录态是否过期要读盘才知道，转发链路按这个顺序逐个探测。
+ */
+export function selectableUidsOfState(
+  state: WorkbuddyPoolState,
+  now = Date.now(),
+) {
+  return selectableUidsOf(state, orderedEntries(state), now)
+}
+
+/** `uid` 之后允许尝试的候选账号（末尾回绕）。 */
+export function selectableUidsAfterState(
+  state: WorkbuddyPoolState,
+  uid: string,
+  now = Date.now(),
+) {
+  return selectableUidsAfter(state, orderedEntries(state), uid, now)
+}
+
 /** 当前真正可用于上游请求的 uid；全部禁用、封禁或限频时返回 undefined。 */
 export function availableUidOfState(
  state: WorkbuddyPoolState,
@@ -169,13 +196,17 @@ export function availableUidOfState(
  return availableUidOf(state, orderedEntries(state), now)
 }
 
-/** 当前账号不可用后，按池顺序选择下一个未禁用、未封禁、未限频账号。 */
-export function nextAvailableUidAfter(
- state: WorkbuddyPoolState,
- uid: string,
- now = Date.now(),
-) {
- return nextAvailableUidOf(state, orderedEntries(state), uid, now)
+/**
+ * `uid` 之后第一个**能读出未过期登录态**的账号。
+ *
+ * 号池状态里看不出过期，必须读盘；轮换时用它，避免把出口切到另一个
+ * 必然 502 的过期账号。
+ */
+export async function nextReadablePoolUidAfter(uid: string) {
+  return firstReadableUid(
+    selectableUidsAfterState(await readPoolState(), uid),
+    readPoolAccount,
+  )
 }
 
 export function preferredRateLimitOfState(
@@ -195,14 +226,21 @@ export function activeUidOf(state: WorkbuddyPoolState, now = Date.now()) {
  return availableUidOfState(state, now) ?? ""
 }
 
-/** 读取真正可转发的 uid，跳过已禁用、封禁和仍在限频冻结期内的账号。 */
-export async function readActiveUid(): Promise<string> {
- const state = await readPoolState()
- const uid = availableUidOfState(state)
- if (uid) return uid
- const rateLimit = preferredRateLimitOfState(state)
- if (rateLimit) throw new WorkbuddyRateLimitError(rateLimit)
- throw new Error("WorkBuddy 号池里没有可用账号")
+/**
+ * 读出当前可转发的账号（uid + 登录态），跳过禁用、封禁、限频和**登录态已过期**的账号。
+ *
+ * 过期判断只能读盘确认：一个号过期时自动跳到池里下一个未过期账号，
+ * 所以界面上「设为转发」的账号过期后不会把整条转发链路卡死。
+ */
+export async function readActivePoolAccount(): Promise<ReadablePoolAccount<WorkbuddyAccount>> {
+  const state = await readPoolState()
+  const candidates = selectableUidsOfState(state)
+  if (candidates.length === 0) {
+    const rateLimit = preferredRateLimitOfState(state)
+    if (rateLimit) throw new WorkbuddyRateLimitError(rateLimit)
+    throw new Error("WorkBuddy 号池里没有可用账号")
+  }
+  return firstReadableAccount(candidates, readPoolAccount)
 }
 
 /**
@@ -221,7 +259,11 @@ export async function freezePoolAccount(
      ...(state.rateLimits ?? {}),
      [uid]: rateLimit,
    }
-   const nextUid = nextAvailableUidAfter(state, uid, now)
+   // 换号还要排除登录态过期的账号，否则会把出口切到另一个必然失败的号上。
+   const nextUid = await firstReadableUid(
+     selectableUidsAfterState(state, uid, now),
+     readPoolAccount,
+   )
    if (nextUid) state.activeUid = nextUid
    await writePoolState(state)
    return nextUid

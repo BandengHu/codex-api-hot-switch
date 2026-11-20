@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdir, rm } from "node:fs/promises"
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -62,6 +62,46 @@ function credential(uid: string, token: string) {
       expiresAt: Date.now() + 60 * 60 * 1000,
     },
   })
+}
+
+/** 已过期且没有 refreshToken 的登录态：解析器会直接判定「过期」，无法自动续期。 */
+function expiredCredential(uid: string, token: string) {
+  return JSON.stringify({
+    account: { uid, nickname: uid },
+    auth: {
+      accessToken: token,
+      refreshToken: "",
+      domain: "www.workbuddy.ai",
+      expiresAt: Date.now() - 60 * 60 * 1000,
+    },
+  })
+}
+
+/**
+ * 把过期凭据直接落进号池目录。
+ *
+ * 走不了 `importGlobalAccount`：它在导入阶段就会拒绝已过期的登录态。
+ * 真实的过期账号是「导入时有效、之后放到过期」，这里复现那种状态。
+ */
+async function seedExpiredGlobalAccount(uid: string, token: string) {
+  const dir = join(dataDir, "workbuddy-global-pool")
+  await mkdir(dir, { recursive: true })
+  await writeFile(join(dir, `${uid}.json`), expiredCredential(uid, token), "utf8")
+  const statePath = join(dir, "pool.json")
+  let state: { version: 1; entries: unknown[] } = { version: 1, entries: [] }
+  try {
+    state = JSON.parse(await readFile(statePath, "utf8")) as typeof state
+  } catch {
+    // 首次写入时没有 pool.json，直接用空状态。
+  }
+  state.entries.push({
+    uid,
+    nickname: uid,
+    domain: "www.workbuddy.ai",
+    filePath: join(dir, `${uid}.json`),
+    disabled: false,
+  })
+  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8")
 }
 
 function target(provider: Provider) {
@@ -452,5 +492,77 @@ test("WorkBuddy account failover", async (t) => {
     } finally {
       setProviderFetchForTesting(previousFetch)
     }
+  })
+
+  await t.test("an expired active account never becomes the outbound account", async () => {
+    await rm(join(dataDir, "workbuddy-global-pool"), {
+      recursive: true,
+      force: true,
+    })
+    const expiredUid = "expired-account"
+    const healthyUid = "healthy-account"
+    await seedExpiredGlobalAccount(expiredUid, "token-expired")
+    await importGlobalAccount(credential(healthyUid, `token-${healthyUid}`))
+    // 过期账号被设成转发出口，正是用户截图里「一直 502 不切换」的现场。
+    await setActiveGlobalPoolAccount(expiredUid)
+    const provider = workbuddyGlobalProviderTemplate()
+    // 与 pipeline 一致：注入凭据的这一步就要挑出真正可用的账号。
+    const prepared = {
+      provider,
+      target: await withWorkbuddyTargetCredentials(target(provider)),
+    }
+    const seen: string[] = []
+    const previousFetch = setProviderFetchForTesting(async (_input, init) => {
+      seen.push(accountHeaders(init).get("authorization") || "")
+      return new Response(SUCCESS_STREAM, {
+        headers: { "content-type": "text/event-stream" },
+      })
+    })
+
+    try {
+      const result = await fetchWithWorkbuddyAccountFailover({
+        target: prepared.target,
+        path: "v1/chat/completions",
+        body: {
+          model: "glm-5.3",
+          stream: true,
+          messages: [{ role: "user", content: "hello" }],
+        },
+        requestIsStream: true,
+        capacityRetryEnabled: false,
+      })
+
+      // 过期账号从头到尾不参与转发，打上游的只有健康账号。
+      const injected = prepared.target as typeof prepared.target & {
+        workbuddyAccount?: { uid: string; realm: string }
+      }
+      assert.deepEqual(injected.workbuddyAccount, {
+        uid: healthyUid,
+        realm: "global",
+      })
+      assert.deepEqual(seen, [`Bearer token-${healthyUid}`])
+      assert.deepEqual(result.target.workbuddyAccount, {
+        uid: healthyUid,
+        realm: "global",
+      })
+      assert.equal(await result.response.text(), SUCCESS_STREAM)
+    } finally {
+      setProviderFetchForTesting(previousFetch)
+    }
+  })
+
+  await t.test("readActiveGlobalUid skips an expired active account", async () => {
+    await rm(join(dataDir, "workbuddy-global-pool"), {
+      recursive: true,
+      force: true,
+    })
+    await seedExpiredGlobalAccount("active-expired", "token-active-expired")
+    await importGlobalAccount(credential("fallback-ok", "token-fallback-ok"))
+    await setActiveGlobalPoolAccount("active-expired")
+
+    const { readActiveGlobalUid } = await import(
+      "@/lib/server/workbuddy/global-pool-store"
+    )
+    assert.equal(await readActiveGlobalUid(), "fallback-ok")
   })
 })

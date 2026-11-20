@@ -19,10 +19,10 @@ import { getSystemProxyDispatcher } from "@/lib/server/proxy/system-proxy"
 import { fetchProvider } from "@/lib/server/proxy/provider-fetch"
 import type { WorkbuddyAccount } from "./account"
 import {
-  readActiveGlobalUid,
+  readActiveGlobalPoolAccount,
   readGlobalPoolAccount,
 } from "./global-pool-store"
-import { readActiveUid, readPoolAccount } from "./task-pool-store"
+import { readActivePoolAccount, readPoolAccount } from "./task-pool-store"
 
 const MAX_CATALOG_BYTES = 2 * 1024 * 1024
 const CATALOG_TIMEOUT_MS = 15_000
@@ -89,18 +89,27 @@ async function readWorkbuddyCredential(
   requestedUid?: string,
 ): Promise<WorkbuddyCredential> {
   const realm = workbuddyRealmOfProvider(provider)
+  const explicitUid = requestedUid?.trim()
   if (realm === "global") {
-    const uid = requestedUid?.trim() || await readActiveGlobalUid()
+    // 显式指定 uid 时认为调用方已经挑好账号（例如限频轮换），否则在这里挑出
+    // **真正读得出登录态**的那个，跳过已过期账号。
+    if (!explicitUid) {
+      const active = await readActiveGlobalPoolAccount()
+      return { account: active.account, uid: active.uid, realm }
+    }
     return {
-      account: await readGlobalPoolAccount(uid),
-      uid,
+      account: await readGlobalPoolAccount(explicitUid),
+      uid: explicitUid,
       realm,
     }
   }
-  const uid = requestedUid?.trim() || await readActiveUid()
+  if (!explicitUid) {
+    const active = await readActivePoolAccount()
+    return { account: active.account, uid: active.uid, realm }
+  }
   return {
-    account: await readPoolAccount(uid),
-    uid,
+    account: await readPoolAccount(explicitUid),
+    uid: explicitUid,
     realm,
   }
 }

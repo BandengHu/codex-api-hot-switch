@@ -44,33 +44,33 @@ export function accountBanOf(
   return state.accountBans?.[uid]
 }
 
-export function availableUidOf(
+/**
+ * 按池顺序列出候选账号：显式选中的账号排最前，其余按 entries 顺序。
+ *
+ * 这里只做纯状态过滤（禁用/封禁/限频）；凭据过期需要读盘才知道，
+ * 由调用方沿着这个顺序继续探测。
+ */
+export function selectableUidsOf(
   state: WorkbuddySelectableState,
   orderedEntries: WorkbuddySelectableEntry[],
   now = Date.now(),
 ) {
+  const isSelectable = (uid: string) =>
+    !accountBanOf(state, uid) && !activeRateLimitOf(state, uid, now)
+  const uids = orderedEntries
+    .filter((entry) => !entry.disabled && isSelectable(entry.uid))
+    .map((entry) => entry.uid)
   const activeUid = state.activeUid?.trim()
-  if (
-    activeUid &&
-    orderedEntries.some(
-      (entry) =>
-        entry.uid === activeUid &&
-        !entry.disabled &&
-        !accountBanOf(state, entry.uid) &&
-        !activeRateLimitOf(state, entry.uid, now),
-    )
-  ) {
-    return activeUid
-  }
-  return orderedEntries.find(
-    (entry) =>
-      !entry.disabled &&
-      !accountBanOf(state, entry.uid) &&
-      !activeRateLimitOf(state, entry.uid, now),
-  )?.uid
+  if (!activeUid || !uids.includes(activeUid)) return uids
+  return [activeUid, ...uids.filter((uid) => uid !== activeUid)]
 }
 
-export function nextAvailableUidOf(
+/**
+ * 当前账号不可用后，按池顺序列出「之后」的候选账号，末尾回绕。
+ *
+ * 回绕时会包含 afterUid 自己——全部其他账号都限频时，原账号仍是唯一可能可用的。
+ */
+export function selectableUidsAfter(
   state: WorkbuddySelectableState,
   orderedEntries: WorkbuddySelectableEntry[],
   afterUid: string,
@@ -81,11 +81,29 @@ export function nextAvailableUidOf(
   )
   const currentIndex = enabled.findIndex((entry) => entry.uid === afterUid)
   const start = currentIndex >= 0 ? currentIndex + 1 : 0
+  const uids: string[] = []
   for (let offset = 0; offset < enabled.length; offset += 1) {
     const entry = enabled[(start + offset) % enabled.length]
-    if (!activeRateLimitOf(state, entry.uid, now)) return entry.uid
+    if (!activeRateLimitOf(state, entry.uid, now)) uids.push(entry.uid)
   }
-  return undefined
+  return uids
+}
+
+export function availableUidOf(
+  state: WorkbuddySelectableState,
+  orderedEntries: WorkbuddySelectableEntry[],
+  now = Date.now(),
+) {
+  return selectableUidsOf(state, orderedEntries, now)[0]
+}
+
+export function nextAvailableUidOf(
+  state: WorkbuddySelectableState,
+  orderedEntries: WorkbuddySelectableEntry[],
+  afterUid: string,
+  now = Date.now(),
+) {
+  return selectableUidsAfter(state, orderedEntries, afterUid, now)[0]
 }
 
 export function preferredRateLimitOf(
