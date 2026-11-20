@@ -33,6 +33,10 @@ interface PoolEntryWithBalance {
  nickname: string
  source: "local" | "file"
  disabled: boolean
+ /** 是否参与聊天转发选号。 */
+ relayEnabled: boolean
+ /** 是否参与自动签到/每日任务。 */
+ automationEnabled: boolean
  accountBan?: WorkbuddyAccountBan
  rateLimit?: { message: string; resetAt: string }
   recoveredRateLimit?: { message: string; resetAt: string }
@@ -72,6 +76,8 @@ export async function GET(request: Request) {
  nickname: entry.nickname,
  source: entry.source,
  disabled: entry.disabled,
+ relayEnabled: entry.relayEnabled !== false,
+ automationEnabled: entry.automationEnabled !== false,
  }
  const rateLimit = activeRateLimitOf(poolState, entry.uid)
  const previousRateLimit = poolState.rateLimits?.[entry.uid]

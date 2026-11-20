@@ -16,6 +16,10 @@ export interface WorkbuddyPoolEntryView {
   nickname: string
   source: "local" | "file"
   disabled: boolean
+  /** 是否参与聊天转发选号；undefined 视为启用。 */
+  relayEnabled?: boolean
+  /** 是否参与自动签到/每日任务；undefined 视为启用。 */
+  automationEnabled?: boolean
   /** 上游明确返回 11140 后的持久封禁；不会自动过期。 */
   accountBan?: WorkbuddyAccountBanView
   /** 仍在重置时间之前的账号级限频。 */

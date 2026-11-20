@@ -69,6 +69,21 @@ export async function poolAccountAction(
  )
 }
 
+/** 单独切换某个账号的转发 / 自动化开关（不影响总开关 disabled）。 */
+export async function poolAccountToggle(
+  uid: string,
+  toggle: "relay" | "automation",
+  enabled: boolean,
+): Promise<{ ok: boolean }> {
+  return parseResponse(
+    await fetch(`/api/workbuddy-pool/${encodeURIComponent(uid)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: toggle, enabled }),
+    }),
+  )
+}
+
 export async function poolTaskAction(
 uid: string,
 action: "claim" | "automate",

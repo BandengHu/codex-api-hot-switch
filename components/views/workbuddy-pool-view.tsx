@@ -6,10 +6,12 @@ import {
  CheckCircle2,
  CircleSlash,
  ExternalLink,
+  GitBranch,
  Power,
  Plus,
  RefreshCw,
   ShieldOff,
+  CalendarCheck,
  Sun,
  Trash2,
  Users,
@@ -58,6 +60,7 @@ import {
  fetchTaskActions,
  importPoolAccount,
  poolAccountAction,
+poolAccountToggle,
  poolAutomateAll,
  poolDailyRewards,
  poolTaskAction,
@@ -218,6 +221,32 @@ export function WorkbuddyPoolView() {
  } finally {
  setBusy(null)
  }
+ }
+
+ /** 切换单独的转发 / 自动化开关；不动总开关。 */
+ async function handleToggle(
+   uid: string,
+   toggle: "relay" | "automation",
+   enabled: boolean,
+ ) {
+   setBusy({ uid, action: toggle })
+   try {
+     await poolAccountToggle(uid, toggle, enabled)
+     toast.success(
+       toggle === "relay"
+         ? enabled
+           ? "已允许该账号转发"
+           : "已停止该账号转发（仍可领积分）"
+         : enabled
+           ? "已允许该账号自动签到"
+           : "已停止该账号自动签到（仍可转发）",
+     )
+     await refresh()
+   } catch (error) {
+     toast.error(error instanceof Error ? error.message : String(error))
+   } finally {
+     setBusy(null)
+   }
  }
 
  async function handleTaskAction(
@@ -540,6 +569,32 @@ export function WorkbuddyPoolView() {
   {entry.disabled ? "启用" : "禁用"}
   </Button>
   )}
+ {!entry.disabled && entry.source !== "local" ? (
+   <>
+     <Button
+       variant="ghost"
+       size="sm"
+       title="允许该账号承接转发；关闭后它只领积分，不占转发出口"
+       onClick={() => void handleToggle(entry.uid, "relay", !entry.relayEnabled)}
+       disabled={busy !== null}
+     >
+       <GitBranch className="size-4" />
+       {entry.relayEnabled ? "转发中" : "不转发"}
+     </Button>
+     <Button
+       variant="ghost"
+       size="sm"
+       title="允许该账号自动签到；关闭后它只转发，不跑每日任务"
+       onClick={() =>
+         void handleToggle(entry.uid, "automation", !entry.automationEnabled)
+       }
+       disabled={busy !== null}
+     >
+       <CalendarCheck className="size-4" />
+       {entry.automationEnabled ? "自动签到" : "不签到"}
+     </Button>
+   </>
+ ) : null}
  <Button
  variant="ghost"
  size="sm"

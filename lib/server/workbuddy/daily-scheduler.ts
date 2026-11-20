@@ -19,6 +19,7 @@ import { runNightOwl, type NightOwlResult } from "./night-owl"
 import { isNightWindow, nightOwlShouldRun } from "./workbuddy-time"
 import { sleep } from "./task-query"
 import { tryLockTaskAccount, unlockTaskAccount } from "./task-lock"
+import { automationAllowed } from "./pool-selection"
 import {
   listPoolEntries,
   localWorkbuddyPoolEnabled,
@@ -206,7 +207,7 @@ export function pickAccountsNeedingRun(
   bannedUids: ReadonlySet<string> = new Set(),
 ) {
   return entries.filter((entry) => {
-    if (entry.disabled) return false
+    if (!automationAllowed(entry)) return false
     if (bannedUids.has(entry.uid)) return false
     if (state.lastRunByUid[entry.uid] !== today) return true
     const retryAt = Date.parse(state.nextRetryAtByUid?.[entry.uid] ?? "")
@@ -385,7 +386,7 @@ export async function maybeRunNightOwlForAllAccounts(
   const bannedUids = new Set(Object.keys((await readPoolState()).accountBans ?? {}))
   result.checked = entries.length
   for (const entry of entries) {
-    if (entry.disabled || bannedUids.has(entry.uid)) continue
+    if (!automationAllowed(entry) || bannedUids.has(entry.uid)) continue
     const state = await readDailyScheduleState()
     if (!nightOwlShouldRun(now, state.nightOwlByUid?.[entry.uid])) continue
     if (!tryLockTaskAccount(entry.uid)) {

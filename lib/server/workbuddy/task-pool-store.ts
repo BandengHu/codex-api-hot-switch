@@ -51,8 +51,17 @@ export interface WorkbuddyPoolEntry {
   * 存下来的绝对路径会立刻失效，签到会以 ENOENT 静默失败一整天。
   */
  fileName?: string
- /** 是否已禁用（禁用后不参与自动化和轮转）。 */
+ /** 总开关：禁用后既不参与转发，也不参与自动化。 */
  disabled: boolean
+ /**
+  * 单独的转发开关。undefined = 启用；`false` = 只领积分、不占转发出口。
+  *
+  * 与 `disabled` 并存而不是取代它：总开关用来"整个停用"，这两个细开关
+  * 用来表达"转发和自动化只做其一"。缺省一律视为启用，老数据不用迁移。
+  */
+ relayEnabled?: boolean
+ /** 单独的自动化开关。undefined = 启用；`false` = 只转发、不自动签到。 */
+ automationEnabled?: boolean
 }
 
 export interface WorkbuddyPoolState {
@@ -403,6 +412,35 @@ export async function setPoolAccountDisabled(uid: string, disabled: boolean) {
  // 禁用的账号不能继续当转发出口：清掉激活标记，自动回落本机账号。
  if (disabled && state.activeUid === uid) delete state.activeUid
  await writePoolState(state)
+}
+
+/**
+ * 单独设置转发 / 自动化开关。
+ *
+ * 两个字段都是"缺省即启用"，所以只在关闭时写 `false`、开启时删掉字段，
+ * 让 pool.json 保持干净、也能和老版本互相读懂。
+ */
+export async function setPoolAccountToggles(
+  uid: string,
+  toggles: { relayEnabled?: boolean; automationEnabled?: boolean },
+) {
+  const state = await readPoolState()
+  const entry = state.entries.find((candidate) => candidate.uid === uid)
+  if (!entry) throw new Error(`号池里没有 uid=${uid} 的账号`)
+
+  if (toggles.relayEnabled !== undefined) {
+    if (toggles.relayEnabled) delete entry.relayEnabled
+    else entry.relayEnabled = false
+  }
+  if (toggles.automationEnabled !== undefined) {
+    if (toggles.automationEnabled) delete entry.automationEnabled
+    else entry.automationEnabled = false
+  }
+
+  // 关掉转发后它不能再当出口，激活标记要清掉，由调用方回落到下一个可用账号。
+  if (entry.relayEnabled === false && state.activeUid === uid) delete state.activeUid
+
+  await writePoolState(state)
 }
 
 /**读取某个账号的登录态（local →桌面端文件；file → 号池目录）。 */

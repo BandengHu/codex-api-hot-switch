@@ -10,6 +10,10 @@ export interface WorkbuddyAccountRateLimit {
 export interface WorkbuddySelectableEntry {
   uid: string
   disabled: boolean
+  /** 是否参与聊天转发出站选号；undefined 视为启用。 */
+  relayEnabled?: boolean
+  /** 是否参与自动签到/每日任务；undefined 视为启用。 */
+  automationEnabled?: boolean
 }
 
 export interface WorkbuddySelectableState {
@@ -45,6 +49,21 @@ export function accountBanOf(
 }
 
 /**
+ * 两个账号级开关的判定。
+ *
+ * `disabled` 仍是总开关：关掉就既不转发也不自动化。在这之上再拆两个
+ * 独立维度，这样"只用它转发、不让它跑任务"或"只领积分、不占转发出口"
+ * 都能表达。字段缺失一律视为启用，老数据无需迁移。
+ */
+export function relayAllowed(entry: WorkbuddySelectableEntry) {
+  return !entry.disabled && entry.relayEnabled !== false
+}
+
+export function automationAllowed(entry: WorkbuddySelectableEntry) {
+  return !entry.disabled && entry.automationEnabled !== false
+}
+
+/**
  * 按池顺序列出候选账号：显式选中的账号排最前，其余按 entries 顺序。
  *
  * 这里只做纯状态过滤（禁用/封禁/限频）；凭据过期需要读盘才知道，
@@ -58,7 +77,7 @@ export function selectableUidsOf(
   const isSelectable = (uid: string) =>
     !accountBanOf(state, uid) && !activeRateLimitOf(state, uid, now)
   const uids = orderedEntries
-    .filter((entry) => !entry.disabled && isSelectable(entry.uid))
+    .filter((entry) => relayAllowed(entry) && isSelectable(entry.uid))
     .map((entry) => entry.uid)
   const activeUid = state.activeUid?.trim()
   if (!activeUid || !uids.includes(activeUid)) return uids
@@ -77,7 +96,7 @@ export function selectableUidsAfter(
   now = Date.now(),
 ) {
   const enabled = orderedEntries.filter(
-    (entry) => !entry.disabled && !accountBanOf(state, entry.uid),
+    (entry) => relayAllowed(entry) && !accountBanOf(state, entry.uid),
   )
   const currentIndex = enabled.findIndex((entry) => entry.uid === afterUid)
   const start = currentIndex >= 0 ? currentIndex + 1 : 0
