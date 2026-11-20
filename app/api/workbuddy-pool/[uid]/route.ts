@@ -5,6 +5,7 @@ import {
  readPoolAccount,
  removePoolAccount,
  setPoolAccountDisabled,
+ setPoolAccountToggles,
  unbanPoolAccount,
 } from "@/lib/server/workbuddy/task-pool-store"
 import { claimGrowthReward, listAllGrowthTasks } from "@/lib/server/workbuddy/task-api"
@@ -45,13 +46,27 @@ export async function POST(request: Request, context: RouteContext) {
   const result = await runAuthorized(request, async () => {
     const { uid } = await context.params
     try {
- const body = await readJsonBody<{ action?: string; taskCode?: string }>(request)
+ const body = await readJsonBody<{
+   action?: string
+   taskCode?: string
+   enabled?: boolean
+ }>(request)
  const action = body.action?.trim()
  if (!action) return jsonError("缺少 action",400)
 
  if (action === "disable" || action === "enable") {
  await setPoolAccountDisabled(uid, action === "disable")
  return NextResponse.json({ ok: true })
+ }
+ // 两个细开关：只调转发或只调自动化，不动总开关 disabled。
+ if (action === "relay" || action === "automation") {
+   await setPoolAccountToggles(
+     uid,
+     action === "relay"
+       ? { relayEnabled: body.enabled === true }
+       : { automationEnabled: body.enabled === true },
+   )
+   return NextResponse.json({ ok: true })
  }
  if (action === "unban") {
    await unbanPoolAccount(uid)
