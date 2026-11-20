@@ -8,6 +8,8 @@ import {
   nextAvailableUidOf,
   preferredRateLimitOf,
   pruneExpiredRateLimits,
+  selectableUidsAfter,
+  selectableUidsOf,
   type WorkbuddySelectableState,
 } from "./pool-selection"
 
@@ -81,4 +83,37 @@ test("selection skips persistently banned accounts and never expires the ban", (
   assert.equal(availableUidOf(value, value.entries, NOW), "b")
   assert.equal(nextAvailableUidOf(value, value.entries, "a", NOW), "b")
   assert.equal(nextAvailableUidOf(value, value.entries, "c", NOW), "b")
+})
+
+test("selectable order keeps the explicit active account first", () => {
+  const value = state("c")
+  assert.deepEqual(selectableUidsOf(value, value.entries, NOW), [
+    "c",
+    "a",
+    "b",
+  ])
+})
+
+test("selectable order drops disabled, banned and limited accounts", () => {
+  const value = {
+    ...state("a", { a: ACTIVE_LIMIT }),
+    accountBans: {
+      b: {
+        code: 11140,
+        message: "账号存在异常行为，已被限制使用",
+        detectedAt: "2026-10-29T07:00:00.000Z",
+      },
+    },
+  } satisfies WorkbuddySelectableState
+  assert.deepEqual(selectableUidsOf(value, value.entries, NOW), ["c"])
+  assert.deepEqual(selectableUidsAfter(value, value.entries, "c", NOW), ["c"])
+})
+
+test("selectable order after an account wraps around the pool", () => {
+  const value = state(undefined)
+  assert.deepEqual(selectableUidsAfter(value, value.entries, "c", NOW), [
+    "a",
+    "b",
+    "c",
+  ])
 })

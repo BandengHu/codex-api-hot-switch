@@ -15,7 +15,10 @@ import { resolveWorkbuddyAtRestKey } from "./at-rest-key"
  * 读 WorkBuddy 桌面端写在本机的登录态。
  *
  * 这里不做缓存：文件 5KB 左右，每次请求读一次能保证换号/续期后立刻生效。
- * 过期不做刷新——上游没有给刷新接口，桌面端自己也是重新登录，所以直接报错让用户去登录。
+ *
+ * 过期不在这里刷新：这个函数只解析给定文本。号池账号的续期在
+ * `readPoolAccount` 里做（`cn-token-renewal.ts`），因为续期需要把新 token
+ * 回写到号池文件。本机桌面端凭据仍由桌面端自己维护。
  *
  * 5.6.2 起桌面端把 token 等敏感字段换成了 `$wbEncrypted` 静态钥信封，读到信封时
  * 由 at-rest 模块解出明文；解密钥的来源与缓存见 `at-rest-key.ts`。
@@ -29,12 +32,29 @@ export interface WorkbuddyAccount {
   uid: string
   nickname: string
   uin: string
+  /** 上次刷新登录态的时间戳（ms）；0 表示凭据里没记录。 */
+  lastRefreshTime?: number
 }
 
 export class WorkbuddyAccountError extends Error {
   constructor(message: string) {
     super(message)
     this.name = "WorkbuddyAccountError"
+  }
+}
+
+/**
+ * 登录态已过期。单独成类是因为它**可以换号**：
+ * 号池里换一个未过期账号就能继续服务；凭据损坏、解不开这类错误换号也没用。
+ */
+export class WorkbuddyCredentialExpiredError extends WorkbuddyAccountError {
+  /** 账号登录态的过期时间戳（ms）。 */
+  readonly expiresAt: number
+
+  constructor(message: string, expiresAt: number) {
+    super(message)
+    this.name = "WorkbuddyCredentialExpiredError"
+    this.expiresAt = expiresAt
   }
 }
 
@@ -70,7 +90,21 @@ export async function readWorkbuddyAccount(): Promise<WorkbuddyAccount> {
   return parseWorkbuddyAccount(raw, path)
 }
 
-export async function parseWorkbuddyAccount(raw: string, path: string): Promise<WorkbuddyAccount> {
+export interface ParseWorkbuddyAccountOptions {
+  /**
+   * 允许返回**已过期**的登录态（由调用方负责续期）。
+   *
+   * 续期链路需要先拿到 refreshToken 才能刷新；如果这里直接因过期抛错，
+   * 就永远没有机会救回来。默认仍是严格模式，避免过期凭据被误用。
+   */
+  allowExpired?: boolean
+}
+
+export async function parseWorkbuddyAccount(
+  raw: string,
+  path: string,
+  options: ParseWorkbuddyAccountOptions = {},
+): Promise<WorkbuddyAccount> {
   let payload: unknown
   try {
     payload = JSON.parse(raw)
@@ -123,9 +157,10 @@ export async function parseWorkbuddyAccount(raw: string, path: string): Promise<
     )
   }
   const expiresAt = asNumber(auth.expiresAt)
-  if (expiresAt > 0 && expiresAt <= Date.now()) {
-    throw new WorkbuddyAccountError(
+  if (!options.allowExpired && expiresAt > 0 && expiresAt <= Date.now()) {
+    throw new WorkbuddyCredentialExpiredError(
       `WorkBuddy 登录态已过期（${formatTime(expiresAt)}），请在 WorkBuddy 桌面端重新登录后再试。`,
+      expiresAt,
     )
   }
   return {
@@ -136,6 +171,7 @@ export async function parseWorkbuddyAccount(raw: string, path: string): Promise<
     uid: asString(account.uid),
     nickname: await decodeOptional(account.nickname),
     uin: asString(account.uin),
+    lastRefreshTime: asNumber(auth.lastRefreshTime),
   }
 }
 

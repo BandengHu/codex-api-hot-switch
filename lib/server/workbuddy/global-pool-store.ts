@@ -10,11 +10,17 @@ import { isSafeGlobalUid } from "./global-oauth"
 import {
   accountBanOf,
   availableUidOf,
-  nextAvailableUidOf,
   preferredRateLimitOf,
   pruneExpiredRateLimits,
+  selectableUidsAfter,
+  selectableUidsOf,
   type WorkbuddyAccountRateLimit,
 } from "./pool-selection"
+import {
+  firstReadableAccount,
+  firstReadableUid,
+  type ReadablePoolAccount,
+} from "./pool-probe"
 import { WorkbuddyRateLimitError } from "./rate-limit"
 
 /**
@@ -151,12 +157,13 @@ export function activeGlobalUidOf(
   throw new Error("国际版号池里没有可用账号，请先在「WorkBuddy 国际版号池」里授权登录或导入账号")
 }
 
-export function nextAvailableGlobalUidAfter(
-  state: GlobalPoolState,
-  uid: string,
-  now = Date.now(),
-) {
-  return nextAvailableUidOf(state, state.entries, uid, now)
+/** `uid` 之后第一个**能读出未过期登录态**的国际版账号。 */
+export async function nextReadableGlobalUidAfter(uid: string) {
+  const state = await readGlobalPoolState()
+  return firstReadableUid(
+    selectableUidsAfter(state, state.entries, uid),
+    readGlobalPoolAccount,
+  )
 }
 
 export function preferredRateLimitOfGlobalState(
@@ -166,9 +173,25 @@ export function preferredRateLimitOfGlobalState(
   return preferredRateLimitOf(state, state.entries, now)
 }
 
+/**
+ * 读出当前可转发的国际版账号（uid + 登录态）。
+ *
+ * 登录态过期只能读盘确认，所以这里按候选顺序逐个读，跳过读不出来的账号。
+ * 国际站的 refreshToken 能自动续期，读成功即代表这个号现在可用。
+ */
+export async function readActiveGlobalPoolAccount(): Promise<ReadablePoolAccount<WorkbuddyAccount>> {
+  const state = await readGlobalPoolState()
+  const candidates = selectableUidsOf(state, state.entries)
+  if (candidates.length === 0) {
+    // 复用 activeGlobalUidOf 的报错口径：限频就抛 429，否则抛「没有可用账号」。
+    activeGlobalUidOf(state)
+  }
+  return firstReadableAccount(candidates, readGlobalPoolAccount)
+}
+
 /** 读取当前生效的国际版账号 uid。 */
 export async function readActiveGlobalUid(): Promise<string> {
-  return activeGlobalUidOf(await readGlobalPoolState())
+  return (await readActiveGlobalPoolAccount()).uid
 }
 
 /**
@@ -195,16 +218,6 @@ export async function setActiveGlobalPoolAccount(uid: string) {
 }
 
 /**
- * 读取当前生效账号的登录态。
- *
- * 这是国际站转发链路的凭据入口：`withWorkbuddyCredentials` 在 realm 为 `global`
- * 时走这里，等价于国内站的 `readActivePoolAccount`。
- */
-export async function readActiveGlobalPoolAccount(): Promise<WorkbuddyAccount> {
-  return readGlobalPoolAccount(await readActiveGlobalUid())
-}
-
-/**
  * 冻结上游刚返回限频的国际版账号，并立即切到下一个可用账号。
  * 没有下一个可用账号时保留原选择，返回 undefined。
  */
@@ -220,7 +233,11 @@ export async function freezeGlobalPoolAccount(
       ...(state.rateLimits ?? {}),
       [uid]: rateLimit,
     }
-    const nextUid = nextAvailableGlobalUidAfter(state, uid, now)
+    // 换号还要排除登录态过期的账号，否则会把出口切到另一个必然失败的号上。
+    const nextUid = await firstReadableUid(
+      selectableUidsAfter(state, state.entries, uid, now),
+      readGlobalPoolAccount,
+    )
     if (nextUid) state.activeUid = nextUid
     await writeGlobalPoolState(state)
     return nextUid
