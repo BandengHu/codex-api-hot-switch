@@ -15,7 +15,10 @@ import { resolveWorkbuddyAtRestKey } from "./at-rest-key"
  * 读 WorkBuddy 桌面端写在本机的登录态。
  *
  * 这里不做缓存：文件 5KB 左右，每次请求读一次能保证换号/续期后立刻生效。
- * 过期不做刷新——上游没有给刷新接口，桌面端自己也是重新登录，所以直接报错让用户去登录。
+ *
+ * 过期不在这里刷新：这个函数只解析给定文本。号池账号的续期在
+ * `readPoolAccount` 里做（`cn-token-renewal.ts`），因为续期需要把新 token
+ * 回写到号池文件。本机桌面端凭据仍由桌面端自己维护。
  *
  * 5.6.2 起桌面端把 token 等敏感字段换成了 `$wbEncrypted` 静态钥信封，读到信封时
  * 由 at-rest 模块解出明文；解密钥的来源与缓存见 `at-rest-key.ts`。
@@ -85,7 +88,21 @@ export async function readWorkbuddyAccount(): Promise<WorkbuddyAccount> {
   return parseWorkbuddyAccount(raw, path)
 }
 
-export async function parseWorkbuddyAccount(raw: string, path: string): Promise<WorkbuddyAccount> {
+export interface ParseWorkbuddyAccountOptions {
+  /**
+   * 允许返回**已过期**的登录态（由调用方负责续期）。
+   *
+   * 续期链路需要先拿到 refreshToken 才能刷新；如果这里直接因过期抛错，
+   * 就永远没有机会救回来。默认仍是严格模式，避免过期凭据被误用。
+   */
+  allowExpired?: boolean
+}
+
+export async function parseWorkbuddyAccount(
+  raw: string,
+  path: string,
+  options: ParseWorkbuddyAccountOptions = {},
+): Promise<WorkbuddyAccount> {
   let payload: unknown
   try {
     payload = JSON.parse(raw)
@@ -138,7 +155,7 @@ export async function parseWorkbuddyAccount(raw: string, path: string): Promise<
     )
   }
   const expiresAt = asNumber(auth.expiresAt)
-  if (expiresAt > 0 && expiresAt <= Date.now()) {
+  if (!options.allowExpired && expiresAt > 0 && expiresAt <= Date.now()) {
     throw new WorkbuddyCredentialExpiredError(
       `WorkBuddy 登录态已过期（${formatTime(expiresAt)}），请在 WorkBuddy 桌面端重新登录后再试。`,
       expiresAt,

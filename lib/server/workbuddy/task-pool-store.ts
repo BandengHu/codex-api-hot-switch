@@ -3,7 +3,13 @@ import "server-only"
 import { mkdir, readFile, rename, readdir, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { hotSwitchDataDir } from "@/lib/server/state-store"
-import { parseWorkbuddyAccount, type WorkbuddyAccount } from "./account"
+import {
+  parseWorkbuddyAccount,
+  WorkbuddyCredentialExpiredError,
+  type WorkbuddyAccount,
+} from "./account"
+import { renewCnPoolAccount, shouldRenewCnAccount } from "./cn-token-renewal"
+import { WorkbuddyCnRefreshError } from "./cn-oauth"
 import type { WorkbuddyAccountBan } from "./account-ban"
 import {
   accountBanOf,
@@ -418,7 +424,32 @@ export async function readPoolAccount(uid: string): Promise<WorkbuddyAccount> {
  const filePath = accountFilePath(uid)
  const { readFile: readFileFn } = await import("node:fs/promises")
  const raw = await readFileFn(filePath, "utf8")
- return parseWorkbuddyAccount(raw, filePath)
+
+ let account: WorkbuddyAccount
+ try {
+   account = await parseWorkbuddyAccount(raw, filePath)
+ } catch (error) {
+   if (!(error instanceof WorkbuddyCredentialExpiredError)) throw error
+   // 已过期：先尝试用 refreshToken 续期，续不上再把「过期」这个真实原因抛回去。
+   const expired = await parseWorkbuddyAccount(raw, filePath, { allowExpired: true })
+   try {
+     return await renewCnPoolAccount({ uid, filePath, raw, account: expired })
+   } catch (renewError) {
+     // refreshToken 被上游判死时，能做的只有回桌面端重新登录——把这个结论直说，
+     // 不要把内部错误码当成最终文案抛给调用方。
+     if (
+       renewError instanceof WorkbuddyCnRefreshError &&
+       renewError.deadToken
+     ) {
+       throw error
+     }
+     throw renewError
+   }
+ }
+
+ if (!shouldRenewCnAccount(account)) return account
+ // 临期续期失败不阻断转发：现有 token 还没过期，继续用它。
+ return renewCnPoolAccount({ uid, filePath, raw, account }).catch(() => account)
 }
 
 /**扫号池目录下还没登记进 pool.json 的凭据文件（手工拷贝进来的场景）。 */
