@@ -8,15 +8,13 @@ import { formatShanghaiDay } from "./workbuddy-time"
  * 国内站凭据续期：用 refreshToken 换新 token，并把结果原子回写。
  *
  * 调度口径是**每个自然日（Asia/Shanghai）续一次**，不看剩余寿命：
- * refreshToken 是一次性的，每刷一次就换一把新的，频繁刷新只是白白消耗轮换链
- * （中途任何一步丢写都会让账号彻底报废），而 token 本身有 28 天寿命，
- * 每天续一次既留足余量，也把轮换次数压到最低。
+ * token 本身有 28 天寿命，每天续一次留足余量，也避免无谓地反复打上游。
  *
- * 为什么必须回写：上游刷新时会**轮换 refreshToken**，新值不落盘，旧的立刻失效，
- * 下次刷新就救不回来了。
+ * 实测要点（2026-11-20）：refreshToken **不是一次性的**，同一个 token 连续刷两次
+ * 都会成功，刷新后返回的新 token 也不是排他的。所以回写是为了让本地始终握在
+ * 最新一条链上，而不是「不写回就报废」。
  *
- * 并发控制：同一 uid 的刷新在进程内串行，避免两个请求同时刷新导致
- * 第二个拿着已被轮换掉的 refreshToken 去换。
+ * 并发控制：同一 uid 的刷新在进程内串行，避免两个请求同时打出两份新 token。
  */
 
 const refreshing = new Map<string, Promise<WorkbuddyAccount>>()

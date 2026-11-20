@@ -14,7 +14,9 @@ import { getSystemProxyDispatcher } from "@/lib/server/proxy/system-proxy"
  *
  * 几个容易踩的坑，都是实测结论：
  * - refreshToken 走 **header** 而不是 body：放 body 里上游返回 `10001: refreshToken is empty`；
- * - 响应会**轮换 refreshToken**，新值必须立刻落盘，否则旧值下一次就失效；
+ * - 响应会返回**新的** refreshToken，但它**不是一次性的**：同一个 refreshToken
+ *   连续刷两次都会成功（2026-11-20 实测），所以两台机器各持一份也不会互踢。
+ *   仍然建议把新值落盘，这样账号始终握在最新一条链上；
  * - `expiresIn` 固定 2419200 秒（28 天）；
  * - 已失效的 refreshToken 返回 `invalid_grant: Token is not active`，这种无法挽救，
  *   只能回桌面端重新登录，所以要和「网络抖动」区分开（见 `isRefreshTokenDead`）。

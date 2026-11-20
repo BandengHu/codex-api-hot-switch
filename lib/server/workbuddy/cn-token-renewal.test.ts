@@ -105,6 +105,42 @@ test("WorkbuddyCnRefreshError 携带 deadToken 标记", () => {
   assert.equal(transient.deadToken, false)
 })
 
+test("同一个 refreshToken 可以重复刷新，两台机器各持一份不会互踢", async () => {
+  const { refreshCnTokens } = await import("./cn-oauth")
+  const { setProviderFetchForTesting } = await import(
+    "@/lib/server/proxy/provider-fetch"
+  )
+  const seen: string[] = []
+  let round = 0
+  const previous = setProviderFetchForTesting(async (_input, init) => {
+    const headers = new Headers(init?.headers)
+    seen.push(headers.get("x-refresh-token") || "")
+    round += 1
+    return Response.json({
+      code: 0,
+      msg: "OK",
+      data: {
+        accessToken: `at-${round}`,
+        refreshToken: `rt-${round}`,
+        expiresIn: 2419200,
+        domain: "www.codebuddy.cn",
+      },
+    })
+  })
+  try {
+    // 2026-11-20 实测：同一个 refreshToken 连续刷两次都返回 200。
+    // 这条测试锁定该事实——代码不能假设它一次性、更不能靠“不共用”来防冲突。
+    const first = await refreshCnTokens("shared-rt")
+    const second = await refreshCnTokens("shared-rt")
+    assert.equal(first.accessToken, "at-1")
+    assert.equal(second.accessToken, "at-2")
+    // 两次发给上游的是同一个 token，说明本地可以先于服务器刷新而不会顶掉对方。
+    assert.deepEqual(seen, ["shared-rt", "shared-rt"])
+  } finally {
+    setProviderFetchForTesting(previous)
+  }
+})
+
 test("allowExpired 能解析过期凭据，严格模式仍抛过期错误", async () => {
   const dir = join(tmpdir(), `switchgate-cn-renewal-${process.pid}-${Date.now()}`)
   await mkdir(dir, { recursive: true })
@@ -131,7 +167,7 @@ test("allowExpired 能解析过期凭据，严格模式仍抛过期错误", asyn
   }
 })
 
-test("refreshCnTokens 用 x-refresh-token 头刷新，并返回轮换后的新 token", async () => {
+test("refreshCnTokens 用 x-refresh-token 头刷新，并返回上游下发的新 token", async () => {
   const { refreshCnTokens } = await import("./cn-oauth")
   const { setProviderFetchForTesting } = await import(
     "@/lib/server/proxy/provider-fetch"
@@ -247,7 +283,7 @@ test("renewCnPoolAccount 刷新后把新 token 原子写回凭据文件", async 
     assert.equal(renewed.refreshToken, "new-refresh")
     assert.ok(renewed.expiresAt > before + 27 * 24 * HOUR)
 
-    // 落盘必须换新：refreshToken 被上游轮换，旧值下次就失效
+    // 落盘要换新：让本地始终握在上游最新下发的那一条链上
     const saved = JSON.parse(await readFile(filePath, "utf8")) as {
       account: Record<string, unknown>
       auth: Record<string, unknown>
