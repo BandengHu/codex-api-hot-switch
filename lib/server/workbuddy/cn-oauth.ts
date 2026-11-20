@@ -23,9 +23,6 @@ import { getSystemProxyDispatcher } from "@/lib/server/proxy/system-proxy"
 export const CN_REFRESH_ORIGIN = "https://copilot.tencent.com"
 export const CN_REFRESH_PATH = "/v2/plugin/auth/token/refresh"
 
-/** 距过期不足这个窗口就先续期，避免请求打到一半失效。 */
-export const CN_ACCOUNT_REFRESH_WINDOW_MS = 24 * 60 * 60 * 1000
-
 const REFRESH_TIMEOUT_MS = 20_000
 const CLI_UA = "WorkBuddy/5.6.2 WorkBuddy/5.6.2 CLI/1.0"
 

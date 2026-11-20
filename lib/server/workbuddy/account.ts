@@ -32,6 +32,8 @@ export interface WorkbuddyAccount {
   uid: string
   nickname: string
   uin: string
+  /** 上次刷新登录态的时间戳（ms）；0 表示凭据里没记录。 */
+  lastRefreshTime?: number
 }
 
 export class WorkbuddyAccountError extends Error {
@@ -169,6 +171,7 @@ export async function parseWorkbuddyAccount(
     uid: asString(account.uid),
     nickname: await decodeOptional(account.nickname),
     uin: asString(account.uin),
+    lastRefreshTime: asNumber(auth.lastRefreshTime),
   }
 }
 

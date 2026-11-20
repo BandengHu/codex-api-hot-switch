@@ -6,14 +6,87 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 
-import {
-  CN_ACCOUNT_REFRESH_WINDOW_MS,
-  isRefreshTokenDead,
-  WorkbuddyCnRefreshError,
-} from "./cn-oauth"
+import { isRefreshTokenDead, WorkbuddyCnRefreshError } from "./cn-oauth"
+import { formatShanghaiDay } from "./workbuddy-time"
 import { parseWorkbuddyAccount } from "./account"
 
 const HOUR = 60 * 60 * 1000
+const DAY = 24 * HOUR
+
+/** 上海时区某天的 10:00（UTC+8），用作“当天”的稳定锚点。 */
+function shanghaiNoon(dayOffset = 0) {
+  const base = Date.UTC(2026, 10, 20, 2, 0, 0) // 2026-11-20 10:00 CST
+  return base + dayOffset * DAY
+}
+
+function renewInputBase(expiresAt: number, lastRefreshTime?: number) {
+  return {
+    uid: "uid-daily",
+    refreshToken: "rt",
+    expiresAt,
+    ...(lastRefreshTime === undefined ? {} : { lastRefreshTime }),
+  }
+}
+
+test("每天续期一次：当天没续过就续，不看剩余寿命", async () => {
+  const { shouldRenewCnAccount, resetRenewalStateForTesting } = await import(
+    "./cn-token-renewal"
+  )
+  resetRenewalStateForTesting()
+  const now = shanghaiNoon()
+  // 还剩 20 天也照续——口径是“每天一次”，不是“临期才续”。
+  assert.equal(shouldRenewCnAccount(renewInputBase(now + 20 * DAY), now), true)
+  // 已过期更要续。
+  assert.equal(shouldRenewCnAccount(renewInputBase(now - HOUR), now), true)
+})
+
+test("当天已续过（凭据文件 lastRefreshTime）就不再续，跨天恢复", async () => {
+  const { shouldRenewCnAccount, resetRenewalStateForTesting } = await import(
+    "./cn-token-renewal"
+  )
+  resetRenewalStateForTesting()
+  const now = shanghaiNoon()
+  const sameDay = renewInputBase(now + 28 * DAY, now - 2 * HOUR)
+  assert.equal(shouldRenewCnAccount(sameDay, now), false)
+  assert.equal(formatShanghaiDay(new Date(sameDay.lastRefreshTime!)), formatShanghaiDay(new Date(now)))
+  // 第二天同一时刻应恢复续期。
+  assert.equal(shouldRenewCnAccount(sameDay, now + DAY), true)
+})
+
+test("续期成功后当天不再重复，失败在冷却窗口内不重试、过窗口可重试", async () => {
+  const {
+    markRenewAttempt,
+    shouldRenewCnAccount,
+    resetRenewalStateForTesting,
+  } = await import("./cn-token-renewal")
+  resetRenewalStateForTesting()
+  const now = shanghaiNoon()
+  const input = renewInputBase(now + 27 * DAY)
+
+  markRenewAttempt(input.uid, true, now)
+  assert.equal(shouldRenewCnAccount(input, now + HOUR), false)
+
+  resetRenewalStateForTesting()
+  markRenewAttempt(input.uid, false, now)
+  assert.equal(shouldRenewCnAccount(input, now + 60 * 1000), false)
+  assert.equal(shouldRenewCnAccount(input, now + 11 * 60 * 1000), true)
+})
+
+test("没有 refreshToken 或 expiresAt 未知时不续期", async () => {
+  const { shouldRenewCnAccount, resetRenewalStateForTesting } = await import(
+    "./cn-token-renewal"
+  )
+  resetRenewalStateForTesting()
+  const now = shanghaiNoon()
+  assert.equal(
+    shouldRenewCnAccount({ uid: "u", refreshToken: "  ", expiresAt: now + DAY }, now),
+    false,
+  )
+  assert.equal(
+    shouldRenewCnAccount({ uid: "u", refreshToken: "rt", expiresAt: 0 }, now),
+    false,
+  )
+})
 
 test("isRefreshTokenDead 只为上游判死的 token 返回 true", () => {
   // 实测文案：已失效的 refreshToken 会返回 invalid_grant
@@ -30,10 +103,6 @@ test("WorkbuddyCnRefreshError 携带 deadToken 标记", () => {
   assert.equal(dead.name, "WorkbuddyCnRefreshError")
   const transient = new WorkbuddyCnRefreshError("请求超时")
   assert.equal(transient.deadToken, false)
-})
-
-test("续期窗口是 24 小时（上游 expiresIn 为 28 天，留足余量）", () => {
-  assert.equal(CN_ACCOUNT_REFRESH_WINDOW_MS, 24 * HOUR)
 })
 
 test("allowExpired 能解析过期凭据，严格模式仍抛过期错误", async () => {

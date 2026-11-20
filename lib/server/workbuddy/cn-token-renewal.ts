@@ -1,14 +1,16 @@
 import "server-only"
 
 import type { WorkbuddyAccount } from "./account"
-import {
-  CN_ACCOUNT_REFRESH_WINDOW_MS,
-  refreshCnTokens,
-  WorkbuddyCnRefreshError,
-} from "./cn-oauth"
+import { refreshCnTokens, WorkbuddyCnRefreshError } from "./cn-oauth"
+import { formatShanghaiDay } from "./workbuddy-time"
 
 /**
- * 国内站凭据续期：临期或已过期时用 refreshToken 换新 token，并把结果原子回写。
+ * 国内站凭据续期：用 refreshToken 换新 token，并把结果原子回写。
+ *
+ * 调度口径是**每个自然日（Asia/Shanghai）续一次**，不看剩余寿命：
+ * refreshToken 是一次性的，每刷一次就换一把新的，频繁刷新只是白白消耗轮换链
+ * （中途任何一步丢写都会让账号彻底报废），而 token 本身有 28 天寿命，
+ * 每天续一次既留足余量，也把轮换次数压到最低。
  *
  * 为什么必须回写：上游刷新时会**轮换 refreshToken**，新值不落盘，旧的立刻失效，
  * 下次刷新就救不回来了。
@@ -18,6 +20,18 @@ import {
  */
 
 const refreshing = new Map<string, Promise<WorkbuddyAccount>>()
+
+/**
+ * 进程内最近一次续期尝试，跨请求共享。
+ *
+ * 成功会在凭据文件里留下 `lastRefreshTime`，进程重启后仍能读到；
+ * 失败只在这里记一个冷却窗口，过窗口就允许再试——避免一次网络抖动
+ * 就让账号一整天不再续期，也避免每个请求都去打一次上游。
+ */
+const lastAttempt = new Map<string, { day: string; at: number; ok: boolean }>()
+
+/** 续期失败后的冷却时间：过了就允许重试。 */
+const FAILURE_COOLDOWN_MS = 10 * 60 * 1000
 
 export interface CnRenewalInput {
   uid: string
@@ -29,14 +43,45 @@ export interface CnRenewalInput {
   now?: number
 }
 
-/** 是否值得尝试续期：有 refreshToken，且已过期或临近过期。 */
+/**
+ * 今天是否还需要为这个账号续期。
+ *
+ * 判据只有「今天有没有续过」，剩余寿命不参与：只要今天没续过就续，
+ * 已续过（无论是本进程续的，还是凭据文件里的 `lastRefreshTime`）就跳过。
+ */
 export function shouldRenewCnAccount(
-  account: Pick<WorkbuddyAccount, "refreshToken" | "expiresAt">,
+  account: Pick<WorkbuddyAccount, "uid" | "refreshToken" | "expiresAt"> &
+    Partial<Pick<WorkbuddyAccount, "lastRefreshTime">>,
   now = Date.now(),
+  attempt = lastAttempt.get(account.uid),
 ) {
   if (!account.refreshToken.trim()) return false
   if (account.expiresAt <= 0) return false
-  return account.expiresAt - now <= CN_ACCOUNT_REFRESH_WINDOW_MS
+  const today = formatShanghaiDay(new Date(now))
+  // 当天已经续成功过就不再刷。
+  if (attempt?.ok && attempt.day === today) return false
+  // 当天续期失败过，冷却窗口内先不打上游。
+  if (attempt && !attempt.ok && now - attempt.at < FAILURE_COOLDOWN_MS) return false
+  const refreshedAt = account.lastRefreshTime ?? 0
+  if (refreshedAt > 0 && formatShanghaiDay(new Date(refreshedAt)) === today) return false
+  return true
+}
+
+/**
+ * 记录一次续期尝试结果。
+ */
+export function markRenewAttempt(uid: string, ok: boolean, now = Date.now()) {
+  lastAttempt.set(uid, { day: formatShanghaiDay(new Date(now)), at: now, ok })
+}
+
+/** 测试与诊断用：读出最近一次续期尝试。 */
+export function lastRenewAttemptOf(uid: string) {
+  return lastAttempt.get(uid)
+}
+
+/** 测试用：清空进程内状态。 */
+export function resetRenewalStateForTesting() {
+  lastAttempt.clear()
 }
 
 /**
@@ -54,18 +99,27 @@ export async function renewCnPoolAccount(
 
   const task = (async () => {
     const now = input.now ?? Date.now()
-    const tokens = await refreshCnTokens(input.account.refreshToken)
-    const nextExpiresAt =
-      tokens.expiresIn > 0 ? now + tokens.expiresIn * 1000 : input.account.expiresAt
+    try {
+      const tokens = await refreshCnTokens(input.account.refreshToken)
+      const nextExpiresAt =
+        tokens.expiresIn > 0 ? now + tokens.expiresIn * 1000 : input.account.expiresAt
 
-    await writeRenewedCredential(input, tokens, nextExpiresAt, now)
+      await writeRenewedCredential(input, tokens, nextExpiresAt, now)
 
-    return {
-      ...input.account,
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-      expiresAt: nextExpiresAt,
-      ...(tokens.domain ? { domain: tokens.domain } : {}),
+      return {
+        ...input.account,
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        expiresAt: nextExpiresAt,
+        lastRefreshTime: now,
+        ...(tokens.domain ? { domain: tokens.domain } : {}),
+      }
+    } catch (error) {
+      // refreshToken 已死时不再重试：这个账号只能回桌面端重新登录，
+      // 记成成功才不会让每个请求都去打一次上游。
+      const dead = error instanceof WorkbuddyCnRefreshError && error.deadToken
+      markRenewAttempt(uid, dead, now)
+      throw error
     }
   })()
 

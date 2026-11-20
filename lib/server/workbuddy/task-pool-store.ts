@@ -432,6 +432,8 @@ export async function readPoolAccount(uid: string): Promise<WorkbuddyAccount> {
    if (!(error instanceof WorkbuddyCredentialExpiredError)) throw error
    // 已过期：先尝试用 refreshToken 续期，续不上再把「过期」这个真实原因抛回去。
    const expired = await parseWorkbuddyAccount(raw, filePath, { allowExpired: true })
+  // 当天已经试过就不再打上游（token 已死时这才是唯一结局）。
+  if (!shouldRenewCnAccount(expired)) throw error
    try {
      return await renewCnPoolAccount({ uid, filePath, raw, account: expired })
    } catch (renewError) {
