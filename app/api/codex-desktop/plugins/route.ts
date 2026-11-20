@@ -1,4 +1,4 @@
-import { authRequiredResponse, runAuthorized } from "@/lib/server/access-guard"
+import { authRequiredResponse, localOnlyGuard, runAuthorized } from "@/lib/server/access-guard"
 import { NextResponse } from "next/server"
 import { errorMessage, jsonError, readJsonBody } from "@/lib/server/http"
 import {
@@ -10,6 +10,8 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function GET(request: Request) {
+  const blocked = localOnlyGuard()
+  if (blocked) return blocked
   const result = await runAuthorized(request, async () => {
     try {
       return NextResponse.json(await getCodexDesktopPluginStatus())
@@ -21,6 +23,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const blocked = localOnlyGuard()
+  if (blocked) return blocked
   const result = await runAuthorized(request, async () => {
     try {
       const body = await readJsonBody<{ action?: string }>(request)
