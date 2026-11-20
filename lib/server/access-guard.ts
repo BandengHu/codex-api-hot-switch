@@ -147,3 +147,30 @@ export function authRequiredResponse() {
     },
   )
 }
+
+/**
+ * 本机专属能力（操作当前这台电脑上的 Codex 桌面端）在服务器部署下没有意义。
+ *
+ * 服务器进程运行在远端，`inject` / `launch` / `restart` 这类动作只会碰到
+ * 服务器自己的文件系统，既做不到用户想要的事，还会暴露一条可以拉起进程的写入口。
+ * 这里统一回 501，本机壳模式完全不受影响。
+ */
+export function localOnlyUnsupportedResponse() {
+  return Response.json(
+    {
+      error: {
+        message: "该接口只能操作本机 Codex 桌面端，服务器部署不提供此能力",
+        type: "not_implemented",
+      },
+    },
+    {
+      status: 501,
+      headers: { "cache-control": "no-store" },
+    },
+  )
+}
+
+/** 服务器模式下拒绝本机专属接口；返回 null 表示可以继续执行。 */
+export function localOnlyGuard() {
+  return accessAuthRequired() ? localOnlyUnsupportedResponse() : null
+}
