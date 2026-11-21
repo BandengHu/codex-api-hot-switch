@@ -46,11 +46,11 @@ function emptyModel(providerId: string): Model {
     providerId,
     displayName: "",
     modelId: "",
-    capabilities: ["chat"],
-    contextLength: 128000,
-    supportsReasoning: false,
+    capabilities: ["chat", "reasoning", "vision", "tools"],
+    contextLength: 372000,
+    supportsReasoning: true,
     reasoningDialect: "inherit",
-    supportsVision: false,
+    supportsVision: true,
     enabled: true,
   }
 }
