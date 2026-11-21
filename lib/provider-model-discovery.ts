@@ -92,7 +92,7 @@ export function buildImportedModelDrafts(
       displayName: model.displayName,
       modelId: model.id,
       capabilities,
-      contextLength: model.contextLength ?? 128000,
+      contextLength: model.contextLength ?? 372000,
       supportsReasoning: model.supportsReasoning === true,
       reasoningDialect: "inherit",
       supportsVision: model.supportsVision === true,

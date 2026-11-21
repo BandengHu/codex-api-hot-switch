@@ -98,3 +98,23 @@ test("selects no models for a new provider and existing models for an edited pro
     ["model-b"],
   )
 })
+
+/**
+ * 上游没给 `context_length` 时，导入的模型按 372K 铺底。
+ * 这个默认值是产品口径（用户明确要求），改动它需要同步改这里。
+ */
+test("falls back to 372K context when the provider does not report one", () => {
+  const imported = buildImportedModelDrafts(
+    "provider-1",
+    [
+      { id: "no-context", displayName: "No Context" },
+      { id: "with-context", displayName: "With Context", contextLength: 200000 },
+    ],
+    ["no-context", "with-context"],
+    [],
+  )
+
+  const byId = new Map(imported.map((item) => [item.modelId, item.contextLength]))
+  assert.equal(byId.get("no-context"), 372000)
+  assert.equal(byId.get("with-context"), 200000)
+})
