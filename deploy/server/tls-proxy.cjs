@@ -11,10 +11,10 @@ const upstreamHost = process.env.SWITCHGATE_UPSTREAM_HOST || "127.0.0.1"
 const upstreamPort = Number(process.env.SWITCHGATE_UPSTREAM_PORT || 54141)
 const certPath =
   process.env.SWITCHGATE_TLS_CERT ||
-  "/etc/letsencrypt/live/switch.ztsnss.cloud/fullchain.pem"
+  "/etc/letsencrypt/live/huhuanjie.site/fullchain.pem"
 const keyPath =
   process.env.SWITCHGATE_TLS_KEY ||
-  "/etc/letsencrypt/live/switch.ztsnss.cloud/privkey.pem"
+  "/etc/letsencrypt/live/huhuanjie.site/privkey.pem"
 
 function readCertificate() {
   return {

@@ -13,8 +13,8 @@ Environment=SWITCHGATE_TLS_HOST=0.0.0.0
 Environment=SWITCHGATE_TLS_PORT=443
 Environment=SWITCHGATE_UPSTREAM_HOST=127.0.0.1
 Environment=SWITCHGATE_UPSTREAM_PORT=54141
-Environment=SWITCHGATE_TLS_CERT=/etc/letsencrypt/live/switch.ztsnss.cloud/fullchain.pem
-Environment=SWITCHGATE_TLS_KEY=/etc/letsencrypt/live/switch.ztsnss.cloud/privkey.pem
+Environment=SWITCHGATE_TLS_CERT=/etc/letsencrypt/live/huhuanjie.site/fullchain.pem
+Environment=SWITCHGATE_TLS_KEY=/etc/letsencrypt/live/huhuanjie.site/privkey.pem
 NoNewPrivileges=true
 PrivateTmp=true
 
