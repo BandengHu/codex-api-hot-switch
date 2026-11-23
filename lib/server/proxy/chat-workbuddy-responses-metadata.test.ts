@@ -174,3 +174,204 @@ test("工具调用前的 WorkBuddy 消息仍标记为 commentary 并补齐元数
   assert.equal(completedMessage(events).phase, "commentary")
   assert.equal(completedMessage(events).memoryCitation, null)
 })
+
+test("WorkBuddy 增量后到达完整快照时仍保持同一响应与输出索引", () => {
+  const events = parseEvents(chatSseToResponsesSse(
+    sse({
+      id: "chatcmpl_workbuddy_snapshot",
+      model: "deepseek-v4.1-flash",
+      choices: [{ delta: { content: "正在检查。" } }],
+    }) +
+      sse({
+        id: "chatcmpl_workbuddy_snapshot",
+        model: "deepseek-v4.1-flash",
+        choices: [{
+          message: { role: "assistant", content: "正在检查。" },
+          finish_reason: "stop",
+        }],
+      }) +
+      "data: [DONE]\n\n",
+    adapter(true),
+  ).text)
+
+  const created = events.filter((event) => event.type === "response.created")
+  const addedMessages = events.filter(
+    (event) => event.type === "response.output_item.added" && event.item?.type === "message",
+  )
+  const doneMessages = events.filter(
+    (event) => event.type === "response.output_item.done" && event.item?.type === "message",
+  )
+  const completed = events.find((event) => event.type === "response.completed")?.response
+
+  assert.equal(created.length, 1)
+  assert.equal(addedMessages.length, 1)
+  assert.equal(doneMessages.length, 1)
+  assert.equal(addedMessages[0].output_index, 0)
+  assert.equal(doneMessages[0].output_index, addedMessages[0].output_index)
+  assert.equal(completed.output.filter((item: any) => item.type === "message").length, 1)
+  assert.equal(completed.output[0].content[0].text, "正在检查。")
+})
+
+test("WorkBuddy 完整快照会把新增后缀继续作为增量发送", () => {
+  const events = parseEvents(chatSseToResponsesSse(
+    sse({
+      id: "chatcmpl_workbuddy_snapshot_suffix",
+      model: "deepseek-v4.1-flash",
+      choices: [{ delta: { content: "正在检查" } }],
+    }) +
+      sse({
+        id: "chatcmpl_workbuddy_snapshot_suffix",
+        model: "deepseek-v4.1-flash",
+        choices: [{
+          message: { role: "assistant", content: "正在检查文件。" },
+          finish_reason: "stop",
+        }],
+      }) +
+      "data: [DONE]\n\n",
+    adapter(true),
+  ).text)
+  const textDeltas = events
+    .filter((event) => event.type === "response.output_text.delta")
+    .map((event) => event.delta)
+
+  assert.deepEqual(textDeltas, ["正在检查", "文件。"])
+  assert.equal(finalMessageEvent(events).content[0].text, "正在检查文件。")
+  assert.equal(completedMessage(events).content[0].text, "正在检查文件。")
+  assert.equal(
+    events.filter((event) => event.type === "response.created").length,
+    1,
+  )
+})
+
+test("WorkBuddy 完整快照不会重复已发送的推理和工具参数", () => {
+  const events = parseEvents(chatSseToResponsesSse(
+    sse({
+      id: "chatcmpl_workbuddy_snapshot_tool",
+      model: "deepseek-v4.1-flash",
+      choices: [{
+        delta: {
+          reasoning_content: "先检查",
+          tool_calls: [{
+            index: 0,
+            id: "call_snapshot",
+            type: "function",
+            function: { name: "exec_command", arguments: '{"cmd":"Get-' },
+          }],
+        },
+      }],
+    }) +
+      sse({
+        id: "chatcmpl_workbuddy_snapshot_tool",
+        choices: [{
+          message: {
+            role: "assistant",
+            content: null,
+            reasoning_content: "先检查目录",
+            tool_calls: [{
+              id: "call_snapshot",
+              type: "function",
+              function: {
+                name: "exec_command",
+                arguments: '{"cmd":"Get-ChildItem"}',
+              },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      }) +
+      "data: [DONE]\n\n",
+    adapter(true),
+  ).text)
+  const toolArguments = events
+    .filter((event) => event.type === "response.function_call_arguments.delta")
+    .map((event) => event.delta)
+    .join("")
+  const completed = events.find((event) => event.type === "response.completed")?.response
+  const toolCall = completed.output.find((item: any) => item.type === "function_call")
+
+  assert.deepEqual(
+    events
+      .filter((event) => event.type === "response.reasoning_summary_text.delta")
+      .map((event) => event.delta),
+    ["先检查", "目录"],
+  )
+  assert.equal(toolArguments, '{"cmd":"Get-ChildItem"}')
+  assert.equal(toolCall.arguments, '{"cmd":"Get-ChildItem"}')
+  assert.equal(
+    events.filter(
+      (event) => event.type === "response.output_item.added" && event.item?.type === "function_call",
+    ).length,
+    1,
+  )
+  assert.equal(
+    events.filter(
+      (event) => event.type === "response.output_item.done" && event.item?.type === "function_call",
+    ).length,
+    1,
+  )
+})
+
+test("WorkBuddy 完整快照改写文本时保持最终内容一致", () => {
+  const events = parseEvents(chatSseToResponsesSse(
+    sse({
+      id: "chatcmpl_workbuddy_snapshot_replace",
+      model: "deepseek-v4.1-flash",
+      choices: [{ delta: { content: "旧内容" } }],
+    }) +
+      sse({
+        id: "chatcmpl_workbuddy_snapshot_replace",
+        model: "deepseek-v4.1-flash",
+        choices: [{
+          message: { role: "assistant", content: "新内容" },
+          finish_reason: "stop",
+        }],
+      }) +
+      "data: [DONE]\n\n",
+    adapter(true),
+  ).text)
+  const doneText = finalMessageEvent(events).content[0].text
+  const completedText = completedMessage(events).content[0].text
+
+  assert.equal(doneText, "新内容")
+  assert.equal(completedText, "新内容")
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === "response.output_text.done" &&
+        event.text !== completedText,
+    ),
+    false,
+  )
+})
+
+test("WorkBuddy 完整快照改写推理时保持最终内容一致", () => {
+  const events = parseEvents(chatSseToResponsesSse(
+    sse({
+      id: "chatcmpl_workbuddy_snapshot_replace_reasoning",
+      model: "deepseek-v4.1-flash",
+      choices: [{ delta: { reasoning_content: "旧推理" } }],
+    }) +
+      sse({
+        id: "chatcmpl_workbuddy_snapshot_replace_reasoning",
+        model: "deepseek-v4.1-flash",
+        choices: [{
+          message: {
+            role: "assistant",
+            content: "完成。",
+            reasoning_content: "新推理",
+          },
+          finish_reason: "stop",
+        }],
+      }) +
+      "data: [DONE]\n\n",
+    adapter(true),
+  ).text)
+  const completed = events.find((event) => event.type === "response.completed")?.response
+  const reasoning = completed.output.find((item: any) => item.type === "reasoning")
+  const reasoningDone = events.find(
+    (event) => event.type === "response.reasoning_summary_text.done",
+  )
+
+  assert.equal(reasoning.reasoning_content, "新推理")
+  assert.equal(reasoningDone.text, "新推理")
+})

@@ -1412,23 +1412,6 @@ function appendReasoningToActiveToolCalls(state: ChatSseAccum, reasoning: string
   }
 }
 
-function resetChatSseAccumulatedOutput(state: ChatSseAccum) {
-  state.content = ""
-  state.reasoning = ""
-  state.messageAdded = false
-  state.messageOutputIndex = null
-  state.reasoningAdded = false
-  state.reasoningOutputIndex = null
-  state.reasoningDone = false
-  state.inlineThinkMode = "detecting"
-  state.inlineThinkBuffer = ""
-  state.toolCalls.clear()
-  state.addedToolIndexes.clear()
-  state.nextToolIndexToAdd = 0
-  state.nextOutputIndex = 0
-  state.responseStarted = false
-}
-
 function chatToolCallIndex(
   state: ChatSseAccum,
   toolCall: AnyRecord,
@@ -1542,15 +1525,20 @@ function mergeChatSseToolCallDelta(
   const fn = isObject(rawToolCall.function) ? rawToolCall.function : rawToolCall
   existing.name ||= safeTrim(fn.name)
   const argumentDelta = chatToolArgumentsDelta(fn.arguments)
+  const previousArguments = existing.args
   if (argumentDelta) {
     existing.args = options.replaceArguments ? argumentDelta : existing.args + argumentDelta
   }
   const wasAlreadyAdded = state.addedToolIndexes.has(index)
   state.toolCalls.set(index, existing)
+  const emittedArgumentDelta = options.replaceArguments
+    ? previousArguments && argumentDelta.startsWith(previousArguments)
+      ? argumentDelta.slice(previousArguments.length)
+      : argumentDelta
+    : argumentDelta
   if (
-    argumentDelta &&
+    emittedArgumentDelta &&
     wasAlreadyAdded &&
-    !options.replaceArguments &&
     existing.outputIndex != null &&
     existing.itemId &&
     !isCustomToolProxy(existing.name, toolContext) &&
@@ -1560,7 +1548,7 @@ function mergeChatSseToolCallDelta(
       type: "response.function_call_arguments.delta",
       item_id: existing.itemId,
       output_index: existing.outputIndex,
-      delta: argumentDelta,
+      delta: emittedArgumentDelta,
     })
   }
   // 并行调用的后一个名称可能先到。只连续释放 Chat index，避免把 index=1
@@ -1577,14 +1565,28 @@ function applyChatSseFullMessageSnapshot(
   let out = ""
   const reasoning = extractChatReasoningText(payload)
   if (reasoning) {
-    if (state.reasoningAdded) state.reasoning = reasoning
-    else out += pushChatSseReasoningDelta(state, reasoning)
+    if (!state.reasoningAdded) {
+      out += pushChatSseReasoningDelta(state, reasoning)
+    } else if (reasoning !== state.reasoning) {
+      if (reasoning.startsWith(state.reasoning)) {
+        out += pushChatSseReasoningDelta(state, reasoning.slice(state.reasoning.length))
+      } else {
+        state.reasoning = reasoning
+      }
+    }
   }
 
   const content = chatPayloadContentText(payload.content) || safeTrim(payload.refusal)
   if (content) {
-    if (state.messageAdded) state.content = content
-    else out += pushChatSseContentDelta(state, content)
+    if (!state.messageAdded) {
+      out += pushChatSseContentDelta(state, content)
+    } else if (content !== state.content) {
+      if (content.startsWith(state.content)) {
+        out += pushChatSseContentDelta(state, content.slice(state.content.length))
+      } else {
+        state.content = content
+      }
+    }
   }
 
   const toolContext = deserializeToolContext(serializedContext)
@@ -1904,7 +1906,6 @@ function chatSseTextToResponsesSse(
       if (!state.finishReason && choice.finish_reason) state.finishReason = safeTrim(choice.finish_reason)
       continue
     }
-    if (isFullMessage) resetChatSseAccumulatedOutput(state)
     const reasoning = extractChatReasoningDelta(payload)
     if (reasoning) {
       out += pushChatSseReasoningDelta(state, reasoning)
