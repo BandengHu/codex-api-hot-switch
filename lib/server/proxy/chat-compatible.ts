@@ -1684,13 +1684,14 @@ function pushChatSseTextDelta(state: ChatSseAccum, content: string) {
     out += sse("response.output_item.added", {
       type: "response.output_item.added",
       output_index: state.messageOutputIndex,
-      item: {
+      item: applyWorkbuddyResponseMetadata({
         id: `${state.id}_msg`,
         type: "message",
         status: "in_progress",
         role: "assistant",
         content: [],
-      },
+        ...(state.workbuddyResponsesMetadata ? { phase: "commentary" } : {}),
+      }, state.workbuddyResponsesMetadata),
     })
     out += sse("response.content_part.added", {
       type: "response.content_part.added",
@@ -1791,6 +1792,7 @@ function completedChatSseOutputItems(state: ChatSseAccum, serializedContext: Ser
       status: "completed",
       role: "assistant",
       content: [{ type: "output_text", text: state.content, annotations: [] }],
+      ...(state.workbuddyResponsesMetadata ? { phase: "commentary" } : {}),
     }, state.workbuddyResponsesMetadata)
     output.push({
       index: state.messageOutputIndex ?? 0,
@@ -1888,7 +1890,9 @@ function chatSseTextToResponsesSse(
       return out
     }
     const chunkId = safeTrim(chunk.id)
-    if (chunkId) state.id = chunkId.startsWith("resp_") ? chunkId : `resp_${chunkId}`
+    if (chunkId && (!state.workbuddyResponsesMetadata || !state.responseStarted)) {
+      state.id = chunkId.startsWith("resp_") ? chunkId : `resp_${chunkId}`
+    }
     state.model = safeTrim(chunk.model) || state.model
     state.created = Number(chunk.created) || state.created
     if (chunk.usage) state.usage = chunk.usage
@@ -1994,11 +1998,14 @@ function finalizeChatSse(
   }
   state.completed = true
   if (state.messageAdded) {
-    // message 的 output_item.done 在此处（收尾）才发出，此时工具调用已全部累积完，
-    // 可直接判定 phase：后面还有工具调用则该 message 是回合中途叙述（commentary），
-    // 否则是回合最终答案（final_answer）。带上 phase，桌面端收到 done 帧即可正确折叠，
-    // 无需等 response.completed 再手动点一下。
-    const messagePhase = state.toolCalls.size > 0 ? "commentary" : "final_answer"
+    // WorkBuddy 的 Chat 流在正文开始时不能可靠判定后面是否会出现工具调用。
+    // 一旦先以 final_answer 暴露，后到工具调用会让桌面端重新索引并闪烁。
+    // 因此该供应商固定从 commentary 阶段开始；普通 Chat 仍按收尾结果判定。
+    const messagePhase = state.workbuddyResponsesMetadata
+      ? "commentary"
+      : state.toolCalls.size > 0
+        ? "commentary"
+        : "final_answer"
     out += sse("response.output_text.done", {
       type: "response.output_text.done",
       item_id: `${state.id}_msg`,

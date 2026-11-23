@@ -76,15 +76,23 @@ function streamEvents(workbuddyResponsesMetadata: boolean) {
   ).text)
 }
 
-test("WorkBuddy 流式最终消息在 done 和 completed 中都带 memoryCitation", () => {
+test("WorkBuddy 流式消息从创建起保持 commentary 并补齐 memoryCitation", () => {
   const events = streamEvents(true)
   const doneItem = finalMessageEvent(events)
   const completedItem = completedMessage(events)
+  const addedItem = events.find(
+    (event) =>
+      event.type === "response.output_item.added" &&
+      event.item?.type === "message",
+  )?.item
 
-  assert.equal(doneItem.phase, "final_answer")
+  assert.equal(addedItem.phase, "commentary")
+  assert.equal(Object.hasOwn(addedItem, "memoryCitation"), true)
+  assert.equal(addedItem.memoryCitation, null)
+  assert.equal(doneItem.phase, "commentary")
   assert.equal(Object.hasOwn(doneItem, "memoryCitation"), true)
   assert.equal(doneItem.memoryCitation, null)
-  assert.equal(completedItem.phase, "final_answer")
+  assert.equal(completedItem.phase, "commentary")
   assert.equal(Object.hasOwn(completedItem, "memoryCitation"), true)
   assert.equal(completedItem.memoryCitation, null)
   assert.equal(doneItem.id, completedItem.id)
@@ -95,7 +103,13 @@ test("普通 Chat 流式最终消息不新增 memoryCitation", () => {
   const events = streamEvents(false)
   const doneItem = finalMessageEvent(events)
   const completedItem = completedMessage(events)
+  const addedItem = events.find(
+    (event) =>
+      event.type === "response.output_item.added" &&
+      event.item?.type === "message",
+  )?.item
 
+  assert.equal(Object.hasOwn(addedItem, "phase"), false)
   assert.equal(doneItem.phase, "final_answer")
   assert.equal(Object.hasOwn(doneItem, "memoryCitation"), false)
   assert.equal(Object.hasOwn(completedItem, "memoryCitation"), false)
@@ -167,12 +181,53 @@ test("工具调用前的 WorkBuddy 消息仍标记为 commentary 并补齐元数
       "data: [DONE]\n\n",
     adapter(true),
   ).text)
+  const addedMessage = events.find(
+    (event) =>
+      event.type === "response.output_item.added" &&
+      event.item?.type === "message",
+  )?.item
   const message = finalMessageEvent(events)
 
+  assert.equal(addedMessage.phase, "commentary")
+  assert.equal(addedMessage.memoryCitation, null)
   assert.equal(message.phase, "commentary")
   assert.equal(message.memoryCitation, null)
   assert.equal(completedMessage(events).phase, "commentary")
   assert.equal(completedMessage(events).memoryCitation, null)
+})
+
+test("WorkBuddy 后续分片更换 Chat ID 时不改写已创建的响应身份", () => {
+  const events = parseEvents(chatSseToResponsesSse(
+    sse({
+      id: "chatcmpl_workbuddy_first",
+      model: "deepseek-v4.1-flash",
+      choices: [{ delta: { content: "第一段" } }],
+    }) +
+      sse({
+        id: "chatcmpl_workbuddy_second",
+        model: "deepseek-v4.1-flash",
+        choices: [{
+          delta: { content: "第二段" },
+          finish_reason: "stop",
+        }],
+      }) +
+      "data: [DONE]\n\n",
+    adapter(true),
+  ).text)
+
+  const created = events.find((event) => event.type === "response.created")?.response
+  const added = events.find(
+    (event) =>
+      event.type === "response.output_item.added" &&
+      event.item?.type === "message",
+  )?.item
+  const done = finalMessageEvent(events)
+  const completed = events.find((event) => event.type === "response.completed")?.response
+
+  assert.equal(created.id, "resp_chatcmpl_workbuddy_first")
+  assert.equal(added.id, `${created.id}_msg`)
+  assert.equal(done.id, added.id)
+  assert.equal(completed.id, created.id)
 })
 
 test("WorkBuddy 增量后到达完整快照时仍保持同一响应与输出索引", () => {
