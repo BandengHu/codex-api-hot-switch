@@ -19,6 +19,7 @@ function adapter(): Extract<ChatCompatibleAdapter, { type: "chat_compatible" }> 
       toolSearchTools: [],
       webSearchTools: [],
     },
+    workbuddyResponsesMetadata: false,
   }
 }
 
