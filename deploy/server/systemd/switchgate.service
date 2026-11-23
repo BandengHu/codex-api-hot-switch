@@ -13,6 +13,8 @@ Environment=CODEX_HOT_SWITCH_PORT=54141
 Environment=CODEX_HOT_SWITCH_ALLOW_LAN=1
 Environment=CODEX_HOT_SWITCH_LOCAL_WORKBUDDY=0
 Environment=CODEX_HOT_SWITCH_SERVER_UI=1
+# 固定对外展示的中转地址，UI 与 /v1 调用都按它生成；缺省时会退回按 Host 头推导。
+Environment=SWITCHGATE_PUBLIC_BASE_URL=https://huhuanjie.site
 ExecStart=/usr/local/bin/node /opt/switchgate/app/start.cjs
 Restart=always
 RestartSec=3

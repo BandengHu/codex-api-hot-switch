@@ -5,4 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/opt/switchgate/acme-venv/bin/certbot renew --cert-name switch.ztsnss.cloud --quiet --no-random-sleep-on-renew
+ExecStart=/opt/switchgate/acme-venv/bin/certbot renew --cert-name huhuanjie.site --quiet --no-random-sleep-on-renew
+# 续期会重写 live/ 下的软链，进程内存里仍是旧证书，必须重启代理才会生效。
+# 未续期时 certbot 不会改动文件，这里重启一次也无副作用（TLS 代理秒级重启）。
+ExecStartPost=/bin/systemctl restart switchgate-tls.service

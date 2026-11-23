@@ -4,7 +4,7 @@ const fs = require("node:fs")
 const os = require("node:os")
 const path = require("node:path")
 
-const DEFAULT_REMOTE_BASE = "http://switch.ztsnss.cloud:54140"
+const DEFAULT_REMOTE_BASE = "https://huhuanjie.site"
 
 function shellDataDir() {
   if (process.platform === "win32") {

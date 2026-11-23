@@ -79,10 +79,11 @@ systemctl start switchgate switchgate-tls
 
 ## 证书
 
-- 证书：Let's Encrypt，`/etc/letsencrypt/live/switch.ztsnss.cloud/`
+- 证书：Let's Encrypt，`/etc/letsencrypt/live/huhuanjie.site/`（含 `www.huhuanjie.site`）
+- 签发/续期方式：**HTTP-01 webroot**，目录 `/var/lib/gomoku-acme`，由 `myapp.service`（80 端口）提供
+- 为什么不用 DNS-01：`huhuanjie.site` 不在当前 DNSPod 账号下，API 无权写 TXT；HTTP-01 绕开这个限制
 - 续期：`switchgate-certbot-renew.timer`，每天 03:17 检查
-- DNS-01：`cert-hooks/dnspod-auth.py`，凭据来自 `/etc/switchgate/dnspod-credentials.json`
-- 续期成功后 `renew_hook` 会重启 `switchgate-tls.service`
+- 续期成功后 `ExecStartPost` 会重启 `switchgate-tls.service` 加载新证书
 
 证书 hook 内不得写入 SecretId / SecretKey；凭据只放在 `/etc/switchgate/`。
 
