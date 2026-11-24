@@ -24,17 +24,17 @@ interface DiagnosticSource {
 
 const rawSources = new WeakMap<RequestLog, DiagnosticSource>()
 
-function diagnosticsPath() {
+function diagnosticsPath(dataDir?: string) {
   return join(
-    resolveDataDir(),
+    resolveDataDir(dataDir),
     "logs",
     "language-policy-missing-diagnostics.jsonl",
   )
 }
 
-function diagnosticsDir() {
+function diagnosticsDir(dataDir?: string) {
   return join(
-    resolveDataDir(),
+    resolveDataDir(dataDir),
     "logs",
     "language-policy-missing-diagnostics",
   )
@@ -83,8 +83,8 @@ function safeFileId(id: string) {
   return id.replace(/[^a-zA-Z0-9._-]/g, "_")
 }
 
-function relativeFromDataDir(path: string) {
-  return relative(resolveDataDir(), path)
+function relativeFromDataDir(path: string, dataDir?: string) {
+  return relative(resolveDataDir(dataDir), path)
 }
 
 export function registerLanguagePolicyDiagnosticSource(
@@ -94,7 +94,7 @@ export function registerLanguagePolicyDiagnosticSource(
   rawSources.set(log, source)
 }
 
-export async function appendLanguagePolicyDiagnostic(log: RequestLog) {
+export async function appendLanguagePolicyDiagnostic(log: RequestLog, dataDir?: string) {
   if (!diagnosticsEnabled()) return
   const source = rawSources.get(log)
   if (source?.expectChinesePolicy === false) return
@@ -115,8 +115,8 @@ export async function appendLanguagePolicyDiagnostic(log: RequestLog) {
   const rewrittenRequest = fullText(rewrittenBody)
   const responseSummary = source?.responseSummary || log.responseSummary || ""
   const englishActionMatches = compactMatches(responseSummary)
-  const indexFile = diagnosticsPath()
-  const entryDir = diagnosticsDir()
+  const indexFile = diagnosticsPath(dataDir)
+  const entryDir = diagnosticsDir(dataDir)
   const fileId = safeFileId(log.id)
   const rawRequestFile = join(entryDir, `${fileId}-raw.json`)
   const rewrittenRequestFile = join(entryDir, `${fileId}-rewritten.json`)
@@ -163,9 +163,9 @@ export async function appendLanguagePolicyDiagnostic(log: RequestLog) {
     rawRequestFile,
     rewrittenRequestFile,
     responseSummaryFile,
-    relativeRawRequestFile: relativeFromDataDir(rawRequestFile),
-    relativeRewrittenRequestFile: relativeFromDataDir(rewrittenRequestFile),
-    relativeResponseSummaryFile: relativeFromDataDir(responseSummaryFile),
+    relativeRawRequestFile: relativeFromDataDir(rawRequestFile, dataDir),
+    relativeRewrittenRequestFile: relativeFromDataDir(rewrittenRequestFile, dataDir),
+    relativeResponseSummaryFile: relativeFromDataDir(responseSummaryFile, dataDir),
   }
   await mkdir(dirname(indexFile), { recursive: true })
   await mkdir(entryDir, { recursive: true })

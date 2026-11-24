@@ -1,6 +1,7 @@
 import "server-only"
 
 import { appendLog, getRoutingSnapshot } from "@/lib/server/state-store"
+import { captureDataDir } from "@/lib/server/data-root"
 import {
   appendRequestLogDetails,
   registerRequestLogDetailSource,
@@ -293,11 +294,28 @@ function makeEarlyFailureLog(params: {
   return log
 }
 
-function appendLogDetached(log: RequestLog) {
-  void appendRequestLogDetails(log).catch(() => undefined)
-  void appendLanguagePolicyDiagnostic(log).catch(() => undefined)
-  void appendWorkbuddyCreditLedger(log).catch(() => undefined)
-  void appendLog(log).catch(() => undefined)
+/**
+ * 日志写入发生在响应发给客户端之后，失败不能影响响应；但也不能像以前那样
+ * `.catch(() => undefined)` 把原因吞掉——线上曾因此连续几天看不到任何流式
+ * 请求日志。这里统一打一条固定前缀的错误日志，便于 journalctl 检索。
+ */
+function reportDetachedLogFailure(kind: string, error: unknown) {
+  console.error(`[switchgate] ${kind} 写入失败`, error)
+}
+
+function appendLogDetached(log: RequestLog, dataDir: string) {
+  void appendRequestLogDetails(log, dataDir).catch((error) =>
+    reportDetachedLogFailure("请求日志明细", error),
+  )
+  void appendLanguagePolicyDiagnostic(log, dataDir).catch((error) =>
+    reportDetachedLogFailure("语言策略诊断", error),
+  )
+  void appendWorkbuddyCreditLedger(log, dataDir).catch((error) =>
+    reportDetachedLogFailure("WorkBuddy 额度账本", error),
+  )
+  void appendLog(log, dataDir).catch((error) =>
+    reportDetachedLogFailure("请求日志", error),
+  )
 }
 
 function upstreamErrorLogMessage(transformed: unknown, fallback: string) {
@@ -313,6 +331,10 @@ function appendLogAfterStreamSettles(
   stream: ReadableStream<Uint8Array>,
   params: Parameters<typeof makeLog>[0],
 ) {
+  // 流式日志在 handler 返回、Next.js 开始消费响应体之后才写。那时请求的
+  // AsyncLocalStorage 作用域已经结束，必须在建流这一刻就把账号目录固定下来，
+  // 否则服务器模式下 resolveDataDir() 会抛错，日志被静默丢弃。
+  const dataDir = captureDataDir()
   const collector = new TokenUsageSseCollector()
   const reader = stream.getReader()
   let logged = false
@@ -352,6 +374,7 @@ function appendLogAfterStreamSettles(
         error: message,
         errorStack: error instanceof Error ? error.stack : params.errorStack,
       }),
+      dataDir,
     )
   }
 
@@ -394,7 +417,8 @@ async function streamBodyMissingResponse(params: Parameters<typeof makeLog>[0]) 
       responseSummary: message,
       error: message,
     }),
-  )
+  captureDataDir(),
+)
   return Response.json(
     { error: { message, type: "server_error" } },
     { status: 502 },
@@ -770,7 +794,8 @@ async function maybeAdaptOpenAICompatibleStream(
           responseSummary: compactJson(capture.failed) || failed.message,
           error: failed.message,
         }),
-      )
+      captureDataDir(),
+    )
       return Response.json(
         { error: failed },
         { status: 502 },
@@ -791,7 +816,8 @@ async function maybeAdaptOpenAICompatibleStream(
         responseSummary: compactJson(payload),
         tokenUsage: extractTokenUsage(payload),
       }),
-    )
+    captureDataDir(),
+  )
     return Response.json(payload, {
       status: upstream.status,
       headers: {
@@ -903,7 +929,8 @@ async function imagesApiJsonResponse(params: {
         responseSummary: compactJson(payload),
         tokenUsage: extractTokenUsage(payload) || extractTokenUsage(parsedJson),
       }),
-    )
+    captureDataDir(),
+  )
     return Response.json(payload, {
       status: params.upstream.status,
       headers: {
@@ -927,7 +954,8 @@ async function imagesApiJsonResponse(params: {
         responseSummary: compactJson(capture.failed) || failed.message,
         error: failed.message,
       }),
-    )
+    captureDataDir(),
+  )
     return Response.json(
       { error: failed },
       { status: 502 },
@@ -948,7 +976,8 @@ async function imagesApiJsonResponse(params: {
         extractTokenUsage(capture.final) ||
         extractTokenUsage(capture.usage),
     }),
-  )
+  captureDataDir(),
+)
   return Response.json(payload, {
     status: params.upstream.status,
     headers: {
@@ -1339,7 +1368,8 @@ async function handleResponsesCompactFallback(params: {
         responseSummary: compactJson(transformed),
         error: `compact 摘要请求失败：${message}`,
       }),
-    )
+    captureDataDir(),
+  )
     return Response.json(transformed, {
       status: 502,
       headers: {
@@ -1363,7 +1393,8 @@ async function handleResponsesCompactFallback(params: {
         responseSummary: compactJson(transformed),
         error: `compact 摘要上游返回 HTTP ${upstream.status} ${upstream.statusText}`,
       }),
-    )
+    captureDataDir(),
+  )
     return Response.json(transformed, {
       status: upstream.status,
       headers: {
@@ -1392,7 +1423,8 @@ async function handleResponsesCompactFallback(params: {
       responseSummary: compactJson(compactResponse),
       tokenUsage: extractTokenUsage(compactResponse) || extractTokenUsage(transformed) || extractTokenUsage(payload),
     }),
-  )
+  captureDataDir(),
+)
   return Response.json(compactResponse, {
     status: 200,
     headers: {
@@ -1603,7 +1635,8 @@ function relayResponse(params: {
       responseSummary: compactJson(params.response),
       tokenUsage: extractTokenUsage(params.response) || extractTokenUsage(params.payload),
     }),
-  )
+  captureDataDir(),
+)
   if (params.stream) {
     return new Response(streamText(responseToSse(params.response)), {
       status: params.statusCode,
@@ -1729,7 +1762,8 @@ async function handleRelayWebSearchResponses(params: {
           error: message,
           errorStack: error instanceof Error ? error.stack : undefined,
         }),
-      )
+      captureDataDir(),
+    )
       return relayErrorResponse({
         target: currentTarget,
         stream: params.stream,
@@ -1751,7 +1785,8 @@ async function handleRelayWebSearchResponses(params: {
           responseSummary: compactJson(transformed),
           error: `上游返回 HTTP ${upstream.status} ${upstream.statusText}`,
         }),
-      )
+      captureDataDir(),
+    )
       if (params.stream) {
         const upstreamError: AnyRecord = isObject(transformed) && isObject(transformed.error)
           ? transformed.error
@@ -1823,7 +1858,8 @@ async function handleRelayWebSearchResponses(params: {
             error: message,
             errorStack: error instanceof Error ? error.stack : undefined,
           }),
-        )
+        captureDataDir(),
+      )
         return relayErrorResponse({
           target: currentTarget,
           stream: params.stream,
@@ -1849,7 +1885,8 @@ async function handleRelayWebSearchResponses(params: {
         responseSummary: message,
         error: message,
       }),
-    )
+    captureDataDir(),
+  )
   }
   return relayErrorResponse({
     target: currentTarget,
@@ -1923,7 +1960,8 @@ export async function handleProxyPost(parts: string[], request: Request) {
           rewrittenBody: body,
           responseSummary: compactJson(alphaResponse),
         }),
-      )
+      captureDataDir(),
+    )
       return Response.json(alphaResponse, {
         status: 200,
         headers: {
@@ -2100,7 +2138,8 @@ export async function handleProxyPost(parts: string[], request: Request) {
         tokenUsage: extractTokenUsage(transformed) || extractTokenUsage(payload),
         error,
       }),
-    )
+    captureDataDir(),
+  )
 
     if (
       upstream.ok &&
@@ -2199,7 +2238,8 @@ export async function handleProxyPost(parts: string[], request: Request) {
           error: message,
           errorStack,
         }),
-      )
+      captureDataDir(),
+    )
     } else {
       appendLogDetached(
         makeEarlyFailureLog({
@@ -2212,7 +2252,8 @@ export async function handleProxyPost(parts: string[], request: Request) {
           error: message,
           errorStack,
         }),
-      )
+      captureDataDir(),
+    )
     }
     if (requestWantsStream(body)) {
       const rateLimitResponse = rateLimitError

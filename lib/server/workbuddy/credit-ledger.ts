@@ -79,11 +79,11 @@ export function ledgerEntryFromLog(
 }
 
 /** 每个 WorkBuddy 请求只追加一行；缺失 credit 时写 null，不估算。 */
-export async function appendWorkbuddyCreditLedger(log: RequestLog) {
+export async function appendWorkbuddyCreditLedger(log: RequestLog, dataDir?: string) {
   const entry = ledgerEntryFromLog(log)
   if (!entry) return
   await enqueueWrite(async () => {
-    const path = ledgerPath()
+    const path = ledgerPath(dataDir)
     await mkdir(dirname(path), { recursive: true })
     await appendFile(path, `${JSON.stringify(entry)}\n`, "utf8")
   })

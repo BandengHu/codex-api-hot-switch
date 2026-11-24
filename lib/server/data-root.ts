@@ -58,11 +58,22 @@ export function accountDataDir(): string | null {
  * 定时器、后台任务等没有请求上下文的调用点，需要显式传入账号目录，
  * 否则在服务器模式下会抛出，防止把不同账号的数据写到一起。
  */
-export function resolveDataDir() {
+export function resolveDataDir(explicit?: string) {
+  if (explicit) return explicit
   const scoped = accountDataDir()
   if (scoped) return scoped
   if (isServerMode()) {
     throw new Error("服务器模式缺少账号上下文，拒绝使用共享数据目录")
   }
   return sharedDataDir()
+}
+
+/**
+ * 在请求上下文还在时把账号目录固定下来，供稍后才执行的异步任务使用。
+ *
+ * 流式响应会在 handler 返回之后、由 Next.js 消费流时才写日志，
+ * 那时 AsyncLocalStorage 的请求作用域已经结束，不能只依赖 resolveDataDir()。
+ */
+export function captureDataDir() {
+  return resolveDataDir()
 }

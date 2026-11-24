@@ -319,8 +319,12 @@ async function compactTelemetryFiles(settings: Settings, dataDir = resolveDataDi
   })
 }
 
-export async function appendTelemetryLog(log: RequestLog, settings: Settings) {
-  const dataDir = resolveDataDir()
+export async function appendTelemetryLog(
+  log: RequestLog,
+  settings: Settings,
+  explicitDataDir?: string,
+) {
+  const dataDir = resolveDataDir(explicitDataDir)
   const bucket = bucketFor(dataDir)
   return enqueueTelemetry(async () => {
     await ensureTelemetryDir(dataDir)

@@ -667,9 +667,10 @@ export async function replaceSettings(settings: Settings) {
   return updateSnapshot((snapshot) => ({ ...snapshot, settings }))
 }
 
-export async function appendLog(log: RequestLog): Promise<ConsoleSnapshot> {
-  const snapshot = await loadSnapshot()
-  await appendTelemetryLog(log, snapshot.settings)
+export async function appendLog(log: RequestLog, explicitDataDir?: string): Promise<ConsoleSnapshot> {
+  const dataDir = resolveDataDir(explicitDataDir)
+  const snapshot = await loadSnapshot(dataDir)
+  await appendTelemetryLog(log, snapshot.settings, dataDir)
   return snapshot
 }
 

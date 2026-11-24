@@ -26,16 +26,16 @@ const PRUNE_GRACE_MS = 10 * 60 * 1000
 // 一次要删几千个目录，串行 rm 会让压缩队列卡太久。
 const PRUNE_CONCURRENCY = 8
 
-function requestDetailsRoot() {
-  return join(resolveDataDir(), "logs", "request-details")
+function requestDetailsRoot(dataDir?: string) {
+  return join(resolveDataDir(dataDir), "logs", "request-details")
 }
 
 function safeFileId(id: string) {
   return id.replace(/[^a-zA-Z0-9._-]/g, "_")
 }
 
-function detailDir(logId: string) {
-  return join(requestDetailsRoot(), safeFileId(logId))
+function detailDir(logId: string, dataDir?: string) {
+  return join(requestDetailsRoot(dataDir), safeFileId(logId))
 }
 
 function fullJsonText(value: unknown) {
@@ -75,10 +75,10 @@ export function registerRequestLogDetailSource(
   detailSources.set(log, source)
 }
 
-export async function appendRequestLogDetails(log: RequestLog) {
+export async function appendRequestLogDetails(log: RequestLog, explicitDataDir?: string) {
   const source = detailSources.get(log)
   if (!source?.enabled) return
-  const dir = detailDir(log.id)
+  const dir = detailDir(log.id, explicitDataDir)
   await mkdir(dir, { recursive: true })
   await Promise.all([
     writeFile(join(dir, "raw-request.json"), fullJsonText(source.rawBody), "utf8"),
