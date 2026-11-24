@@ -1328,6 +1328,15 @@ interface ChatSseAccum {
   model: string
   workbuddyResponsesMetadata: boolean
   content: string
+  messages: Array<{
+    id: string
+    outputIndex: number
+    content: string
+    phase: "commentary" | "final_answer"
+  }>
+  activeMessageIndex: number | null
+  messageSegment: number
+  toolTurnStarted: boolean
   reasoning: string
   responseStarted: boolean
   completed: boolean
@@ -1365,6 +1374,10 @@ function createChatSseAccumulator(workbuddyResponsesMetadata = false): ChatSseAc
     model: "",
     workbuddyResponsesMetadata,
     content: "",
+    messages: [],
+    activeMessageIndex: null,
+    messageSegment: 0,
+    toolTurnStarted: false,
     reasoning: "",
     responseStarted: false,
     completed: false,
@@ -1578,13 +1591,15 @@ function applyChatSseFullMessageSnapshot(
 
   const content = chatPayloadContentText(payload.content) || safeTrim(payload.refusal)
   if (content) {
-    if (!state.messageAdded) {
+    const activeMessage = activeChatSseMessage(state)
+    if (!activeMessage) {
       out += pushChatSseContentDelta(state, content)
-    } else if (content !== state.content) {
-      if (content.startsWith(state.content)) {
-        out += pushChatSseContentDelta(state, content.slice(state.content.length))
+    } else if (content !== activeMessage.content) {
+      if (content.startsWith(activeMessage.content)) {
+        out += pushChatSseContentDelta(state, content.slice(activeMessage.content.length))
       } else {
-        state.content = content
+        state.content = state.content.replace(activeMessage.content, content)
+        activeMessage.content = content
       }
     }
   }
@@ -1595,6 +1610,10 @@ function applyChatSseFullMessageSnapshot(
     if (toolDeltas.some((delta) => delta.startsCall)) {
       out += flushChatSseInlineThinkAtBoundary(state)
       out += finalizeChatSseReasoning(state)
+      if (state.workbuddyResponsesMetadata) {
+        state.toolTurnStarted = true
+        out += closeActiveChatSseMessage(state)
+      }
     }
     for (const { position, value } of toolDeltas) {
       out += mergeChatSseToolCallDelta(state, value, position, toolContext, {
@@ -1675,27 +1694,90 @@ function finalizeChatSseReasoning(state: ChatSseAccum) {
   )
 }
 
+function chatSseMessageId(state: ChatSseAccum, index: number) {
+  return index === 0 ? `${state.id}_msg` : `${state.id}_msg_${index + 1}`
+}
+
+function activeChatSseMessage(state: ChatSseAccum) {
+  if (state.activeMessageIndex == null) return null
+  return state.messages[state.activeMessageIndex] ?? null
+}
+
+function closeActiveChatSseMessage(state: ChatSseAccum) {
+  const message = activeChatSseMessage(state)
+  if (!message || !message.content.trim()) {
+    state.activeMessageIndex = null
+    return ""
+  }
+  message.phase = "commentary"
+  const out =
+    sse("response.output_text.done", {
+      type: "response.output_text.done",
+      item_id: message.id,
+      output_index: message.outputIndex,
+      content_index: 0,
+      text: message.content,
+    }) +
+    sse("response.content_part.done", {
+      type: "response.content_part.done",
+      item_id: message.id,
+      output_index: message.outputIndex,
+      content_index: 0,
+      part: { type: "output_text", text: message.content, annotations: [] },
+    }) +
+    sse("response.output_item.done", {
+      type: "response.output_item.done",
+      output_index: message.outputIndex,
+      item: applyWorkbuddyResponseMetadata({
+        id: message.id,
+        type: "message",
+        status: "completed",
+        role: "assistant",
+        content: [{ type: "output_text", text: message.content, annotations: [] }],
+        phase: "commentary",
+      }, state.workbuddyResponsesMetadata),
+    })
+  state.activeMessageIndex = null
+  return out
+}
+
 function pushChatSseTextDelta(state: ChatSseAccum, content: string) {
   if (!content) return ""
   let out = finalizeChatSseReasoning(state)
   out += ensureResponseStarted(state)
-  if (!state.messageAdded) {
+  const currentMessage = activeChatSseMessage(state)
+  if (!currentMessage) {
     state.messageOutputIndex = nextStreamingOutputIndex(state)
+    const phase =
+      state.workbuddyResponsesMetadata && state.toolTurnStarted
+        ? "final_answer"
+        : "commentary"
+    state.messages.push({
+      id: chatSseMessageId(state, state.messageSegment),
+      outputIndex: state.messageOutputIndex,
+      content: "",
+      phase,
+    })
+    state.activeMessageIndex = state.messages.length - 1
+    state.messageSegment += 1
+    const message = activeChatSseMessage(state)!
     out += sse("response.output_item.added", {
       type: "response.output_item.added",
       output_index: state.messageOutputIndex,
       item: applyWorkbuddyResponseMetadata({
-        id: `${state.id}_msg`,
+        id: message.id,
         type: "message",
         status: "in_progress",
         role: "assistant",
         content: [],
-        ...(state.workbuddyResponsesMetadata ? { phase: "commentary" } : {}),
+        ...(state.workbuddyResponsesMetadata && state.toolTurnStarted
+          ? { phase: "final_answer" }
+          : {}),
       }, state.workbuddyResponsesMetadata),
     })
     out += sse("response.content_part.added", {
       type: "response.content_part.added",
-      item_id: `${state.id}_msg`,
+      item_id: message.id,
       output_index: state.messageOutputIndex,
       content_index: 0,
       part: { type: "output_text", text: "", annotations: [] },
@@ -1703,9 +1785,11 @@ function pushChatSseTextDelta(state: ChatSseAccum, content: string) {
     state.messageAdded = true
   }
   state.content += content
+  const message = activeChatSseMessage(state)
+  if (message) message.content += content
   out += sse("response.output_text.delta", {
     type: "response.output_text.delta",
-    item_id: `${state.id}_msg`,
+    item_id: message?.id ?? `${state.id}_msg`,
     output_index: state.messageOutputIndex ?? 0,
     content_index: 0,
     delta: content,
@@ -1785,17 +1869,21 @@ function completedChatSseOutputItems(state: ChatSseAccum, serializedContext: Ser
       },
     })
   }
-  if (state.messageAdded) {
+  for (const stateMessage of state.messages) {
     const message = applyWorkbuddyResponseMetadata({
-      id: `${state.id}_msg`,
+      id: stateMessage.id,
       type: "message",
       status: "completed",
       role: "assistant",
-      content: [{ type: "output_text", text: state.content, annotations: [] }],
-      ...(state.workbuddyResponsesMetadata ? { phase: "commentary" } : {}),
+      content: [{
+        type: "output_text",
+        text: stateMessage.content,
+        annotations: [],
+      }],
+      phase: stateMessage.phase,
     }, state.workbuddyResponsesMetadata)
     output.push({
-      index: state.messageOutputIndex ?? 0,
+      index: stateMessage.outputIndex,
       item: message,
     })
   }
@@ -1923,6 +2011,10 @@ function chatSseTextToResponsesSse(
       if (toolDeltas.some((delta) => delta.startsCall)) {
         out += flushChatSseInlineThinkAtBoundary(state)
         out += finalizeChatSseReasoning(state)
+        if (state.workbuddyResponsesMetadata) {
+          state.toolTurnStarted = true
+          out += closeActiveChatSseMessage(state)
+        }
       }
       const toolContext = deserializeToolContext(serializedContext)
       for (const { position, value } of toolDeltas) {
@@ -1997,43 +2089,42 @@ function finalizeChatSse(
     throw error
   }
   state.completed = true
-  if (state.messageAdded) {
-    // WorkBuddy 的 Chat 流在正文开始时不能可靠判定后面是否会出现工具调用。
-    // 一旦先以 final_answer 暴露，后到工具调用会让桌面端重新索引并闪烁。
-    // 因此该供应商固定从 commentary 阶段开始；普通 Chat 仍按收尾结果判定。
-    const messagePhase = state.workbuddyResponsesMetadata
-      ? "commentary"
-      : state.toolCalls.size > 0
-        ? "commentary"
-        : "final_answer"
+  const currentMessage = activeChatSseMessage(state)
+  if (currentMessage) {
+    const messagePhase =
+      state.workbuddyResponsesMetadata || state.toolCalls.size === 0
+        ? "final_answer"
+        : "commentary"
+    currentMessage.phase = messagePhase
     out += sse("response.output_text.done", {
       type: "response.output_text.done",
-      item_id: `${state.id}_msg`,
-      output_index: state.messageOutputIndex ?? 0,
+      item_id: currentMessage.id,
+      output_index: currentMessage.outputIndex,
       content_index: 0,
-      text: state.content,
+      text: currentMessage.content,
     })
     out += sse("response.content_part.done", {
       type: "response.content_part.done",
-      item_id: `${state.id}_msg`,
-      output_index: state.messageOutputIndex ?? 0,
+      item_id: currentMessage.id,
+      output_index: currentMessage.outputIndex,
       content_index: 0,
-      part: { type: "output_text", text: state.content, annotations: [] },
+      part: { type: "output_text", text: currentMessage.content, annotations: [] },
     })
     out += sse("response.output_item.done", {
       type: "response.output_item.done",
-      output_index: state.messageOutputIndex ?? 0,
+      output_index: currentMessage.outputIndex,
       item: {
         ...applyWorkbuddyResponseMetadata({
-          id: `${state.id}_msg`,
+          id: currentMessage.id,
           type: "message",
           status: "completed",
           role: "assistant",
-          content: [{ type: "output_text", text: state.content, annotations: [] }],
+          content: [{ type: "output_text", text: currentMessage.content, annotations: [] }],
           phase: messagePhase,
         }, state.workbuddyResponsesMetadata),
       },
     })
+    state.activeMessageIndex = null
   }
   if (state.toolCalls.size > 0) {
     const toolContext = deserializeToolContext(serializedContext)
