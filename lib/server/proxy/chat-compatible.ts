@@ -106,7 +106,7 @@ export type ChatCompatibleAdapter =
       requestIsStream: boolean
       originalRequest: AnyRecord
       toolContext: SerializedToolContext
-      workbuddyResponsesMetadata: boolean
+      workbuddyStream: boolean
     }
   | {
       type: "chat_compatible_passthrough"
@@ -903,14 +903,6 @@ function responseStatusFromFinishReason(finishReason: unknown) {
   return safeTrim(finishReason) === "length" ? "incomplete" : "completed"
 }
 
-// Codex 桌面端只把同时带 phase=final_answer 和 memoryCitation 字段的 agentMessage
-// 识别为已完成的最终回答。WorkBuddy 的 Chat 响应没有该字段，补齐 null 可避免实时流
-// 与历史刷新采用不同的消息折叠规则。
-function applyWorkbuddyResponseMetadata(message: AnyRecord, enabled: boolean) {
-  if (enabled) message.memoryCitation = null
-  return message
-}
-
 function outputTextFromResponseItems(output: AnyRecord[]) {
   return output
     .filter((item) => item.type === "message")
@@ -929,7 +921,6 @@ export function chatCompletionToResponse(
   payload: unknown,
   originalRequest: AnyRecord,
   serializedContext: SerializedToolContext,
-  workbuddyResponsesMetadata = false,
 ) {
   if (!isObject(payload)) throw new Error("chat response 不是 JSON 对象")
   const choices = Array.isArray(payload.choices) ? payload.choices : []
@@ -955,13 +946,13 @@ export function chatCompletionToResponse(
   }
   const text = chatMessageText(message)
   if (text) {
-    const message = applyWorkbuddyResponseMetadata({
+    const message = {
       id: `${respId}_msg`,
       type: "message",
       status: "completed",
       role: "assistant",
       content: [{ type: "output_text", text, annotations: [] }],
-    }, workbuddyResponsesMetadata)
+    }
     output.push(message)
   }
 
@@ -1148,7 +1139,7 @@ export function buildChatCompatibleRequest(
       requestIsStream: requestedStream,
       originalRequest,
       toolContext: serializeToolContext(converted.toolContext),
-      workbuddyResponsesMetadata: isWorkbuddyProvider(target.provider),
+      workbuddyStream: isWorkbuddyProvider(target.provider),
     },
     init: {
       method: "POST",
@@ -1177,7 +1168,6 @@ export function transformChatCompatibleResponse(
     payload,
     adapter.originalRequest,
     adapter.toolContext,
-    adapter.workbuddyResponsesMetadata,
   )
   if (options.recordHistory !== false) {
     recordCodexChatResponse(response, adapter.originalRequest)
@@ -1193,7 +1183,7 @@ export function chatSseToResponsesSse(
   text: string,
   adapter: Extract<ChatCompatibleAdapter, { type: "chat_compatible" }>,
 ) {
-  const state = createChatSseAccumulator(adapter.workbuddyResponsesMetadata)
+  const state = createChatSseAccumulator(adapter.workbuddyStream)
   const out = chatSseTextToResponsesSse(
     text,
     adapter.originalRequest,
@@ -1214,7 +1204,7 @@ export function createChatToResponsesSseStream(
   const decoder = new TextDecoder()
   const encoder = new TextEncoder()
   let buffer = ""
-  const state = createChatSseAccumulator(adapter.workbuddyResponsesMetadata)
+  const state = createChatSseAccumulator(adapter.workbuddyStream)
   const stream = new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       buffer += decoder.decode(chunk, { stream: true })
@@ -1326,7 +1316,7 @@ interface ChatSseAccum {
   id: string
   created: number
   model: string
-  workbuddyResponsesMetadata: boolean
+  workbuddyStream: boolean
   content: string
   messages: Array<{
     id: string
@@ -1336,7 +1326,6 @@ interface ChatSseAccum {
   }>
   activeMessageIndex: number | null
   messageSegment: number
-  toolTurnStarted: boolean
   reasoning: string
   responseStarted: boolean
   completed: boolean
@@ -1367,17 +1356,16 @@ interface ChatSseAccum {
   sawDone: boolean
 }
 
-function createChatSseAccumulator(workbuddyResponsesMetadata = false): ChatSseAccum {
+function createChatSseAccumulator(workbuddyStream = false): ChatSseAccum {
   return {
     id: "resp_compat",
     created: Math.floor(Date.now() / 1000),
     model: "",
-    workbuddyResponsesMetadata,
+    workbuddyStream,
     content: "",
     messages: [],
     activeMessageIndex: null,
     messageSegment: 0,
-    toolTurnStarted: false,
     reasoning: "",
     responseStarted: false,
     completed: false,
@@ -1610,8 +1598,7 @@ function applyChatSseFullMessageSnapshot(
     if (toolDeltas.some((delta) => delta.startsCall)) {
       out += flushChatSseInlineThinkAtBoundary(state)
       out += finalizeChatSseReasoning(state)
-      if (state.workbuddyResponsesMetadata) {
-        state.toolTurnStarted = true
+      if (state.workbuddyStream) {
         out += closeActiveChatSseMessage(state)
       }
     }
@@ -1728,14 +1715,14 @@ function closeActiveChatSseMessage(state: ChatSseAccum) {
     sse("response.output_item.done", {
       type: "response.output_item.done",
       output_index: message.outputIndex,
-      item: applyWorkbuddyResponseMetadata({
+      item: {
         id: message.id,
         type: "message",
         status: "completed",
         role: "assistant",
         content: [{ type: "output_text", text: message.content, annotations: [] }],
         phase: "commentary",
-      }, state.workbuddyResponsesMetadata),
+      },
     })
   state.activeMessageIndex = null
   return out
@@ -1748,15 +1735,11 @@ function pushChatSseTextDelta(state: ChatSseAccum, content: string) {
   const currentMessage = activeChatSseMessage(state)
   if (!currentMessage) {
     state.messageOutputIndex = nextStreamingOutputIndex(state)
-    const phase =
-      state.workbuddyResponsesMetadata && state.toolTurnStarted
-        ? "final_answer"
-        : "commentary"
     state.messages.push({
       id: chatSseMessageId(state, state.messageSegment),
       outputIndex: state.messageOutputIndex,
       content: "",
-      phase,
+      phase: "commentary",
     })
     state.activeMessageIndex = state.messages.length - 1
     state.messageSegment += 1
@@ -1764,16 +1747,19 @@ function pushChatSseTextDelta(state: ChatSseAccum, content: string) {
     out += sse("response.output_item.added", {
       type: "response.output_item.added",
       output_index: state.messageOutputIndex,
-      item: applyWorkbuddyResponseMetadata({
+      item: {
         id: message.id,
         type: "message",
         status: "in_progress",
         role: "assistant",
         content: [],
-        ...(state.workbuddyResponsesMetadata && state.toolTurnStarted
-          ? { phase: "final_answer" }
+        // 缺省 phase 在 Codex 实时视图中会按最终回答展示；历史中的同一条消息却是
+        // commentary，刷新合并时就会反复折叠、展开。Chat 流在正文开始时尚不知道
+        // 后续是否有工具调用，先按进度消息流出，收尾时再确定最终答案。
+        ...(state.workbuddyStream
+          ? { phase: message.phase }
           : {}),
-      }, state.workbuddyResponsesMetadata),
+      },
     })
     out += sse("response.content_part.added", {
       type: "response.content_part.added",
@@ -1870,7 +1856,7 @@ function completedChatSseOutputItems(state: ChatSseAccum, serializedContext: Ser
     })
   }
   for (const stateMessage of state.messages) {
-    const message = applyWorkbuddyResponseMetadata({
+    const message = {
       id: stateMessage.id,
       type: "message",
       status: "completed",
@@ -1881,7 +1867,7 @@ function completedChatSseOutputItems(state: ChatSseAccum, serializedContext: Ser
         annotations: [],
       }],
       phase: stateMessage.phase,
-    }, state.workbuddyResponsesMetadata)
+    }
     output.push({
       index: stateMessage.outputIndex,
       item: message,
@@ -1978,7 +1964,7 @@ function chatSseTextToResponsesSse(
       return out
     }
     const chunkId = safeTrim(chunk.id)
-    if (chunkId && (!state.workbuddyResponsesMetadata || !state.responseStarted)) {
+    if (chunkId && (!state.workbuddyStream || !state.responseStarted)) {
       state.id = chunkId.startsWith("resp_") ? chunkId : `resp_${chunkId}`
     }
     state.model = safeTrim(chunk.model) || state.model
@@ -2011,8 +1997,7 @@ function chatSseTextToResponsesSse(
       if (toolDeltas.some((delta) => delta.startsCall)) {
         out += flushChatSseInlineThinkAtBoundary(state)
         out += finalizeChatSseReasoning(state)
-        if (state.workbuddyResponsesMetadata) {
-          state.toolTurnStarted = true
+        if (state.workbuddyStream) {
           out += closeActiveChatSseMessage(state)
         }
       }
@@ -2092,7 +2077,7 @@ function finalizeChatSse(
   const currentMessage = activeChatSseMessage(state)
   if (currentMessage) {
     const messagePhase =
-      state.workbuddyResponsesMetadata || state.toolCalls.size === 0
+      state.workbuddyStream || state.toolCalls.size === 0
         ? "final_answer"
         : "commentary"
     currentMessage.phase = messagePhase
@@ -2114,14 +2099,12 @@ function finalizeChatSse(
       type: "response.output_item.done",
       output_index: currentMessage.outputIndex,
       item: {
-        ...applyWorkbuddyResponseMetadata({
-          id: currentMessage.id,
-          type: "message",
-          status: "completed",
-          role: "assistant",
-          content: [{ type: "output_text", text: currentMessage.content, annotations: [] }],
-          phase: messagePhase,
-        }, state.workbuddyResponsesMetadata),
+        id: currentMessage.id,
+        type: "message",
+        status: "completed",
+        role: "assistant",
+        content: [{ type: "output_text", text: currentMessage.content, annotations: [] }],
+        phase: messagePhase,
       },
     })
     state.activeMessageIndex = null

@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   chatCompletionToResponse,
   chatSseToResponsesSse,
+  createChatToResponsesSseStream,
   transformChatCompatibleResponse,
   type ChatCompatibleAdapter,
 } from "./chat-compatible"
@@ -20,7 +21,7 @@ function sse(payload: unknown) {
 }
 
 function adapter(
-  workbuddyResponsesMetadata: boolean,
+  workbuddyStream: boolean,
 ): Extract<ChatCompatibleAdapter, { type: "chat_compatible" }> {
   return {
     type: "chat_compatible",
@@ -28,7 +29,7 @@ function adapter(
     requestIsStream: true,
     originalRequest: { model: "deepseek-v4.1-flash", stream: true },
     toolContext,
-    workbuddyResponsesMetadata,
+    workbuddyStream,
   }
 }
 
@@ -69,7 +70,7 @@ function completedMessages(events: any[]) {
     ?.filter((item: any) => item.type === "message") ?? []
 }
 
-function streamEvents(workbuddyResponsesMetadata: boolean) {
+function streamEvents(workbuddyStream: boolean) {
   return parseEvents(chatSseToResponsesSse(
     sse({
       id: "chatcmpl_workbuddy",
@@ -81,11 +82,11 @@ function streamEvents(workbuddyResponsesMetadata: boolean) {
         choices: [{ delta: {}, finish_reason: "stop" }],
       }) +
       "data: [DONE]\n\n",
-    adapter(workbuddyResponsesMetadata),
+    adapter(workbuddyStream),
   ).text)
 }
 
-test("WorkBuddy 普通回答从创建起就是 final_answer 并补齐 memoryCitation", () => {
+test("WorkBuddy 正文从 commentary 开始，收尾再标记最终答案", () => {
   const events = streamEvents(true)
   const doneItem = finalMessageEvent(events)
   const completedItem = completedMessage(events)
@@ -95,15 +96,12 @@ test("WorkBuddy 普通回答从创建起就是 final_answer 并补齐 memoryCita
       event.item?.type === "message",
   )?.item
 
-  assert.equal(Object.hasOwn(addedItem, "phase"), false)
-  assert.equal(Object.hasOwn(addedItem, "memoryCitation"), true)
-  assert.equal(addedItem.memoryCitation, null)
+  assert.equal(addedItem.phase, "commentary")
+  assert.equal(Object.hasOwn(addedItem, "memoryCitation"), false)
   assert.equal(doneItem.phase, "final_answer")
-  assert.equal(Object.hasOwn(doneItem, "memoryCitation"), true)
-  assert.equal(doneItem.memoryCitation, null)
+  assert.equal(Object.hasOwn(doneItem, "memoryCitation"), false)
   assert.equal(completedItem.phase, "final_answer")
-  assert.equal(Object.hasOwn(completedItem, "memoryCitation"), true)
-  assert.equal(completedItem.memoryCitation, null)
+  assert.equal(Object.hasOwn(completedItem, "memoryCitation"), false)
   assert.equal(doneItem.id, completedItem.id)
   assert.equal(doneItem.content[0].text, completedItem.content[0].text)
 })
@@ -124,7 +122,7 @@ test("普通 Chat 流式最终消息不新增 memoryCitation", () => {
   assert.equal(Object.hasOwn(completedItem, "memoryCitation"), false)
 })
 
-test("WorkBuddy 非流式最终消息带 memoryCitation", () => {
+test("非流式最终消息只使用 Responses 的阶段字段", () => {
   const response = chatCompletionToResponse(
     {
       id: "chatcmpl_workbuddy",
@@ -136,14 +134,12 @@ test("WorkBuddy 非流式最终消息带 memoryCitation", () => {
     },
     { model: "deepseek-v4.1-flash" },
     toolContext,
-    true,
   )
   const output = (response as { output: any[] }).output
   const message = output.find((item) => item.type === "message")
 
   assert.equal(message.phase, "final_answer")
-  assert.equal(Object.hasOwn(message, "memoryCitation"), true)
-  assert.equal(message.memoryCitation, null)
+  assert.equal(Object.hasOwn(message, "memoryCitation"), false)
 })
 
 test("普通 Chat 非流式最终消息保持原字段", () => {
@@ -166,7 +162,7 @@ test("普通 Chat 非流式最终消息保持原字段", () => {
   assert.equal(Object.hasOwn(message, "memoryCitation"), false)
 })
 
-test("WorkBuddy 工具调用前的消息以 commentary 结束并补齐元数据", () => {
+test("WorkBuddy 工具调用前的消息从创建到完成均为 commentary", () => {
   const events = parseEvents(chatSseToResponsesSse(
     sse({
       id: "chatcmpl_workbuddy_tool",
@@ -204,14 +200,14 @@ test("WorkBuddy 工具调用前的消息以 commentary 结束并补齐元数据"
     .map((event) => event.item)
   const completedMessageItems = completedMessages(events)
 
-  assert.equal(Object.hasOwn(addedMessage, "phase"), false)
-  assert.equal(addedMessage.memoryCitation, null)
+  assert.equal(addedMessage.phase, "commentary")
+  assert.equal(Object.hasOwn(addedMessage, "memoryCitation"), false)
   assert.equal(messages.length, 1)
   assert.equal(messages[0].phase, "commentary")
-  assert.equal(messages[0].memoryCitation, null)
+  assert.equal(Object.hasOwn(messages[0], "memoryCitation"), false)
   assert.equal(completedMessageItems.length, 1)
   assert.equal(completedMessageItems[0].phase, "commentary")
-  assert.equal(completedMessageItems[0].memoryCitation, null)
+  assert.equal(Object.hasOwn(completedMessageItems[0], "memoryCitation"), false)
 })
 
 test("WorkBuddy 工具调用后的回答使用独立且稳定的 final_answer", () => {
@@ -261,7 +257,7 @@ test("WorkBuddy 工具调用后的回答使用独立且稳定的 final_answer", 
 
   assert.deepEqual(
     addedMessages.map((item: any) => item.phase),
-    [undefined, "final_answer"],
+    ["commentary", "commentary"],
   )
   assert.deepEqual(
     doneMessages.map((item: any) => item.phase),
@@ -279,8 +275,56 @@ test("WorkBuddy 工具调用后的回答使用独立且稳定的 final_answer", 
   assert.notEqual(addedMessages[0].id, addedMessages[1].id)
   assert.equal(outputMessages[0].content[0].text, "我先检查文件。")
   assert.equal(outputMessages[1].content[0].text, "检查完成，目录中只有一个文件。")
-  assert.equal(outputMessages[0].memoryCitation, null)
-  assert.equal(outputMessages[1].memoryCitation, null)
+  assert.equal(Object.hasOwn(outputMessages[0], "memoryCitation"), false)
+  assert.equal(Object.hasOwn(outputMessages[1], "memoryCitation"), false)
+})
+
+test("WorkBuddy 在后续工具分片到达前就给实时正文标记 commentary", async () => {
+  const { stream } = createChatToResponsesSseStream(adapter(true))
+  const writer = stream.writable.getWriter()
+  const reader = stream.readable.getReader()
+  const encoder = new TextEncoder()
+  const decoder = new TextDecoder()
+  const read = reader.read()
+  await writer.write(encoder.encode(sse({
+    id: "chatcmpl_delayed_tool",
+    choices: [{ delta: { content: "我先检查文件。" } }],
+  })))
+  const first = parseEvents(decoder.decode((await read).value))
+  const started = first.find(
+    (event) => event.type === "response.output_item.added" && event.item?.type === "message",
+  )?.item
+
+  assert.equal(started.phase, "commentary")
+  assert.equal(first.some((event) => event.type === "response.output_item.done"), false)
+
+  const toolRead = reader.read()
+  await writer.write(encoder.encode(sse({
+    id: "chatcmpl_delayed_tool",
+    choices: [{
+      delta: {
+        tool_calls: [{
+          index: 0,
+          id: "call_delayed",
+          type: "function",
+          function: { name: "exec_command", arguments: '{"cmd":"Get-ChildItem"}' },
+        }],
+      },
+      finish_reason: "tool_calls",
+    }],
+  })))
+  const toolEvents = parseEvents(decoder.decode((await toolRead).value))
+  const done = finalMessageEvent(toolEvents)
+  assert.equal(done.id, started.id)
+  assert.equal(done.phase, started.phase)
+
+  const tailRead = reader.read()
+  await writer.close()
+  const tail = parseEvents(decoder.decode((await tailRead).value))
+  assert.equal(completedMessage(tail).phase, "commentary")
+  assert.equal(completedMessage(tail).id, started.id)
+  reader.releaseLock()
+  writer.releaseLock()
 })
 
 test("WorkBuddy 后续分片更换 Chat ID 时不改写已创建的响应身份", () => {
