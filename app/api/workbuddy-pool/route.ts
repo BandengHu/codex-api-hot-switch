@@ -4,7 +4,7 @@ import { errorMessage, jsonError, readJsonBody } from "@/lib/server/http"
 import {
  importPoolAccount,
  listPoolEntries,
-  availableUidOfState,
+  activeUidOf,
   readPoolState,
   setActivePoolAccount,
  syncPoolFromDisk,
@@ -38,8 +38,16 @@ interface PoolEntryWithBalance {
  /** 是否参与自动签到/每日任务。 */
  automationEnabled: boolean
  accountBan?: WorkbuddyAccountBan
- rateLimit?: { message: string; resetAt: string }
-  recoveredRateLimit?: { message: string; resetAt: string }
+ rateLimit?: {
+   message: string
+   resetAt?: string
+   kind?: "frequency_limit" | "quota_exhausted"
+ }
+  recoveredRateLimit?: {
+    message: string
+    resetAt?: string
+    kind?: "frequency_limit" | "quota_exhausted"
+  }
  balance?: { remain: number; used: number; size: number; packs: number }
  balanceError?: string
  dailyStatus?: {
@@ -123,7 +131,7 @@ export async function GET(request: Request) {
  // 全部账号限频时仍返回列表；没有可转发账号就用空串表示。
  return NextResponse.json({
    entries: enriched,
-   activeUid: availableUidOfState(poolState) ?? "",
+   activeUid: activeUidOf(poolState),
  })
     } catch (error) {
       return jsonError(`读取号池失败：${errorMessage(error)}`)

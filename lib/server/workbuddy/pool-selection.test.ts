@@ -24,6 +24,10 @@ const EXPIRED_LIMIT = {
   message: "expired",
   resetAt: "2026-10-29T07:00:00.000Z",
 }
+const QUOTA_EXHAUSTED = {
+  message: "quota exhausted",
+  kind: "quota_exhausted" as const,
+}
 
 function state(
   activeUid: string | undefined,
@@ -96,6 +100,14 @@ test("expired limits stop blocking selection and are pruned", () => {
   assert.equal(preferredRateLimitOf(value, value.entries, NOW), undefined)
   assert.equal(pruneExpiredRateLimits(value, NOW), true)
   assert.deepEqual(value.rateLimits, {})
+})
+
+test("quota exhaustion without a reset time never expires and is never pruned", () => {
+  const value = state("a", { a: QUOTA_EXHAUSTED })
+  assert.equal(availableUidOf(value, value.entries, NOW), "b")
+  assert.equal(preferredRateLimitOf(value, value.entries, NOW), QUOTA_EXHAUSTED)
+  assert.equal(pruneExpiredRateLimits(value, NOW), false)
+  assert.deepEqual(value.rateLimits, { a: QUOTA_EXHAUSTED })
 })
 
 test("all actively limited accounts produce no next account", () => {

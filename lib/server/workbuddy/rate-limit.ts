@@ -7,10 +7,12 @@ const RATE_LIMIT_MESSAGE =
 const RATE_LIMIT_HEAD = "您的使用量已超出频率限制，将在"
 const RATE_LIMIT_SWITCH = "您也可以切换其他模型继续使用"
 const RATE_LIMIT_RESET = "重置"
+const QUOTA_EXHAUSTED_CODE = 14018
 
 export interface WorkbuddyRateLimit {
   message: string
-  resetAt: string
+  resetAt?: string
+  kind?: "frequency_limit" | "quota_exhausted"
 }
 
 export class WorkbuddyRateLimitError extends EndpointAttemptError {
@@ -56,10 +58,74 @@ function parseRateLimit(text: string): WorkbuddyRateLimit | null {
   const sign = match[7] === "+" ? 1 : -1
   return {
     message: match[0].trim(),
+    kind: "frequency_limit",
     resetAt: new Date(
       localTime - sign * (offsetHours * 60 + offsetMinutes) * 60_000,
     ).toISOString(),
   }
+}
+
+function numericCode(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    return Number(value.trim())
+  }
+  return undefined
+}
+
+function quotaExhaustedFromRecord(
+  value: Record<string, unknown>,
+): WorkbuddyRateLimit | null {
+  const code = numericCode(value.code)
+  if (code !== QUOTA_EXHAUSTED_CODE) return null
+  const message =
+    typeof value.msg === "string"
+      ? value.msg.trim()
+      : typeof value.message === "string"
+        ? value.message.trim()
+        : ""
+  if (!message || !message.includes("额度已用尽")) return null
+  return {
+    kind: "quota_exhausted",
+    message,
+  }
+}
+
+function embeddedJsonValues(text: string) {
+  const values: unknown[] = []
+  for (let start = 0; start < text.length; start += 1) {
+    if (text[start] !== "{" && text[start] !== "[") continue
+    let depth = 0
+    let quoted = false
+    let escaped = false
+    for (let cursor = start; cursor < text.length; cursor += 1) {
+      const char = text[cursor]
+      if (quoted) {
+        if (escaped) escaped = false
+        else if (char === "\\") escaped = true
+        else if (char === '"') quoted = false
+        continue
+      }
+      if (char === '"') {
+        quoted = true
+        continue
+      }
+      if (char === "{" || char === "[") depth += 1
+      else if (char === "}" || char === "]") {
+        depth -= 1
+        if (depth === 0) {
+          try {
+            values.push(JSON.parse(text.slice(start, cursor + 1)))
+          } catch {
+            // Keep scanning; transport prefixes can surround a valid payload.
+          }
+          start = cursor
+          break
+        }
+      }
+    }
+  }
+  return values
 }
 
 interface PrefixStep {
@@ -239,12 +305,17 @@ export function workbuddyRateLimitFromText(text: string): WorkbuddyRateLimit | n
   const direct = parseRateLimit(text)
   if (direct) return direct
   const trimmed = text.trim()
-  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null
   try {
-    return workbuddyRateLimitFromPayload(JSON.parse(trimmed))
+    const parsed = workbuddyRateLimitFromPayload(JSON.parse(trimmed))
+    if (parsed) return parsed
   } catch {
-    return null
+    // Plain error text may still contain a complete JSON payload.
   }
+  for (const value of embeddedJsonValues(text)) {
+    const parsed = workbuddyRateLimitFromPayload(value)
+    if (parsed) return parsed
+  }
+  return null
 }
 
 export function workbuddyRateLimitFromPayload(payload: unknown): WorkbuddyRateLimit | null {
@@ -260,7 +331,10 @@ export function workbuddyRateLimitFromPayload(payload: unknown): WorkbuddyRateLi
       }
       return null
     }
-    for (const item of Object.values(value as Record<string, unknown>)) {
+    const record = value as Record<string, unknown>
+    const quotaExhausted = quotaExhaustedFromRecord(record)
+    if (quotaExhausted) return quotaExhausted
+    for (const item of Object.values(record)) {
       const result = visit(item)
       if (result) return result
     }

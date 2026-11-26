@@ -15,7 +15,10 @@ import type {
 } from "@/lib/types"
 
 export interface WorkbuddyTargetAccount {
+  /** 号池选号键；本机账号固定为 `local`。 */
   uid: string
+  /** 上游登录态里的真实账号 UID。 */
+  accountUid: string
   realm: "cn" | "global"
 }
 

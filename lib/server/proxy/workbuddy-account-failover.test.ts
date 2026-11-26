@@ -12,6 +12,8 @@ import { WorkbuddyAccountBanError } from "@/lib/server/workbuddy/account-ban"
 
 const MESSAGE =
   "您的使用量已超出频率限制，将在 2026-10-30 10:43:32 UTC+8 重置，您也可以切换其他模型继续使用。"
+const QUOTA_EXHAUSTED_MESSAGE =
+  "额度已用尽，请访问以下链接，购买加量包以获取更多额度：https://www.codebuddy.cn/profile/usage "
 const dataDir = join(
   tmpdir(),
   `switchgate-workbuddy-rate-limit-${process.pid}-${Date.now()}`,
@@ -30,6 +32,14 @@ let setActiveGlobalPoolAccount:
   typeof import("@/lib/server/workbuddy/global-pool-store").setActiveGlobalPoolAccount
 let withWorkbuddyTargetCredentials:
   typeof import("@/lib/server/workbuddy/upstream").withWorkbuddyTargetCredentials
+let importPoolAccount:
+  typeof import("@/lib/server/workbuddy/task-pool-store").importPoolAccount
+let readPoolState:
+  typeof import("@/lib/server/workbuddy/task-pool-store").readPoolState
+let setActivePoolAccount:
+  typeof import("@/lib/server/workbuddy/task-pool-store").setActivePoolAccount
+let workbuddyCnProviderTemplate:
+  typeof import("@/lib/workbuddy-provider").workbuddyProviderTemplate
 
 test.before(async () => {
   await mkdir(dataDir, { recursive: true })
@@ -45,6 +55,11 @@ test.before(async () => {
   ;({ withWorkbuddyTargetCredentials } = await import(
     "@/lib/server/workbuddy/upstream"
   ))
+  ;({ importPoolAccount, readPoolState, setActivePoolAccount } = await import(
+    "@/lib/server/workbuddy/task-pool-store"
+  ))
+  workbuddyCnProviderTemplate =
+    (await import("@/lib/workbuddy-provider")).workbuddyProviderTemplate
 })
 
 test.after(async () => {
@@ -59,6 +74,18 @@ function credential(uid: string, token: string) {
       accessToken: token,
       refreshToken: "",
       domain: "www.workbuddy.ai",
+      expiresAt: Date.now() + 60 * 60 * 1000,
+    },
+  })
+}
+
+function cnCredential(uid: string, token: string) {
+  return JSON.stringify({
+    account: { uid, nickname: uid },
+    auth: {
+      accessToken: token,
+      refreshToken: "",
+      domain: "www.codebuddy.cn",
       expiresAt: Date.now() + 60 * 60 * 1000,
     },
   })
@@ -135,6 +162,19 @@ function limitedStream() {
   return new Response(
     `data: ${JSON.stringify({ choices: [{ delta: { content: MESSAGE } }] })}\n\n`,
     { headers: { "content-type": "text/event-stream" } },
+  )
+}
+
+function quotaExhaustedResponse() {
+  return Response.json(
+    {
+      data: {
+        code: 14018,
+        msg: QUOTA_EXHAUSTED_MESSAGE,
+        requestId: "quota-request",
+      },
+    },
+    { status: 429 },
   )
 }
 
@@ -224,6 +264,7 @@ test("WorkBuddy account failover", async (t) => {
     }
     assert.deepEqual(result.target.workbuddyAccount, {
       uid: "account-b",
+      accountUid: "account-b",
       realm: "global",
     })
     assert.equal(await result.response.text(), SUCCESS_STREAM)
@@ -538,11 +579,13 @@ test("WorkBuddy account failover", async (t) => {
       }
       assert.deepEqual(injected.workbuddyAccount, {
         uid: healthyUid,
+        accountUid: healthyUid,
         realm: "global",
       })
       assert.deepEqual(seen, [`Bearer token-${healthyUid}`])
       assert.deepEqual(result.target.workbuddyAccount, {
         uid: healthyUid,
+        accountUid: healthyUid,
         realm: "global",
       })
       assert.equal(await result.response.text(), SUCCESS_STREAM)
@@ -564,5 +607,174 @@ test("WorkBuddy account failover", async (t) => {
       "@/lib/server/workbuddy/global-pool-store"
     )
     assert.equal(await readActiveGlobalUid(), "fallback-ok")
+  })
+
+  await t.test("14018 freezes account A and retries with account B credentials", async () => {
+    await rm(join(dataDir, "workbuddy-global-pool"), {
+      recursive: true,
+      force: true,
+    })
+    const prepared = await prepareAccounts("quota-account-a", "quota-account-b")
+    const seen: Array<{ authorization: string; uid: string }> = []
+    const previousFetch = setProviderFetchForTesting(async (_input, init) => {
+      const headers = accountHeaders(init)
+      seen.push({
+        authorization: headers.get("authorization") || "",
+        uid: headers.get("x-user-id") || "",
+      })
+      if (headers.get("authorization") === "Bearer token-quota-account-a") {
+        return Response.json(
+          {
+            data: {
+              code: 14018,
+              msg: QUOTA_EXHAUSTED_MESSAGE,
+              requestId: "quota-request-a",
+            },
+          },
+          { status: 429 },
+        )
+      }
+      return new Response(SUCCESS_STREAM, {
+        headers: { "content-type": "text/event-stream" },
+      })
+    })
+
+    try {
+      const result = await fetchWithWorkbuddyAccountFailover({
+        target: prepared.target,
+        path: "v1/chat/completions",
+        body: {
+          model: "glm-5.3",
+          stream: true,
+          messages: [{ role: "user", content: "hello" }],
+        },
+        requestIsStream: true,
+        capacityRetryEnabled: false,
+      })
+
+      assert.deepEqual(seen, [
+        {
+          authorization: "Bearer token-quota-account-a",
+          uid: "quota-account-a",
+        },
+        {
+          authorization: "Bearer token-quota-account-b",
+          uid: "quota-account-b",
+        },
+      ])
+      assert.equal(await result.response.text(), SUCCESS_STREAM)
+      const pool = await readGlobalPoolState()
+      assert.equal(pool.activeUid, "quota-account-b")
+      assert.deepEqual(pool.rateLimits?.["quota-account-a"], {
+        kind: "quota_exhausted",
+        message: QUOTA_EXHAUSTED_MESSAGE.trim(),
+      })
+    } finally {
+      setProviderFetchForTesting(previousFetch)
+    }
+  })
+
+  await t.test("all quota-exhausted accounts stop and preserve the original 429 message", async () => {
+    await rm(join(dataDir, "workbuddy-global-pool"), {
+      recursive: true,
+      force: true,
+    })
+    const prepared = await prepareAccounts("quota-only-account")
+    let calls = 0
+    const previousFetch = setProviderFetchForTesting(async () => {
+      calls += 1
+      return Response.json(
+        {
+          data: {
+            code: 14018,
+            msg: QUOTA_EXHAUSTED_MESSAGE,
+          },
+        },
+        { status: 429 },
+      )
+    })
+
+    try {
+      await assert.rejects(
+        () =>
+          fetchWithWorkbuddyAccountFailover({
+            target: prepared.target,
+            path: "v1/chat/completions",
+            body: { model: "glm-5.3", stream: true },
+            requestIsStream: true,
+            capacityRetryEnabled: false,
+          }),
+        (error) => {
+          assert.ok(error instanceof WorkbuddyRateLimitError)
+          assert.equal(error.status, 429)
+          assert.equal(error.message, QUOTA_EXHAUSTED_MESSAGE.trim())
+          return true
+        },
+      )
+      assert.equal(calls, 1)
+      const pool = await readGlobalPoolState()
+      assert.equal(pool.rateLimits?.["quota-only-account"]?.kind, "quota_exhausted")
+    } finally {
+      setProviderFetchForTesting(previousFetch)
+    }
+  })
+
+  await t.test("CN local quota exhaustion freezes local and rotates to the next imported account", async () => {
+    await rm(join(dataDir, "workbuddy-pool"), {
+      recursive: true,
+      force: true,
+    })
+    const localAccountUid = "local-real-uid"
+    const nextUid = "cn-next-account"
+    await importPoolAccount(cnCredential(nextUid, `token-${nextUid}`))
+    await setActivePoolAccount(nextUid)
+
+    const provider = workbuddyCnProviderTemplate()
+    const prepared = await withWorkbuddyTargetCredentials(target(provider), nextUid)
+    const seen: string[] = []
+    const previousFetch = setProviderFetchForTesting(async (_input, init) => {
+      const authorization = accountHeaders(init).get("authorization") || ""
+      seen.push(authorization)
+      return authorization === `Bearer token-${nextUid}`
+        ? quotaExhaustedResponse()
+        : new Response(SUCCESS_STREAM, {
+            headers: { "content-type": "text/event-stream" },
+          })
+    })
+
+    try {
+      await assert.rejects(
+        () =>
+          fetchWithWorkbuddyAccountFailover({
+            target: {
+              ...prepared,
+              workbuddyAccount: {
+                uid: "local",
+                accountUid: localAccountUid,
+                realm: "cn",
+              },
+            },
+            path: "v1/chat/completions",
+            body: { model: "deepseek-v4.1-flash", stream: true },
+            requestIsStream: true,
+            capacityRetryEnabled: false,
+          }),
+        (error) => {
+          assert.ok(error instanceof WorkbuddyRateLimitError)
+          assert.equal(error.status, 429)
+          assert.equal(error.message, QUOTA_EXHAUSTED_MESSAGE.trim())
+          return true
+        },
+      )
+      assert.deepEqual(seen, [`Bearer token-${nextUid}`, `Bearer token-${nextUid}`])
+      const pool = await readPoolState()
+      assert.deepEqual(pool.rateLimits?.local, {
+        kind: "quota_exhausted",
+        message: QUOTA_EXHAUSTED_MESSAGE.trim(),
+      })
+      assert.equal(pool.rateLimits?.[localAccountUid], undefined)
+    } finally {
+      setProviderFetchForTesting(previousFetch)
+    }
   })
 })

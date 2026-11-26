@@ -36,19 +36,21 @@ async function assertWorkbuddyAccountAvailable(
   attemptedUids: ReadonlySet<string>,
 ) {
   const account = target.workbuddyAccount
-  if (!account || attemptedUids.has(account.uid)) return
+  if (!account) return
+  const poolUid = account.uid
+  if (attemptedUids.has(poolUid)) return
   const state =
     account.realm === "global"
       ? await readGlobalPoolState()
       : await readPoolState()
-  const ban = accountBanOf(state, account.uid)
+  const ban = accountBanOf(state, poolUid)
   if (ban) {
     throw new WorkbuddyAccountBanError(
       { code: ban.code, message: ban.message },
       new Date(ban.detectedAt),
     )
   }
-  const rateLimit = activeRateLimitOf(state, account.uid)
+  const rateLimit = activeRateLimitOf(state, poolUid)
   if (rateLimit) {
     throw new WorkbuddyRateLimitError(rateLimit)
   }
@@ -77,10 +79,17 @@ export async function fetchWithWorkbuddyAccountFailover(params: {
   const attemptedUids = new Set(params.attemptedUids ?? [])
   await assertWorkbuddyAccountAvailable(target, attemptedUids)
 
+  const recordAttempt = (...uids: Array<string | undefined>) => {
+    for (const uid of uids) {
+      if (!uid || attemptedUids.has(uid)) continue
+      attemptedUids.add(uid)
+      params.attemptedUids?.push(uid)
+    }
+  }
+
   /** 换到 nextUid：重新注入登录态，并清掉不再适用的端点失败记录。 */
   const switchTo = async (fromUid: string, nextUid: string) => {
-    attemptedUids.add(fromUid)
-    params.attemptedUids?.push(fromUid)
+    recordAttempt(fromUid)
     const rotated = await withWorkbuddyTargetCredentials(target, nextUid)
     delete rotated.attemptedEndpointIds
     delete rotated.failoverReason
@@ -109,8 +118,8 @@ export async function fetchWithWorkbuddyAccountFailover(params: {
 
       if (!(error instanceof WorkbuddyRateLimitError)) throw error
 
+      recordAttempt(account.uid, account.accountUid)
       // freeze* 在冻结的同时会挑下一个**能读出来**的账号，过期号不会被选中。
-      attemptedUids.add(account.uid)
       const nextUid =
         account.realm === "global"
           ? await freezeGlobalPoolAccount(account.uid, error.rateLimit)
