@@ -1,0 +1,9 @@
+{
+  "library": "lianTongPartySchoolPdf",
+  "title": "联通党校 · 算网运营认证专区（PDF 原始资料）",
+  "description": "AI 未加工的原始 PPT 资料，按页拆分，命中结果带真实页码。用于核对原始表述，最可信。",
+  "source": "算网运营认证专区_PDF资料合集.pdf",
+  "input": ".codex-tmp/kb-parse/pdf.json",
+  "id_field": "external_id",
+  "title_field": "title"
+}

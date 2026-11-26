@@ -1,0 +1,9 @@
+{
+  "library": "lianTongPartySchoolTranscript",
+  "title": "联通党校 · 算网运营认证专区（语音转录）",
+  "description": "698 门课程、1631 个视频的逐条解析与语音转录全文（已去语气词与时间戳）。适合查「老师原话怎么说」「具体展开讲了什么」。",
+  "source": "算网运营认证专区_课程知识总汇编_交付版.docx",
+  "input": ".codex-tmp/kb-parse/transcripts.json",
+  "id_field": "external_id",
+  "title_field": "title"
+}

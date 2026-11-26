@@ -53,3 +53,7 @@ tauri/src-tauri/resources-broken/
 .tmp-verify/
 .tmp-extract/
 .tmp-install-test/
+
+# 知识库构建产物（192MB，按需本地重新生成）
+build/
+.codex-tmp/

@@ -48,6 +48,9 @@ def load_items(job: Dict) -> List[Dict]:
         return courses
     if isinstance(payload, dict) and isinstance(payload.get("items"), list):
         return payload["items"]
+    # parse_docx / parse_pdf 的输出
+    if isinstance(payload, dict) and isinstance(payload.get("documents"), list):
+        return payload["documents"]
     if isinstance(payload, list):
         return payload
     raise SystemExit("无法解析 items: %s" % input_path)
@@ -56,6 +59,16 @@ def load_items(job: Dict) -> List[Dict]:
 def build_blocks(item: Dict) -> List[Dict[str, str]]:
     """按语义小节切段，保留标题用于定位。"""
     blocks = []
+
+    # 解析好的文档（docx / pdf）直接给 blocks，原样采用
+    given = item.get("blocks")
+    if isinstance(given, list) and given:
+        for block in given:
+            text_value = (block.get("text") or "").strip()
+            if text_value:
+                blocks.append({"heading": (block.get("heading") or "").strip(), "text": text_value})
+        return blocks
+
     overview = (item.get("overview") or "").strip()
     if overview:
         blocks.append({"heading": "课程概述", "text": overview})
@@ -119,8 +132,18 @@ def main():
         body = build_body(blocks)
         doc_index = len(docs)
         docs.append({
-            "external_id": str(item.get(job.get("id_field", "course_id")) or ""),
-            "title": item.get(job.get("title_field", "course_name")) or "item-%d" % index,
+            "external_id": str(
+                item.get(job.get("id_field", "external_id"))
+                or item.get("external_id")
+                or item.get("course_id")
+                or ""
+            ) or None,
+            "title": (
+                item.get(job.get("title_field", "title"))
+                or item.get("title")
+                or item.get("course_name")
+                or "item-%d" % index
+            ),
             "raw": body,
             "meta": {
                 k: v for k, v in item.items()
