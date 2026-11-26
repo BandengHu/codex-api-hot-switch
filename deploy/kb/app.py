@@ -14,7 +14,7 @@ from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 import config
 from index_store import IndexStore
@@ -53,7 +53,13 @@ def warmup():
 
 
 class SearchRequest(BaseModel):
-    query: str = Field(default="", description="检索问题")
+    # q 和 query 都接受：调用方有的按 GET 习惯写 q，有的按语义写 query，
+    # 只认其中一个会让另一种写法静默变成空查询（返回「query 不能为空」）。
+    query: str = Field(
+        default="",
+        validation_alias=AliasChoices("query", "q"),
+        description="检索问题（也接受 q）",
+    )
     library: str = Field(default="", description="库名，留空则查全部库")
     mode: str = Field(default="hybrid", description="hybrid | keyword | semantic | regex")
     top_k: int = Field(default=config.DEFAULT_TOP_K, ge=1, le=50)
@@ -99,13 +105,16 @@ def search_post(payload: SearchRequest):
 
 @app.get("/v1/search")
 def search_get(
-    q: str = Query(default="", description="检索问题"),
+    q: Optional[str] = Query(default=None, description="检索问题"),
+    query: Optional[str] = Query(default=None, description="检索问题的别名，等同 q"),
     library: str = Query(default=""),
     mode: str = Query(default="hybrid"),
     top_k: int = Query(default=config.DEFAULT_TOP_K, ge=1, le=50),
     regex: Optional[str] = Query(default=None),
 ):
-    return _do_search(SearchRequest(query=q, library=library, mode=mode,
+    # 和 POST 一致：query 优先，其次 q
+    text = (query if query is not None else q) or ""
+    return _do_search(SearchRequest(query=text, library=library, mode=mode,
                                     top_k=top_k, regex=regex))
 
 

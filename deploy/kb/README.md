@@ -34,6 +34,7 @@
 | GET | `/v1/agent-card` | 给智能体的自描述：接入方式、可用库、模式说明 |
 | POST | `/v1/search` | 检索，body 见下 |
 | GET | `/v1/search?q=...` | 检索的 GET 形式，便于 URL 直传 |
+| GET | `/v1/search?query=...` | 同上，`query` 与 `q` 等价 |
 | POST | `/v1/embed` | 文本转向量，便于调用方自己做缓存 |
 | GET | `/v1/documents/{id}` | 取整篇文档（含全部分块） |
 | POST | `/v1/reload` | 上传新索引后热加载向量，不重启 |
@@ -53,6 +54,10 @@
 
 `mode` 可选：`hybrid`（默认，关键词+向量 RRF 融合）、`keyword`、`semantic`、`regex`。
 `query_vector` 为空时服务端自动编码；调用方已有向量可以直接传入，省一次编码。
+
+**`query` 和 `q` 等价**，GET 的 query string 和 POST 的 body 都同时接受这两个名字。
+两个都传时以 `query` 为准。这是为了兼容两种常见调用习惯：GET 用 `q=`，
+POST 用 `{"query": ...}`。
 
 ### 正则检索为什么全库扫描
 
