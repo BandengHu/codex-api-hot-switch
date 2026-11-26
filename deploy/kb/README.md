@@ -21,12 +21,15 @@
 
 ## 接口
 
-所有接口需要 `x-api-key`（或 `Authorization: Bearer`）。挂在 `/kb` 前缀下，
+**无需鉴权**，所有接口可直接访问。挂在 `/kb` 前缀下，
 例如 `https://huhuanjie.site/kb/v1/search`。
+
+`/kb` 是目录型挂载点，缺尾斜杠时由 TLS 代理 308 跳到 `/kb/`，
+保证页面里的相对请求（`v1/search`）落在正确前缀下。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/health` | 存活与向量加载状态，不需要 Key |
+| GET | `/health` | 存活与向量加载状态 |
 | GET | `/v1/libraries` | 可访问的知识库与文档数 |
 | GET | `/v1/agent-card` | 给智能体的自描述：接入方式、可用库、模式说明 |
 | POST | `/v1/search` | 检索，body 见下 |
@@ -79,6 +82,23 @@ cd /opt/kb/service && python3 load_index.py \
 
 `build_index.py` 的 job 文件字段：`library`、`title`、`input`（源 JSON）、
 `id_field`、`title_field`。源文件可以是 `{courses: [...]}`、`{items: [...]}` 或纯数组。
+
+## 调用示例
+
+```bash
+# 列出库
+curl https://huhuanjie.site/kb/v1/libraries
+
+# 关键词
+curl "https://huhuanjie.site/kb/v1/search?q=北斗短报文&library=lianTongPartySchool&mode=keyword&top_k=5"
+
+# 正则
+curl -X POST https://huhuanjie.site/kb/v1/search -H 'content-type: application/json' \
+  -d '{"query":"R1[6-8]","library":"lianTongPartySchool","mode":"regex","top_k":5}'
+
+# 语义
+curl "https://huhuanjie.site/kb/v1/search?q=卫星和手机网络怎么连起来&library=lianTongPartySchool&mode=semantic&top_k=5"
+```
 
 ## 部署
 

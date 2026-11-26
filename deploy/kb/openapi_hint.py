@@ -11,10 +11,7 @@ def build_agent_card() -> dict:
         "name": "Knowledge Base",
         "description": "中文课程/题库知识库检索服务，支持全文检索、正则匹配、向量语义搜索与混合排序",
         "base_url": base,
-        "auth": {
-            "type": "api_key",
-            "headers": {"x-api-key": "<你的 KB API Key>", "Authorization": "Bearer <同一把 Key>"},
-        },
+        "auth": {"type": "none", "desc": "无需鉴权，直接请求即可"},
         "endpoints": [
             {
                 "method": "GET",

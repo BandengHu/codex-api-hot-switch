@@ -57,7 +57,6 @@
   <div class="sub">全文检索 / 正则匹配 / 向量语义，三路可单独用也可混合排序</div>
 
   <div class="row" style="margin-bottom:10px">
-    <input id="key" type="password" placeholder="API Key（kb_ 开头）" style="flex:1 1 260px" />
     <select id="library"><option value="">全部知识库</option></select>
   </div>
 
@@ -78,14 +77,9 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const saved = localStorage.getItem("kb_key");
-if (saved) $("key").value = saved;
-
 async function loadLibraries() {
-  const key = $("key").value.trim();
-  if (!key) return;
   try {
-    const res = await fetch("v1/libraries", { headers: { "x-api-key": key } });
+    const res = await fetch("v1/libraries");
     if (!res.ok) return;
     const data = await res.json();
     const sel = $("library");
@@ -97,7 +91,7 @@ async function loadLibraries() {
       sel.appendChild(opt);
     }
     if ((data.libraries || []).length === 1) sel.value = data.libraries[0].name;
-  } catch (e) { /* 静默：未配置 Key 时不打扰 */ }
+  } catch (e) { /* 静默：接口暂时不可用时不打扰 */ }
 }
 
 function tagFor(hit) {
@@ -127,10 +121,6 @@ function highlight(text, query) {
 }
 
 async function doSearch() {
-  const key = $("key").value.trim();
-  if (!key) { $("meta").textContent = "请先填写 API Key"; return; }
-  localStorage.setItem("kb_key", key);
-
   const body = {
     query: $("q").value.trim(),
     library: $("library").value,
@@ -144,7 +134,7 @@ async function doSearch() {
   try {
     const res = await fetch("v1/search", {
       method: "POST",
-      headers: { "content-type": "application/json", "x-api-key": key },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
     const data = await res.json();
@@ -172,7 +162,6 @@ async function doSearch() {
 
 $("go").addEventListener("click", doSearch);
 $("q").addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
-$("key").addEventListener("change", loadLibraries);
 loadLibraries();
 </script>
 </body>

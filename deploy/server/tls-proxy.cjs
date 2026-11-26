@@ -89,6 +89,16 @@ function proxyRequest(req, res) {
   const queryIndex = rawUrl.indexOf("?")
   const pathname = queryIndex === -1 ? rawUrl : rawUrl.slice(0, queryIndex)
   const search = queryIndex === -1 ? "" : rawUrl.slice(queryIndex)
+
+  // /kb 是目录型挂载点。缺尾斜杠时浏览器把 /kb 当成文件，页面里的相对请求
+  // v1/search 会解析成 /v1/search 打到中转上（拿到 SwitchGate 的 401），
+  // 所以先把 /kb 重定向到 /kb/，让相对路径落在正确的前缀下。
+  if (kbPrefix && pathname === kbPrefix) {
+    res.writeHead(308, { location: `${kbPrefix}/${search}` })
+    res.end()
+    return
+  }
+
   const target = resolveUpstream(pathname)
   const headers = {
     ...req.headers,

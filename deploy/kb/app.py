@@ -2,7 +2,7 @@
 
 架构：向量在本地算好，服务器只做存储和查询，不加载任何模型。
 - 只监听 127.0.0.1，由外层 TLS 反代暴露到 443
-- API Key 走 x-api-key / Authorization: Bearer
+- 无鉴权：检索页与接口均可直接访问
 - 一个服务承载多个知识库，新增题库 = 上传一份新索引，互不影响
 """
 
@@ -11,12 +11,11 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-import auth
 import config
 from index_store import IndexStore
 from openapi_hint import build_agent_card
@@ -53,33 +52,9 @@ def warmup():
              (time.time() - started) * 1000, embed_ready, index.vector_stats())
 
 
-def extract_key(x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
-                authorization: Optional[str] = Header(default=None)) -> str:
-    if x_api_key:
-        return x_api_key.strip()
-    if authorization and authorization.lower().startswith("bearer "):
-        return authorization[7:].strip()
-    return ""
-
-
-def require_key(request: Request) -> dict:
-    raw = extract_key(request.headers.get("x-api-key"), request.headers.get("authorization"))
-    record = auth.authenticate(raw)
-    if record is None:
-        log.warning("auth rejected fp=%s path=%s",
-                    auth.fingerprint(raw) if raw else "absent", request.url.path)
-        raise HTTPException(status_code=401, detail="无效的 API Key")
-    return record
-
-
-def require_library_access(record: dict, library: str) -> None:
-    if not auth.can_access(record, library):
-        raise HTTPException(status_code=403, detail="该 Key 无权访问知识库: %s" % library)
-
-
 class SearchRequest(BaseModel):
     query: str = Field(default="", description="检索问题")
-    library: str = Field(default="", description="库名，留空则查全部可访问库")
+    library: str = Field(default="", description="库名，留空则查全部库")
     mode: str = Field(default="hybrid", description="hybrid | keyword | semantic | regex")
     top_k: int = Field(default=config.DEFAULT_TOP_K, ge=1, le=50)
     regex: Optional[str] = Field(default=None, description="正则，传入则强制 regex")
@@ -101,25 +76,25 @@ def health():
 
 
 @app.get("/v1/agent-card")
-def agent_card(record: dict = Depends(require_key)):
+def agent_card():
     card = build_agent_card()
     card["libraries"] = [
         {"name": lib["name"], "title": lib["title"], "documents": lib["doc_count"],
          "chunks": lib["chunk_count"], "chars": lib["char_count"], "dim": lib["dim"]}
-        for lib in index.list_libraries() if auth.can_access(record, lib["name"])
+        for lib in index.list_libraries()
     ]
     return card
 
 
 @app.get("/v1/libraries")
-def list_libraries(record: dict = Depends(require_key)):
-    libs = [lib for lib in index.list_libraries() if auth.can_access(record, lib["name"])]
+def list_libraries():
+    libs = index.list_libraries()
     return {"libraries": libs, "count": len(libs)}
 
 
 @app.post("/v1/search")
-def search_post(payload: SearchRequest, record: dict = Depends(require_key)):
-    return _do_search(payload, record)
+def search_post(payload: SearchRequest):
+    return _do_search(payload)
 
 
 @app.get("/v1/search")
@@ -129,16 +104,15 @@ def search_get(
     mode: str = Query(default="hybrid"),
     top_k: int = Query(default=config.DEFAULT_TOP_K, ge=1, le=50),
     regex: Optional[str] = Query(default=None),
-    record: dict = Depends(require_key),
 ):
     return _do_search(SearchRequest(query=q, library=library, mode=mode,
-                                    top_k=top_k, regex=regex), record)
+                                    top_k=top_k, regex=regex))
 
 
-def _do_search(payload: SearchRequest, record: dict) -> dict:
-    libraries = _resolve_libraries(payload.library, record)
+def _do_search(payload: SearchRequest) -> dict:
+    libraries = _resolve_libraries(payload.library)
     if not libraries:
-        raise HTTPException(status_code=404, detail="没有可访问的知识库")
+        raise HTTPException(status_code=404, detail="知识库为空")
     vector = payload.query_vector
     if vector is None and payload.auto_embed and payload.mode in ("semantic", "hybrid") and payload.query.strip():
         try:
@@ -175,7 +149,7 @@ class EmbedRequest(BaseModel):
 
 
 @app.post("/v1/embed")
-def embed(payload: EmbedRequest, record: dict = Depends(require_key)):
+def embed(payload: EmbedRequest):
     try:
         from embedder import get_embedder
     except Exception as exc:
@@ -184,27 +158,25 @@ def embed(payload: EmbedRequest, record: dict = Depends(require_key)):
     return {"dim": len(vector), "vector": vector}
 
 
-def _resolve_libraries(requested: str, record: dict) -> List[str]:
+def _resolve_libraries(requested: str) -> List[str]:
     if requested:
-        require_library_access(record, requested)
         if not index.library_exists(requested):
             raise HTTPException(status_code=404, detail="知识库不存在: %s" % requested)
         return [requested]
-    return [lib["name"] for lib in index.list_libraries() if auth.can_access(record, lib["name"])]
+    return [lib["name"] for lib in index.list_libraries()]
 
 
 @app.get("/v1/documents/{document_id}")
-def get_document(document_id: int, record: dict = Depends(require_key)):
+def get_document(document_id: int):
     doc = index.get_document(document_id)
     if doc is None:
         raise HTTPException(status_code=404, detail="文档不存在")
-    require_library_access(record, doc["library"])
     doc["chunks"] = index.get_document_chunks(document_id)
     return doc
 
 
 @app.post("/v1/reload")
-def reload_index(record: dict = Depends(require_key)):
+def reload_index():
     """上传新索引后热加载向量，不用重启服务。"""
     return {"loaded": index.reload_vectors(), "libraries": [l["name"] for l in index.list_libraries()]}
 
