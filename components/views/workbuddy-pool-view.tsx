@@ -459,16 +459,21 @@ export function WorkbuddyPoolView() {
  <Badge variant="outline">已禁用</Badge>
 ) : entry.rateLimit ? (
 <div className="flex flex-col gap-1">
-<Badge variant="destructive">限频中</Badge>
+<Badge variant="destructive">
+ {entry.rateLimit.kind === "quota_exhausted" ? "额度用尽" : "限频中"}
+</Badge>
 <span className="text-xs text-muted-foreground">
-{formatWorkbuddyRateLimitRecovery(entry.rateLimit.resetAt) || "等待恢复"}
+{entry.rateLimit.kind === "quota_exhausted"
+  ? "等待额度恢复"
+  : formatWorkbuddyRateLimitRecovery(entry.rateLimit.resetAt ?? "") ||
+    "等待恢复"}
 </span>
 </div>
  ) : entry.recoveredRateLimit && !entry.balanceError ? (
  <div className="flex flex-col gap-1">
  <Badge variant="secondary">正常</Badge>
  <span className="text-xs text-muted-foreground">
-{formatWorkbuddyRateLimitRecovery(entry.recoveredRateLimit.resetAt)}
+{formatWorkbuddyRateLimitRecovery(entry.recoveredRateLimit.resetAt ?? "")}
  </span>
  </div>
 ) : entry.balanceError ? (

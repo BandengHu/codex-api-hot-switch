@@ -25,12 +25,14 @@ export interface WorkbuddyPoolEntryView {
   /** 仍在重置时间之前的账号级限频。 */
   rateLimit?: {
     message: string
-    resetAt: string
+    resetAt?: string
+    kind?: "frequency_limit" | "quota_exhausted"
   }
   /** 已过期但尚未清理的历史恢复点；不参与可用账号判断。 */
   recoveredRateLimit?: {
     message: string
-    resetAt: string
+    resetAt?: string
+    kind?: "frequency_limit" | "quota_exhausted"
   }
   balance?: WorkbuddyPoolBalance
   balanceError?: string

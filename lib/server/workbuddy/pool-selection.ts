@@ -3,8 +3,11 @@ import "server-only"
 import type { WorkbuddyAccountBan } from "./account-ban"
 
 export interface WorkbuddyAccountRateLimit {
-  resetAt: string
   message: string
+  /** 频率限制的自动恢复时间；额度耗尽时没有该字段。 */
+  resetAt?: string
+  /** 缺省按频率限制处理，兼容已有号池状态。 */
+  kind?: "frequency_limit" | "quota_exhausted"
 }
 
 export interface WorkbuddySelectableEntry {
@@ -28,6 +31,8 @@ function isActiveRateLimit(
   now: number,
 ) {
   if (!rateLimit) return false
+  if (rateLimit.kind === "quota_exhausted") return true
+  if (!rateLimit.resetAt) return false
   const resetAt = Date.parse(rateLimit.resetAt)
   return Number.isFinite(resetAt) && resetAt > now
 }

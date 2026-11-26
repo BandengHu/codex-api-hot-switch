@@ -55,7 +55,11 @@ export async function withWorkbuddyCredentials(provider: Provider): Promise<Prov
 export async function withWorkbuddyTargetCredentials<
   T extends {
     provider: ResolvedProvider
-    workbuddyAccount?: { uid: string; realm: WorkbuddyRealm }
+    workbuddyAccount?: {
+      uid: string
+      accountUid: string
+      realm: WorkbuddyRealm
+    }
   },
 >(
   target: T,
@@ -73,6 +77,7 @@ export async function withWorkbuddyTargetCredentials<
     provider: resolveProviderEndpoint(injected, endpoint),
     workbuddyAccount: {
       uid: credential.uid,
+      accountUid: credential.account.uid,
       realm: credential.realm,
     },
   }

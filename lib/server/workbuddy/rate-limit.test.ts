@@ -12,10 +12,13 @@ import {
 
 const MESSAGE =
   "您的使用量已超出频率限制，将在 2026-10-30 10:43:32 UTC+8 重置，您也可以切换其他模型继续使用。"
+const QUOTA_EXHAUSTED_MESSAGE =
+  "额度已用尽，请访问以下链接，购买加量包以获取更多额度：https://www.codebuddy.cn/profile/usage "
 
 test("WorkBuddy frequency limit preserves its message and converts reset time to UTC", () => {
   assert.deepEqual(workbuddyRateLimitFromText(MESSAGE), {
     message: MESSAGE,
+    kind: "frequency_limit",
     resetAt: "2026-10-30T02:43:32.000Z",
   })
 })
@@ -27,6 +30,7 @@ test("WorkBuddy frequency limit is found inside nested SSE payloads", () => {
     }),
     {
       message: MESSAGE,
+      kind: "frequency_limit",
       resetAt: "2026-10-30T02:43:32.000Z",
     },
   )
@@ -66,6 +70,7 @@ test("WorkBuddy rate limit recognizes every split prefix of the exact message", 
   }
   assert.deepEqual(workbuddyRateLimitFromText(MESSAGE), {
     message: MESSAGE,
+    kind: "frequency_limit",
     resetAt: "2026-10-30T02:43:32.000Z",
   })
 
@@ -74,5 +79,56 @@ test("WorkBuddy rate limit recognizes every split prefix of the exact message", 
       "您的使用量已超出频率限制，将在 2026-10-30 10:43:32 UTC+8 正常回答",
     ),
     false,
+  )
+})
+
+test("WorkBuddy quota exhaustion is detected from nested payload and has no reset time", () => {
+  assert.deepEqual(
+    workbuddyRateLimitFromPayload({
+      data: {
+        code: 14018,
+        msg: QUOTA_EXHAUSTED_MESSAGE,
+        requestId: "request-1",
+      },
+    }),
+    {
+      kind: "quota_exhausted",
+      message: QUOTA_EXHAUSTED_MESSAGE.trim(),
+    },
+  )
+})
+
+test("WorkBuddy quota exhaustion can be parsed from JSON text", () => {
+  const payload = JSON.stringify({
+    data: {
+      code: "14018",
+      msg: QUOTA_EXHAUSTED_MESSAGE,
+    },
+  })
+  assert.deepEqual(workbuddyRateLimitFromText(payload), {
+    kind: "quota_exhausted",
+    message: QUOTA_EXHAUSTED_MESSAGE.trim(),
+  })
+})
+
+test("14018 without the exact quota-exhausted message is not classified", () => {
+  assert.equal(
+    workbuddyRateLimitFromPayload({
+      data: { code: 14018, msg: "some unrelated error" },
+    }),
+    null,
+  )
+})
+
+test("WorkBuddy quota exhaustion is found in plain text with a transport prefix", () => {
+  const payload = JSON.stringify({
+    data: { code: 14018, msg: QUOTA_EXHAUSTED_MESSAGE },
+  })
+  assert.deepEqual(
+    workbuddyRateLimitFromText(`Illegal API invocation: ${payload}`),
+    {
+      kind: "quota_exhausted",
+      message: QUOTA_EXHAUSTED_MESSAGE.trim(),
+    },
   )
 })

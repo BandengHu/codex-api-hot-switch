@@ -223,6 +223,35 @@ test("WorkBuddy 11140 is rejected before visible output", async () => {
   }
 })
 
+test("WorkBuddy 14018 is rejected before output for both stream and buffered responses", async () => {
+  const payload = {
+    data: {
+      code: 14018,
+      msg: "额度已用尽，请访问以下链接，购买加量包以获取更多额度：https://www.codebuddy.cn/profile/usage ",
+    },
+  }
+  const body = `data: ${JSON.stringify(payload)}\n\n`
+  for (const stream of [true, false]) {
+    await assert.rejects(
+      () =>
+        prepareUpstreamResponse(
+          new Response(body, {
+            headers: { "content-type": "text/event-stream" },
+          }),
+          stream,
+          { detectWorkbuddyRateLimit: true },
+        ),
+      (error) => {
+        assert.ok(error instanceof WorkbuddyRateLimitError)
+        assert.equal(error.status, 429)
+        assert.equal(error.rateLimit.kind, "quota_exhausted")
+        assert.equal(error.rateLimit.resetAt, undefined)
+        return true
+      },
+    )
+  }
+})
+
 test("buffered WorkBuddy rate limits are detected from plain text", async () => {
   await assert.rejects(
     () =>

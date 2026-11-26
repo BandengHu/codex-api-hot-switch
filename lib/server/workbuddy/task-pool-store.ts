@@ -342,8 +342,14 @@ export async function setActivePoolAccount(uid: string) {
  if (target) {
    const rateLimit = activeRateLimitOf(state, target)
    if (rateLimit) {
+     const resetAt =
+       typeof rateLimit.resetAt === "string" && rateLimit.resetAt.trim()
+         ? `，请在 ${rateLimit.resetAt} 后重试`
+         : ""
      throw new Error(
-       `账号 ${target === LOCAL_POOL_UID ? "本机账号" : target} 当前限频中，请在 ${rateLimit.resetAt} 后重试`,
+       `账号 ${target === LOCAL_POOL_UID ? "本机账号" : target} 当前${
+         rateLimit.kind === "quota_exhausted" ? "额度已用尽" : "限频中"
+       }${resetAt}`,
      )
    }
  }
