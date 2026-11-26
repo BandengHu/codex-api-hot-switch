@@ -17,8 +17,25 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--index", required=True, help="xxx.index.json")
     parser.add_argument("--vectors", required=True, help="xxx.vectors.npz")
-    parser.add_argument("--replace", action="store_true")
+    parser.add_argument("--replace", action="store_true",
+                        help="兼容旧脚本；同名库现在总是整体替换")
     return parser.parse_args()
+
+
+def check_dim_consistency(store, library, dim):
+    """所有库必须同维度：检索时共用一个 query_vector，维度不同会直接 500。
+
+    同名库也在检查范围内：用新模型重建同名库会改变维度，
+    但库里的其他库仍是旧维度，检索时照样会崩，所以必须一起拦住。
+    """
+    for lib in store.list_libraries():
+        existing = int(lib.get("dim") or 0)
+        if existing and existing != dim:
+            raise SystemExit(
+                "向量维度不一致：库 %s 是 %d 维，本次导入的 %s 是 %d 维。\n"
+                "所有库共用同一个查询向量，必须用同一套编码模型重新构建。"
+                % (lib["name"], existing, library, dim)
+            )
 
 
 def main():
@@ -37,12 +54,16 @@ def main():
         raise SystemExit("向量数 %d 与分块数 %d 不一致" % (len(vectors), len(chunks)))
 
     store = IndexStore(config.DB_PATH)
-    if args.replace and store.library_exists(library):
+    dim = int(vectors.shape[1])
+    check_dim_consistency(store, library, dim)
+
+    # 同名库总是整体替换：重复导入不加参数会把文档数翻倍，且没有任何约束拦住。
+    if store.library_exists(library):
         removed = store.drop_library(library)
-        print("dropped existing library, documents =", removed)
+        print("dropped existing library %s, documents = %d" % (library, removed))
 
     store.upsert_library(library, payload["title"], payload.get("description", ""),
-                         payload.get("source", ""), int(vectors.shape[1]), payload.get("model", ""))
+                         payload.get("source", ""), dim, payload.get("model", ""))
 
     # 文档与分块写入：一个事务，避免逐条 fsync
     chunk_doc_positions = [item["document"] for item in chunks]

@@ -135,12 +135,45 @@ def _do_search(payload: SearchRequest) -> dict:
         results.append(data)
     if len(results) == 1:
         return results[0]
-    merged = sorted(
-        [hit | {"library": item["library"]} for item in results for hit in item["hits"]],
-        key=lambda hit: -hit.get("rrf", 0),
-    )[: payload.top_k]
+    merged = fuse_libraries(results, payload.top_k)
     return {"mode": payload.mode, "query": payload.query, "libraries": libraries,
             "hits": merged, "count": len(merged)}
+
+
+def fuse_libraries(results: List[dict], top_k: int, k: int = 60) -> List[dict]:
+    """跨库融合：只用各库内部的排名做 RRF，不比较原始分数。
+
+    不同模式的分数尺度完全不可比：bm25 越小越好、向量相似度越大越好、
+    正则全扫描根本没有分数。按分数字段排序会让它们互相湮没，最终退化成
+    「按库的遍历顺序拼接」，新增第二个库后第一名会变成先遍历到的那个库。
+    因此这里只看 hits[].rank，用 RRF 合并。
+    """
+    fused: dict = {}
+    for item in results:
+        library = item["library"]
+        for hit in item["hits"]:
+            if "id" not in hit:  # 正则的报错条目没有分块 id，直接透传
+                continue
+            chunk_id = hit["id"]
+            entry = fused.get(chunk_id)
+            if entry is None:
+                entry = dict(hit)
+                entry["rrf"] = 0.0
+                entry["libraries"] = []
+                fused[chunk_id] = entry
+            if library not in entry["libraries"]:
+                entry["libraries"].append(library)
+            rank = hit.get("rank") or top_k
+            entry["rrf"] += 1.0 / (k + rank)
+
+    ordered = sorted(fused.values(), key=lambda row: -row["rrf"])
+    out = []
+    for rank, entry in enumerate(ordered[:top_k], start=1):
+        item = dict(entry)
+        item["rank"] = rank
+        item["library"] = item["libraries"][0]
+        out.append(item)
+    return out
 
 
 class EmbedRequest(BaseModel):

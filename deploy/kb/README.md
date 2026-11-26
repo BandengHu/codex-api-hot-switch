@@ -74,7 +74,7 @@
 python tools/kb/build_index.py --job tools/kb/jobs/<新库>.json --out build/kb
 
 # 2. 上传两个文件到 /opt/kb/upload/
-# 3. 服务器装载（--replace 只影响同名库）
+# 3. 服务器装载
 cd /opt/kb/service && python3 load_index.py \
   --index /opt/kb/upload/<新库>.index.json \
   --vectors /opt/kb/upload/<新库>.vectors.npz
@@ -83,11 +83,24 @@ cd /opt/kb/service && python3 load_index.py \
 `build_index.py` 的 job 文件字段：`library`、`title`、`input`（源 JSON）、
 `id_field`、`title_field`。源文件可以是 `{courses: [...]}`、`{items: [...]}` 或纯数组。
 
+**同名库总是整体替换**，重复执行不会翻倍（旧版本要靠 `--replace`，忘了加就会翻倍）。
+
+**所有库必须使用同一套编码模型**（当前是 `bge-small-zh-onnx`，512 维）。
+检索时所有库共用同一个查询向量，维度不同会直接 500；`load_index.py`
+导入前会做一致性检查并明确报错。
+
+新增第二个库之后，**接口完全不变**：`library` 换成新库名即可；
+不传 `library` 则查全部库，跨库用 RRF 按各库内部排名融合
+（不同模式的分数量纲不可比，只有排名可比）。
+
 ## 调用示例
 
 ```bash
 # 列出库
 curl https://huhuanjie.site/kb/v1/libraries
+
+# 查全部库（不传 library，跨库 RRF 融合）
+curl "https://huhuanjie.site/kb/v1/search?q=北斗短报文&mode=hybrid&top_k=5"
 
 # 关键词
 curl "https://huhuanjie.site/kb/v1/search?q=北斗短报文&library=lianTongPartySchool&mode=keyword&top_k=5"
