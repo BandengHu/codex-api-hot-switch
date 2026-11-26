@@ -4,7 +4,9 @@ import config
 
 
 def build_agent_card() -> dict:
-    base = config.PUBLIC_BASE_URL or "https://<你的域名>"
+    base = config.PUBLIC_BASE_URL.rstrip("/")
+    if not base:
+        base = "https://huhuanjie.site/kb"
     return {
         "name": "Knowledge Base",
         "description": "中文课程/题库知识库检索服务，支持全文检索、正则匹配、向量语义搜索与混合排序",

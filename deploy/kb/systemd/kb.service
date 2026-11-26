@@ -9,7 +9,8 @@ WorkingDirectory=/opt/kb/service
 Environment=KB_ROOT=/opt/kb
 Environment=KB_HOST=127.0.0.1
 Environment=KB_PORT=54142
-Environment=KB_PUBLIC_BASE_URL=https://kb.huhuanjie.site
+Environment=KB_PUBLIC_BASE_URL=https://huhuanjie.site/kb
+Environment=KB_PATH_PREFIX=/kb
 Environment=PYTHONUNBUFFERED=1
 Environment=TOKENIZERS_PARALLELISM=false
 Environment=OMP_NUM_THREADS=4
