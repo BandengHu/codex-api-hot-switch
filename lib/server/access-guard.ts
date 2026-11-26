@@ -4,6 +4,7 @@ import { createHash } from "node:crypto"
 
 import { accountDataDirPath, findAccountById, type AccountRecord } from "./accounts-store"
 import { readSessionCookie, verifyAccountApiKey } from "./account-auth"
+import { verifyTempKey } from "./temp-keys"
 import { runWithAccountDataDir } from "./data-root"
 
 /**
@@ -85,7 +86,13 @@ async function accountFromActiveApiKey(apiKey: string) {
   const { listAccounts } = await import("./accounts-store")
   for (const candidate of await listAccounts()) {
     if (candidate.status !== "active") continue
-    if (await verifyAccountApiKey(accountDataDirPath(candidate.id), apiKey)) {
+    const dataDir = accountDataDirPath(candidate.id)
+    // 主 Key 先判，命中就不用读临时 Key 文件，日常调用不增加磁盘开销。
+    if (await verifyAccountApiKey(dataDir, apiKey)) {
+      return candidate
+    }
+    // 临时 Key 是额外通道：过期即失效，且绝不改动主 Key。
+    if (await verifyTempKey(dataDir, apiKey)) {
       return candidate
     }
   }
