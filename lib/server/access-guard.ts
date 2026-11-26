@@ -1,5 +1,7 @@
 import "server-only"
 
+import { createHash } from "node:crypto"
+
 import { accountDataDirPath, findAccountById, type AccountRecord } from "./accounts-store"
 import { readSessionCookie, verifyAccountApiKey } from "./account-auth"
 import { runWithAccountDataDir } from "./data-root"
@@ -30,6 +32,32 @@ export interface AccessContext {
   dataDir: string
 }
 
+/**
+ * 鉴权失败时必须留下可诊断的痕迹，否则前端只看到 401，
+ * 服务端日志却一片空白，只能靠猜是 key 错、请求头错还是路径错。
+ *
+ * 只记录 SHA-256 前 8 位指纹与长度：足以判断「是不是同一把 key」，
+ * 但无法还原密钥，即使日志泄露也没有利用价值。
+ */
+function describeApiKey(apiKey: string) {
+  if (!apiKey) return "absent"
+  const fp = createHash("sha256").update(apiKey).digest("hex").slice(0, 8)
+  return `fp=${fp} len=${apiKey.length}`
+}
+
+function logAuthFailure(headers: Pick<Headers, "get">, reason: string) {
+  const via = headers.get("x-api-key")
+    ? "x-api-key"
+    : headers.get("authorization")
+      ? "authorization"
+      : "none"
+  const apiKey = apiKeyFromHeaders(headers)
+  const origin = headers.get("origin") || "-"
+  console.warn(
+    `[switchgate] auth rejected reason=${reason} via=${via} key=${describeApiKey(apiKey)} origin=${origin}`,
+  )
+}
+
 async function activeAccount(id: string) {
   const account = await findAccountById(id)
   return account && account.status === "active" ? account : null
@@ -40,9 +68,16 @@ export async function accountFromApiKey(
   headers: Pick<Headers, "get">,
 ): Promise<AccessContext | null> {
   const apiKey = apiKeyFromHeaders(headers)
-  if (!apiKey) return null
+  if (!apiKey) {
+    logAuthFailure(headers, "no-key")
+    return null
+  }
   const account = await accountFromActiveApiKey(apiKey)
-  return account ? { account, dataDir: accountDataDirPath(account.id) } : null
+  if (!account) {
+    logAuthFailure(headers, "key-not-found")
+    return null
+  }
+  return { account, dataDir: accountDataDirPath(account.id) }
 }
 
 async function accountFromActiveApiKey(apiKey: string) {
