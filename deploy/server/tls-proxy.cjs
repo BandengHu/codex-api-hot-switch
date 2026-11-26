@@ -29,7 +29,38 @@ function clientAddress(req) {
   return forwarded ? `${forwarded}, ${socketAddress}` : socketAddress
 }
 
+// 跨域头必须挂在代理层，且成功与失败分支都要带：上游 4xx/5xx 若没有这些头，
+// 浏览器只会抛 "Failed to fetch"，前端看不到真实错误原因。
+const corsAllowOrigin = process.env.SWITCHGATE_CORS_ORIGIN || "*"
+const corsFallbackAllowHeaders = "Authorization, Content-Type"
+
+function applyCorsHeaders(headers, req) {
+  headers["access-control-allow-origin"] = corsAllowOrigin
+  headers["access-control-allow-methods"] = "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS"
+  // Authorization 属于 CORS 规范里的 non-wildcard request-header，
+  // 只写 `*` 覆盖不到它，因此优先回显预检请求自己列出的头。
+  headers["access-control-allow-headers"] =
+    req.headers["access-control-request-headers"] || corsFallbackAllowHeaders
+}
+
+function isPreflight(req) {
+  return (
+    req.method === "OPTIONS" &&
+    Boolean(req.headers.origin) &&
+    Boolean(req.headers["access-control-request-method"])
+  )
+}
+
 function proxyRequest(req, res) {
+  if (isPreflight(req)) {
+    const headers = { "content-length": "0" }
+    applyCorsHeaders(headers, req)
+    headers["access-control-max-age"] = "86400"
+    res.writeHead(204, headers)
+    res.end()
+    return
+  }
+
   const headers = {
     ...req.headers,
     host: req.headers.host || "",
@@ -52,6 +83,7 @@ function proxyRequest(req, res) {
     },
     (upstreamRes) => {
       const responseHeaders = { ...upstreamRes.headers }
+      applyCorsHeaders(responseHeaders, req)
       const contentType = String(responseHeaders["content-type"] || "")
       if (contentType.includes("text/event-stream")) {
         responseHeaders["x-accel-buffering"] = "no"
@@ -67,7 +99,9 @@ function proxyRequest(req, res) {
   upstream.on("error", (error) => {
     console.error(`[tls-proxy] upstream error: ${error.message}`)
     if (!res.headersSent) {
-      res.writeHead(502, { "content-type": "application/json; charset=utf-8" })
+      const headers = { "content-type": "application/json; charset=utf-8" }
+      applyCorsHeaders(headers, req)
+      res.writeHead(502, headers)
     }
     res.end(JSON.stringify({ error: "upstream unavailable" }))
   })
