@@ -106,19 +106,24 @@ def _regex_search(index, library: str, pattern: str, limit: int, document_id):
     except re.error as exc:
         return [{"error": "正则表达式无效: %s" % exc}]
 
-    probe = _longest_literal(pattern)
-    expression = build_match_query(probe, "and") if probe else ""
-    rows = index.match_expression(expression, library, max(limit * 40, 400)) if expression else []
-    if not rows:
-        rows = index.scan_chunks(library, max(limit * 40, 400))
-    if document_id is not None:
-        rows = [row for row in rows if row["document_id"] == document_id]
-
+    # 全库扫描：正则的语义边界和 FTS 词元边界本来就不一致
+    # （R1[6-8] 的探测词 R1 会命中 R16/R19 却漏掉分块边界），
+    # 用 FTS 粗召回会直接漏结果，因此不做粗召回。
     hits = []
-    for row in rows:
-        match = compiled.search(row["content"]) or compiled.search(row["title"] or "")
-        if not match:
-            continue
+    # 同一篇文档的标题会被它名下每个分块重复匹配，按文档缓存一次结果
+    title_hit: Dict[int, bool] = {}
+    for row in index.scan_chunks(library, document_id):
+        match = compiled.search(row["content"])
+        if match is None:
+            doc_id = row["document_id"]
+            cached = title_hit.get(doc_id)
+            if cached is None:
+                cached = bool(compiled.search(row["title"] or ""))
+                title_hit[doc_id] = cached
+            if not cached:
+                continue
+            # 标题命中但正文没命中：用标题命中的片段作为 matched
+            match = compiled.search(row["title"] or "")
         item = dict(row)
         item["matched"] = match.group(0)
         item["match_span"] = list(match.span())
@@ -128,16 +133,6 @@ def _regex_search(index, library: str, pattern: str, limit: int, document_id):
         if len(hits) >= limit:
             break
     return hits
-
-
-def _longest_literal(pattern: str) -> str:
-    runs = re.findall(r"[\u4e00-\u9fff]{2,}", pattern)
-    if runs:
-        return max(runs, key=len)
-    words = re.findall(r"[A-Za-z0-9_]{2,}", pattern)
-    if words:
-        return max(words, key=len)
-    return ""
 
 
 def _rrf_fuse(keyword_hits: List[Dict], semantic_hits: List[Dict], k: int = 60) -> List[Dict]:

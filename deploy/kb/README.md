@@ -51,6 +51,17 @@
 `mode` 可选：`hybrid`（默认，关键词+向量 RRF 融合）、`keyword`、`semantic`、`regex`。
 `query_vector` 为空时服务端自动编码；调用方已有向量可以直接传入，省一次编码。
 
+### 正则检索为什么全库扫描
+
+正则的语义边界和 FTS 词元边界不一致，实测会被粗召回漏掉：`R1[6-8]` 里
+最长的字面量是 `R1`，而 FTS 里根本没有 `R1` 这个词元（只有 `R16`、`R19`），
+精确匹配返回 0 条；换成前缀匹配又会召回一堆含 `R1` 的无关分块，程序看到
+「有结果」就不再往下扫，最终正则在候选集里一条都没匹配上，返回 0 条命中。
+
+所以 `mode=regex` 直接逐条扫完整库（SQLite 流式游标，不一次性载入内存）：
+1.6 万条全扫 55~100ms，命中就提前退出。同一篇文档的标题按 `document_id`
+缓存一次匹配结果，避免被名下每个分块重复正则。
+
 ## 新增题库
 
 完全不影响已有库：一个库一份索引文件，检索时按 `library` 隔离。
@@ -86,7 +97,8 @@ systemctl daemon-reload && systemctl enable --now kb.service
 | keyword x10 平均 | 15.9 ms |
 | semantic x10 平均 | 17.9 ms |
 | hybrid x10 平均 | 40.1 ms |
-| regex x10 平均 | 23.0 ms |
+| regex 命中提前退出 | 0~50 ms |
+| regex 全扫不命中 | 55~100 ms |
 
 检索质量抽样（698 门课 / 16344 分块）：
 
@@ -96,4 +108,6 @@ systemctl daemon-reload && systemctl enable --now kb.service
 | 对抗样本攻击怎么防御 | 对抗训练、对抗样本检测（相似度 0.68 / 0.63） |
 | 北斗短报文 | 《天地一体与通导融合》关键词节 |
 | 5G.{0,6}切片 | 5G专网产品（切片）介绍 |
+| R1[6-8] | 《天地一体与通导融合》，matched=R16 |
+| eMBB.{0,3}uRLLC | 无线通信技术原理，matched=eMBB、uRLLC |
 

@@ -293,17 +293,38 @@ class IndexStore:
             out.append(item)
         return out
 
-    def scan_chunks(self, library: str, limit: int):
-        rows = self.conn.execute(
-            """
-            select c.id, c.document_id, c.content, c.heading, c.ordinal,
-                   d.title, d.external_id, 0.0 as score
-              from chunks c join documents d on d.id = c.document_id
-             where c.library = ? order by c.id limit ?
-            """,
-            (library, limit),
-        ).fetchall()
-        return [dict(row) for row in rows]
+    def scan_chunks(self, library: str, document_id=None):
+        """全库流式扫描，供正则检索逐条比对。
+
+        必须真正扫完整个库：正则表达式形如 R1[6-8]、[《]天地一体 时，
+        取出的字面量探测词（R1 / 天地一体）在 FTS 里命中的往往是别的词元
+        （R16、R19 都含 R1 前缀），粗召回既不全也不准。1.6 万条内容全扫
+        实测 55~95ms，直接扫更可靠也更简单。
+
+        逐条 yield，避免一次性把 16 万行正文读进内存。
+        """
+        if document_id is None:
+            cursor = self.conn.execute(
+                """
+                select c.id, c.document_id, c.content, c.heading, c.ordinal,
+                       d.title, d.external_id, 0.0 as score
+                  from chunks c join documents d on d.id = c.document_id
+                 where c.library = ? order by c.id
+                """,
+                (library,),
+            )
+        else:
+            cursor = self.conn.execute(
+                """
+                select c.id, c.document_id, c.content, c.heading, c.ordinal,
+                       d.title, d.external_id, 0.0 as score
+                  from chunks c join documents d on d.id = c.document_id
+                 where c.library = ? and c.document_id = ? order by c.id
+                """,
+                (library, document_id),
+            )
+        for row in cursor:
+            yield dict(row)
 
     def get_document(self, document_id: int):
         row = self.conn.execute("select * from documents where id = ?", (document_id,)).fetchone()
