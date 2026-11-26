@@ -34,6 +34,8 @@ tsconfig.tsbuildinfo
 # Build outputs
 out/
 coverage/
+__pycache__/
+*.pyc
 
 # Tauri / Rust
 tauri/src-tauri/target/

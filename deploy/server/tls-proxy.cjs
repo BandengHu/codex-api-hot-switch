@@ -9,6 +9,12 @@ const listenHost = process.env.SWITCHGATE_TLS_HOST || "0.0.0.0"
 const listenPort = Number(process.env.SWITCHGATE_TLS_PORT || 443)
 const upstreamHost = process.env.SWITCHGATE_UPSTREAM_HOST || "127.0.0.1"
 const upstreamPort = Number(process.env.SWITCHGATE_UPSTREAM_PORT || 54141)
+
+// 知识库服务挂在同一域名下的 /kb 前缀，独立端口、独立进程，
+// 与中转应用互不影响；前缀置空即关闭该路由。
+const kbPrefix = process.env.SWITCHGATE_KB_PREFIX ?? "/kb"
+const kbHost = process.env.SWITCHGATE_KB_HOST || "127.0.0.1"
+const kbPort = Number(process.env.SWITCHGATE_KB_PORT || 54142)
 const certPath =
   process.env.SWITCHGATE_TLS_CERT ||
   "/etc/letsencrypt/live/huhuanjie.site/fullchain.pem"
@@ -51,6 +57,24 @@ function isPreflight(req) {
   )
 }
 
+// /kb 及其子路径命中知识库服务；其余请求照旧走中转应用。
+function resolveUpstream(pathname) {
+  if (!kbPrefix) return { host: upstreamHost, port: upstreamPort, path: pathname }
+  const isKb =
+    pathname === kbPrefix ||
+    pathname.startsWith(`${kbPrefix}/`) ||
+    pathname.startsWith(`${kbPrefix}?`)
+  if (!isKb) return { host: upstreamHost, port: upstreamPort, path: pathname }
+
+  // 去掉前缀再转发：浏览器访问 /kb/v1/search → 服务收到 /v1/search
+  const stripped = pathname.slice(kbPrefix.length) || "/"
+  return {
+    host: kbHost,
+    port: kbPort,
+    path: stripped.startsWith("/") ? stripped : `/${stripped}`,
+  }
+}
+
 function proxyRequest(req, res) {
   if (isPreflight(req)) {
     const headers = { "content-length": "0" }
@@ -61,6 +85,11 @@ function proxyRequest(req, res) {
     return
   }
 
+  const rawUrl = req.url || "/"
+  const queryIndex = rawUrl.indexOf("?")
+  const pathname = queryIndex === -1 ? rawUrl : rawUrl.slice(0, queryIndex)
+  const search = queryIndex === -1 ? "" : rawUrl.slice(queryIndex)
+  const target = resolveUpstream(pathname)
   const headers = {
     ...req.headers,
     host: req.headers.host || "",
@@ -68,16 +97,19 @@ function proxyRequest(req, res) {
     "x-forwarded-host": req.headers.host || "",
     "x-forwarded-for": clientAddress(req),
   }
+  if (target.host === kbHost && kbPrefix) {
+    headers["x-forwarded-prefix"] = kbPrefix
+  }
   if (headers.host.endsWith(`:${listenPort}`)) {
     headers.host = headers.host.slice(0, -String(listenPort).length - 1)
   }
 
   const upstream = http.request(
     {
-      host: upstreamHost,
-      port: upstreamPort,
+      host: target.host,
+      port: target.port,
       method: req.method,
-      path: req.url,
+      path: target.path + search,
       headers,
       timeout: 0,
     },

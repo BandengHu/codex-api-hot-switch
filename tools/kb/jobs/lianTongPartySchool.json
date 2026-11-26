@@ -1,0 +1,9 @@
+{
+  "library": "lianTongPartySchool",
+  "title": "联通党校 · 算网运营认证专区",
+  "description": "698 门课程的结构化总结：课程概述、分节要点、考点速记、关键词。用于考证复习与问答取据。",
+  "source": "/opt/kb/lianTongPartySchool/manifest.json",
+  "input": "C:/Users/Administrator/Desktop/codex/网页智能体/联通党校课程总结/算网运营认证专区_课程总结.json",
+  "id_field": "course_id",
+  "title_field": "course_name"
+}

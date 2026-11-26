@@ -1,0 +1,27 @@
+[Unit]
+Description=Knowledge Base Search Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/kb/service
+Environment=KB_ROOT=/opt/kb
+Environment=KB_HOST=127.0.0.1
+Environment=KB_PORT=54142
+Environment=KB_PUBLIC_BASE_URL=https://kb.huhuanjie.site
+Environment=PYTHONUNBUFFERED=1
+Environment=TOKENIZERS_PARALLELISM=false
+Environment=OMP_NUM_THREADS=4
+ExecStart=/usr/bin/python3 /opt/kb/service/app.py
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+# 内存上限：机器总内存 3.5G，服务峰值约 300MB，留足余量
+MemoryMax=1200M
+MemoryHigh=900M
+
+[Install]
+WantedBy=multi-user.target
+

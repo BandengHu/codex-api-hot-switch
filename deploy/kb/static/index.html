@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>知识库检索</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 20px 80px;
+    font: 15px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #0f1115; color: #e6e8ee;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: .3px; }
+  .sub { color: #8b93a7; font-size: 13px; margin-bottom: 24px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  input, select, button, textarea {
+    font: inherit; border-radius: 10px; border: 1px solid #262b38;
+    background: #171a22; color: #e6e8ee; padding: 10px 13px; outline: none;
+  }
+  input:focus, select:focus, textarea:focus { border-color: #3d7bff; }
+  input[type="text"] { flex: 1 1 320px; }
+  button {
+    background: #3d7bff; border-color: #3d7bff; color: #fff;
+    cursor: pointer; font-weight: 500; padding: 10px 20px;
+  }
+  button:hover { background: #2f68e0; }
+  button.ghost { background: transparent; border-color: #262b38; color: #aab2c5; }
+  .meta { display: flex; gap: 14px; flex-wrap: wrap; color: #8b93a7;
+          font-size: 12.5px; margin: 18px 0 10px; }
+  .hit {
+    border: 1px solid #20242f; border-radius: 12px; padding: 14px 16px;
+    margin-bottom: 12px; background: #14171e;
+  }
+  .hit h3 { margin: 0 0 8px; font-size: 14.5px; font-weight: 600; color: #cfd6e6; }
+  .hit p { margin: 0; white-space: pre-wrap; color: #b6bdcc; font-size: 13.5px; }
+  .tag {
+    display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 20px;
+    background: #1d2740; color: #7ba2ff; margin-right: 6px; vertical-align: middle;
+  }
+  .tag.kw { background: #1f3327; color: #6ddc9a; }
+  .tag.vec { background: #35243a; color: #c58ce8; }
+  .tag.re { background: #3a2c1c; color: #e0b070; }
+  .empty { color: #6c7385; text-align: center; padding: 40px 0; }
+  mark { background: #3d7bff33; color: #cfe0ff; border-radius: 3px; padding: 0 2px; }
+  details { margin-top: 8px; }
+  summary { cursor: pointer; color: #8b93a7; font-size: 12.5px; }
+  pre { background: #0c0e13; border: 1px solid #1d212b; border-radius: 8px;
+        padding: 10px; overflow: auto; font-size: 12px; color: #9aa3b5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>知识库检索</h1>
+  <div class="sub">全文检索 / 正则匹配 / 向量语义，三路可单独用也可混合排序</div>
+
+  <div class="row" style="margin-bottom:10px">
+    <input id="key" type="password" placeholder="API Key（kb_ 开头）" style="flex:1 1 260px" />
+    <select id="library"><option value="">全部知识库</option></select>
+  </div>
+
+  <div class="row">
+    <input id="q" type="text" placeholder="输入问题，例如：北斗和5G怎么融合" />
+    <select id="mode">
+      <option value="hybrid">混合</option>
+      <option value="keyword">全文</option>
+      <option value="semantic">语义</option>
+      <option value="regex">正则</option>
+    </select>
+    <button id="go">检索</button>
+  </div>
+
+  <div class="meta" id="meta"></div>
+  <div id="hits"></div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const saved = localStorage.getItem("kb_key");
+if (saved) $("key").value = saved;
+
+async function loadLibraries() {
+  const key = $("key").value.trim();
+  if (!key) return;
+  try {
+    const res = await fetch("v1/libraries", { headers: { "x-api-key": key } });
+    if (!res.ok) return;
+    const data = await res.json();
+    const sel = $("library");
+    sel.innerHTML = '<option value="">全部知识库</option>';
+    for (const lib of data.libraries || []) {
+      const opt = document.createElement("option");
+      opt.value = lib.name;
+      opt.textContent = `${lib.title}（${lib.doc_count} 篇）`;
+      sel.appendChild(opt);
+    }
+    if ((data.libraries || []).length === 1) sel.value = data.libraries[0].name;
+  } catch (e) { /* 静默：未配置 Key 时不打扰 */ }
+}
+
+function tagFor(hit) {
+  const src = hit.sources || [];
+  if (hit.mode === "regex" || hit.match_mode === "regex") return '<span class="tag re">正则</span>';
+  if (src.includes("keyword") && src.includes("semantic")) {
+    return '<span class="tag kw">全文</span><span class="tag vec">语义</span>';
+  }
+  if (src.includes("semantic") || hit.match_mode === "semantic") return '<span class="tag vec">语义</span>';
+  return '<span class="tag kw">全文</span>';
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, (ch) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]
+  ));
+}
+
+function highlight(text, query) {
+  let html = escapeHtml(text);
+  const words = (query || "").split(/\s+/).filter((w) => w.length >= 2).slice(0, 8);
+  for (const word of words) {
+    const safe = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    html = html.replace(new RegExp(`(${safe})`, "gi"), "<mark>$1</mark>");
+  }
+  return html;
+}
+
+async function doSearch() {
+  const key = $("key").value.trim();
+  if (!key) { $("meta").textContent = "请先填写 API Key"; return; }
+  localStorage.setItem("kb_key", key);
+
+  const body = {
+    query: $("q").value.trim(),
+    library: $("library").value,
+    mode: $("mode").value,
+    top_k: 8,
+  };
+  if (body.mode === "regex") body.regex = body.query;
+
+  $("meta").textContent = "检索中…";
+  $("hits").innerHTML = "";
+  try {
+    const res = await fetch("v1/search", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": key },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      $("meta").textContent = "错误：" + (data.error || res.status);
+      return;
+    }
+    const list = data.hits || [];
+    $("meta").innerHTML =
+      `命中 <b>${list.length}</b> 条 · 模式 ${data.mode} · 耗时 ${data.took_ms} ms`;
+    if (!list.length) {
+      $("hits").innerHTML = '<div class="empty">没有匹配结果，换个说法或切到「语义」试试</div>';
+      return;
+    }
+    $("hits").innerHTML = list.map((hit) => `
+      <div class="hit">
+        <h3>${tagFor(hit)}<span>${escapeHtml(hit.title || "未命名")}</span></h3>
+        <p>${highlight(hit.content || "", $("q").value)}</p>
+        <details><summary>原始字段</summary><pre>${escapeHtml(JSON.stringify(hit, null, 2))}</pre></details>
+      </div>`).join("");
+  } catch (err) {
+    $("meta").textContent = "请求失败：" + err.message;
+  }
+}
+
+$("go").addEventListener("click", doSearch);
+$("q").addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
+$("key").addEventListener("change", loadLibraries);
+loadLibraries();
+</script>
+</body>
+</html>
