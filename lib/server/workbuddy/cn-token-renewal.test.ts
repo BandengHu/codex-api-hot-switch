@@ -91,6 +91,7 @@ test("没有 refreshToken 或 expiresAt 未知时不续期", async () => {
 test("isRefreshTokenDead 只为上游判死的 token 返回 true", () => {
   // 实测文案：已失效的 refreshToken 会返回 invalid_grant
   assert.equal(isRefreshTokenDead("12153:refresh token failed:400 Bad Request: invalid_grant: Token is not active"), true)
+  assert.equal(isRefreshTokenDead("12153:refresh token failed:idsvc token: invalid_grant: refresh token revoked (http 401)"), true)
   assert.equal(isRefreshTokenDead("12153:refresh token is invalid"), true)
   // 网络抖动 / 格式错误不该被判死，否则会逼用户白重登
   assert.equal(isRefreshTokenDead("刷新登录态失败：请求超时"), false)

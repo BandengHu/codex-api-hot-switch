@@ -33,6 +33,10 @@ test("WorkBuddy 请求只重试瞬时故障", () => {
     false,
   )
   assert.equal(
+    new WorkbuddyTaskApiError("签到：HTTP 401", "", 401).isUnauthorized,
+    true,
+  )
+  assert.equal(
     isRetryableWorkbuddyTaskError(new WorkbuddyTaskApiError("签到失败：code=10001 已签到", {})),
     false,
   )

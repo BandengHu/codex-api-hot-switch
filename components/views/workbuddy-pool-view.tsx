@@ -333,7 +333,11 @@ export function WorkbuddyPoolView() {
  0,
  )
  const activeCount = entries.filter(
-   (entry) => !entry.disabled && !entry.accountBan && !entry.rateLimit,
+   (entry) =>
+     !entry.disabled &&
+     !entry.accountBan &&
+     !entry.credentialFailure &&
+     !entry.rateLimit,
  ).length
  const bannedCount = entries.filter((entry) => Boolean(entry.accountBan)).length
 /** 下拉里可选来做任务的账号；限频只影响聊天转发，不影响任务操作。 */
@@ -457,6 +461,19 @@ export function WorkbuddyPoolView() {
  </div>
  ) : entry.disabled ? (
  <Badge variant="outline">已禁用</Badge>
+ ) : entry.credentialFailure ? (
+ <div className="flex max-w-72 flex-col gap-1">
+ <Badge variant="destructive">登录态失效</Badge>
+ <span className="text-xs text-foreground" title={entry.credentialFailure.message}>
+ 请重新授权登录
+ </span>
+ <span className="text-xs text-muted-foreground">
+ 上游代码 {entry.credentialFailure.code}
+ {formatBanDetectedAt(entry.credentialFailure.detectedAt)
+   ? ` · 检测于 ${formatBanDetectedAt(entry.credentialFailure.detectedAt)}`
+   : ""}
+ </span>
+ </div>
 ) : entry.rateLimit ? (
 <div className="flex flex-col gap-1">
 <Badge variant="destructive">
@@ -542,6 +559,7 @@ export function WorkbuddyPoolView() {
  disabled={
    entry.disabled ||
    Boolean(entry.accountBan) ||
+    Boolean(entry.credentialFailure) ||
    Boolean(entry.rateLimit) ||
    busy !== null
  }
@@ -657,7 +675,8 @@ export function WorkbuddyPoolView() {
   disabled={
     busy !== null ||
     Boolean(viewEntry?.disabled) ||
-    Boolean(viewEntry?.accountBan)
+    Boolean(viewEntry?.accountBan) ||
+    Boolean(viewEntry?.credentialFailure)
   }
   >
   {isBusyFor(viewUid, "daily") ? <Spinner className="size-4" /> : <Sun className="size-4" />}
@@ -670,7 +689,8 @@ export function WorkbuddyPoolView() {
     busy !== null ||
     !viewAutoable.length ||
     Boolean(viewEntry?.disabled) ||
-    Boolean(viewEntry?.accountBan)
+    Boolean(viewEntry?.accountBan) ||
+    Boolean(viewEntry?.credentialFailure)
   }
   >
   {isBusyFor(viewUid, "automate-all") ? <Spinner className="size-4" /> : <Zap className="size-4" />}
@@ -743,7 +763,8 @@ export function WorkbuddyPoolView() {
      busy !== null ||
      !isTaskAutoable(task, actions) ||
      Boolean(viewEntry?.disabled) ||
-     Boolean(viewEntry?.accountBan)
+      Boolean(viewEntry?.accountBan) ||
+      Boolean(viewEntry?.credentialFailure)
    }
   >
   {isBusyFor(viewUid, "automate", task.taskCode) ? <Spinner className="size-4" /> : null}
@@ -756,7 +777,8 @@ export function WorkbuddyPoolView() {
     busy !== null ||
     !task.claimable ||
     Boolean(viewEntry?.disabled) ||
-    Boolean(viewEntry?.accountBan)
+      Boolean(viewEntry?.accountBan) ||
+      Boolean(viewEntry?.credentialFailure)
   }
   >
   {isBusyFor(viewUid, "claim", task.taskCode) ? <Spinner className="size-4" /> : null}

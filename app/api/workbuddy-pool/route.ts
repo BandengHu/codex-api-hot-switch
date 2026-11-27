@@ -13,8 +13,10 @@ import { fetchBalance } from "@/lib/server/workbuddy/task-api"
 import {
   accountBanOf,
   activeRateLimitOf,
+  credentialFailureOf,
 } from "@/lib/server/workbuddy/pool-selection"
 import type { WorkbuddyAccountBan } from "@/lib/server/workbuddy/account-ban"
+import type { WorkbuddyAccountCredentialFailure } from "@/lib/server/workbuddy/pool-selection"
 import {
   formatScheduleDay,
   readDailyScheduleState,
@@ -38,6 +40,7 @@ interface PoolEntryWithBalance {
  /** 是否参与自动签到/每日任务。 */
  automationEnabled: boolean
  accountBan?: WorkbuddyAccountBan
+ credentialFailure?: WorkbuddyAccountCredentialFailure
  rateLimit?: {
    message: string
    resetAt?: string
@@ -95,7 +98,9 @@ export async function GET(request: Request) {
  }
  const accountBan = accountBanOf(poolState, entry.uid)
  if (accountBan) item.accountBan = accountBan
- if (!entry.disabled && !accountBan) {
+ const credentialFailure = credentialFailureOf(poolState, entry.uid)
+ if (credentialFailure) item.credentialFailure = credentialFailure
+ if (!entry.disabled && !accountBan && !credentialFailure) {
  try {
  const account = await readPoolAccount(entry.uid)
  const balance = await fetchBalance(account)
@@ -103,6 +108,10 @@ export async function GET(request: Request) {
  if (!item.nickname && account.nickname) item.nickname = account.nickname
  } catch (error) {
  item.balanceError = errorMessage(error)
+ const discoveredFailure = credentialFailureOf(await readPoolState(), entry.uid)
+ if (!item.credentialFailure && discoveredFailure) {
+   item.credentialFailure = discoveredFailure
+ }
  }
  }
   const lastRunDate = schedule.lastRunByUid[entry.uid]

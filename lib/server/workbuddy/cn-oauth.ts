@@ -48,7 +48,9 @@ export interface CnOauthTokens {
 
 /** 上游明确表示这个 refreshToken 已经不能用了；重试多少次都没意义。 */
 export function isRefreshTokenDead(message: string) {
-  return /Token is not active|refresh token is invalid|invalid_grant/i.test(message)
+  return /Token is not active|refresh token is invalid|refresh token revoked|invalid_grant/i.test(
+    message,
+  )
 }
 
 export async function refreshCnTokens(refreshToken: string): Promise<CnOauthTokens> {

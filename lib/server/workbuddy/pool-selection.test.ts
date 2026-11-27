@@ -137,6 +137,22 @@ test("selection skips persistently banned accounts and never expires the ban", (
   assert.equal(nextAvailableUidOf(value, value.entries, "c", NOW), "b")
 })
 
+test("selection skips accounts whose login credential was revoked", () => {
+  const value = {
+    ...state("a"),
+    credentialFailures: {
+      a: {
+        code: 12153,
+        message: "refresh token revoked",
+        detectedAt: "2026-10-29T07:00:00.000Z",
+      },
+    },
+  } satisfies WorkbuddySelectableState
+  assert.equal(availableUidOf(value, value.entries, NOW), "b")
+  assert.equal(nextAvailableUidOf(value, value.entries, "a", NOW), "b")
+  assert.deepEqual(selectableUidsOf(value, value.entries, NOW), ["b", "c"])
+})
+
 test("selectable order keeps the explicit active account first", () => {
   const value = state("c")
   assert.deepEqual(selectableUidsOf(value, value.entries, NOW), [

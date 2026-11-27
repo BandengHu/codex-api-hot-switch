@@ -64,10 +64,15 @@ export class WorkbuddyTaskApiError extends Error {
  this.name = "WorkbuddyTaskApiError"
  }
 
- /**业务/HTTP400：调用方按需降级或跳过（如 mp领奖回落 Web域）。 */
- get isBadRequest() {
- return this.status ===400
- }
+  /**业务/HTTP400：调用方按需降级或跳过（如 mp领奖回落 Web域）。 */
+  get isBadRequest() {
+    return this.status === 400
+  }
+
+  /** 登录态失效：调用方可据此把账号标记为需要重新授权。 */
+  get isUnauthorized() {
+    return this.status === 401
+  }
 }
 
 export interface TaskFetchInit {

@@ -11,6 +11,12 @@ export interface WorkbuddyAccountBanView {
   detectedAt: string
 }
 
+export interface WorkbuddyAccountCredentialFailureView {
+  code: number
+  message: string
+  detectedAt: string
+}
+
 export interface WorkbuddyPoolEntryView {
   uid: string
   nickname: string
@@ -22,6 +28,8 @@ export interface WorkbuddyPoolEntryView {
   automationEnabled?: boolean
   /** 上游明确返回 11140 后的持久封禁；不会自动过期。 */
   accountBan?: WorkbuddyAccountBanView
+  /** refreshToken 被撤销或上游持续返回 401；重新授权/重新导入后清除。 */
+  credentialFailure?: WorkbuddyAccountCredentialFailureView
   /** 仍在重置时间之前的账号级限频。 */
   rateLimit?: {
     message: string

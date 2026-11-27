@@ -319,7 +319,11 @@ export async function maybeRunDailyForAllAccounts(): Promise<DailySchedulerCycle
   const result: DailySchedulerCycleResult = { checked: 0, ran: [], locked: [] }
   await syncPoolFromDisk()
   const entries = await listPoolEntries()
-  const bannedUids = new Set(Object.keys((await readPoolState()).accountBans ?? {}))
+  const poolState = await readPoolState()
+  const bannedUids = new Set([
+    ...Object.keys(poolState.accountBans ?? {}),
+    ...Object.keys(poolState.credentialFailures ?? {}),
+  ])
   result.checked = entries.length
 
   let isFirstRun = true
@@ -383,7 +387,11 @@ export async function maybeRunNightOwlForAllAccounts(
 
   await syncPoolFromDisk()
   const entries = await listPoolEntries()
-  const bannedUids = new Set(Object.keys((await readPoolState()).accountBans ?? {}))
+  const poolState = await readPoolState()
+  const bannedUids = new Set([
+    ...Object.keys(poolState.accountBans ?? {}),
+    ...Object.keys(poolState.credentialFailures ?? {}),
+  ])
   result.checked = entries.length
   for (const entry of entries) {
     if (!automationAllowed(entry) || bannedUids.has(entry.uid)) continue

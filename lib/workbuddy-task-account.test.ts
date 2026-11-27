@@ -45,3 +45,19 @@ test("禁用或封禁账号不能执行任务", () => {
     false,
   )
 })
+
+test("登录态失效的账号不能执行任务，重新授权状态恢复后可以执行", () => {
+  assert.equal(
+    isWorkbuddyTaskAccount(
+      entry({
+        credentialFailure: {
+          code: 12153,
+          message: "refresh token revoked",
+          detectedAt: "2026-11-27T08:00:00.000Z",
+        },
+      }),
+    ),
+    false,
+  )
+  assert.equal(isWorkbuddyTaskAccount(entry()), true)
+})

@@ -3,12 +3,14 @@ import { NextResponse } from "next/server"
 import { errorMessage, jsonError, readJsonBody } from "@/lib/server/http"
 import {
  readPoolAccount,
+ markPoolAccountCredentialFailure,
  removePoolAccount,
  setPoolAccountDisabled,
  setPoolAccountToggles,
  unbanPoolAccount,
 } from "@/lib/server/workbuddy/task-pool-store"
 import { claimGrowthReward, listAllGrowthTasks } from "@/lib/server/workbuddy/task-api"
+import { WorkbuddyTaskApiError } from "@/lib/server/workbuddy/api-client"
 import { runAllAutomations, runTaskAutomation } from "@/lib/server/workbuddy/task-automation"
 import { runDailyRewards } from "@/lib/server/workbuddy/daily-automation"
 import { recordDailyRun } from "@/lib/server/workbuddy/daily-scheduler"
@@ -18,6 +20,16 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 type RouteContext = { params: Promise<{ uid: string }> }
+
+async function markUnauthorized(uid: string, error: unknown) {
+ if (error instanceof WorkbuddyTaskApiError && error.isUnauthorized) {
+   await markPoolAccountCredentialFailure(uid, {
+     code: 401,
+     message: "上游返回 HTTP 401，请在 WorkBuddy 桌面端重新授权登录",
+     detectedAt: new Date().toISOString(),
+   })
+ }
+}
 
 /**
  *「一键全部」的 HTTP兜底超时。
@@ -36,6 +48,7 @@ export async function GET(request: Request, context: RouteContext) {
       const tasks = await listAllGrowthTasks(account)
       return NextResponse.json({ uid, tasks })
     } catch (error) {
+      await markUnauthorized(uid, error)
       return jsonError(`读取任务失败：${errorMessage(error)}`)
     }
   })
@@ -141,6 +154,7 @@ export async function POST(request: Request, context: RouteContext) {
  if (timer) clearTimeout(timer)
  }
     } catch (error) {
+      await markUnauthorized(uid, error)
       return jsonError(`操作失败：${errorMessage(error)}`)
     }
   })

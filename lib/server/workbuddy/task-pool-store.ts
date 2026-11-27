@@ -15,11 +15,13 @@ import {
   accountBanOf,
   activeRateLimitOf,
   availableUidOf,
+  credentialFailureOf,
   preferredRateLimitOf,
   pruneExpiredRateLimits,
   selectableUidsAfter,
   selectableUidsOf,
   type WorkbuddyAccountRateLimit,
+  type WorkbuddyAccountCredentialFailure,
 } from "./pool-selection"
 import {
   firstReadableAccount,
@@ -78,6 +80,8 @@ export interface WorkbuddyPoolState {
  rateLimits?: Record<string, WorkbuddyAccountRateLimit>
  /** 上游返回 11140 后持久封禁，只能由操作者手动解除。 */
  accountBans?: Record<string, WorkbuddyAccountBan>
+  /** refreshToken 已被上游撤销；重新授权或重新导入后清除。 */
+  credentialFailures?: Record<string, WorkbuddyAccountCredentialFailure>
 }
 
 function poolDir() {
@@ -135,6 +139,11 @@ export async function readPoolState(): Promise<WorkbuddyPoolState> {
    typeof parsed.accountBans === "object" &&
    !Array.isArray(parsed.accountBans)
      ? { accountBans: parsed.accountBans }
+     : {}),
+   ...(parsed.credentialFailures &&
+   typeof parsed.credentialFailures === "object" &&
+   !Array.isArray(parsed.credentialFailures)
+     ? { credentialFailures: parsed.credentialFailures }
      : {}),
  }
  } catch {
@@ -334,6 +343,12 @@ export async function setActivePoolAccount(uid: string) {
  if (ban) {
    throw new Error(`账号 ${target === LOCAL_POOL_UID ? "本机账号" : target} 已被上游封禁，请先解除封禁`)
  }
+  const credentialFailure = credentialFailureOf(state, target)
+  if (credentialFailure) {
+    throw new Error(
+      `账号 ${target === LOCAL_POOL_UID ? "本机账号" : target} 登录态已失效，请重新授权登录`,
+    )
+  }
  if (target && target !== LOCAL_POOL_UID) {
  const entry = state.entries.find((candidate) => candidate.uid === target)
  if (!entry) throw new Error(`号池里没有 uid=${target} 的账号`)
@@ -387,6 +402,7 @@ export async function importPoolAccount(raw: string): Promise<WorkbuddyPoolEntry
  } else {
  state.entries.push(entry)
  }
+ if (state.credentialFailures) delete state.credentialFailures[account.uid]
  await writePoolState(state)
  return entry
 }
@@ -399,6 +415,7 @@ export async function removePoolAccount(uid: string) {
  if (state.entries.length === before) return
  if (state.rateLimits) delete state.rateLimits[uid]
  if (state.accountBans) delete state.accountBans[uid]
+ if (state.credentialFailures) delete state.credentialFailures[uid]
  // 删掉的正是当前转发账号时清掉标记，回落本机账号。
  if (state.activeUid === uid) delete state.activeUid
  await writePoolState(state)
@@ -418,6 +435,22 @@ export async function setPoolAccountDisabled(uid: string, disabled: boolean) {
  // 禁用的账号不能继续当转发出口：清掉激活标记，自动回落本机账号。
  if (disabled && state.activeUid === uid) delete state.activeUid
  await writePoolState(state)
+}
+
+/** 持久记录 refreshToken 已被上游撤销；重新授权或重新导入后清除。 */
+export async function markPoolAccountCredentialFailure(
+  uid: string,
+  failure: WorkbuddyAccountCredentialFailure,
+) {
+  return enqueueMutation(async () => {
+    const state = await readPoolState()
+    state.credentialFailures = {
+      ...(state.credentialFailures ?? {}),
+      [uid]: failure,
+    }
+    if (state.activeUid === uid) delete state.activeUid
+    await writePoolState(state)
+  })
 }
 
 /**
@@ -456,6 +489,10 @@ export async function readPoolAccount(uid: string): Promise<WorkbuddyAccount> {
  if (ban) {
    throw new Error(`账号已被上游封禁：${ban.message}`)
  }
+ const credentialFailure = credentialFailureOf(state, uid)
+ if (credentialFailure) {
+   throw new Error(`账号登录态已失效：${credentialFailure.message}`)
+ }
  if (uid === "local") {
    if (!localWorkbuddyPoolEnabled()) {
      throw new Error("服务器模式没有本机 WorkBuddy 登录态，请使用号池里的导入账号")
@@ -487,15 +524,42 @@ export async function readPoolAccount(uid: string): Promise<WorkbuddyAccount> {
        renewError instanceof WorkbuddyCnRefreshError &&
        renewError.deadToken
      ) {
-       throw error
+       await markPoolAccountCredentialFailure(uid, {
+         code: 12153,
+         message: renewError.message,
+         detectedAt: new Date().toISOString(),
+       })
+       throw new Error(
+         `账号登录态已失效：${renewError.message}。请重新授权登录`,
+       )
      }
      throw renewError
    }
  }
 
  if (!shouldRenewCnAccount(account)) return account
- // 临期续期失败不阻断转发：现有 token 还没过期，继续用它。
- return renewCnPoolAccount({ uid, filePath, raw, account }).catch(() => account)
+ try {
+   return await renewCnPoolAccount({ uid, filePath, raw, account })
+ } catch (error) {
+   // 网络抖动时旧 token 仍可能有效；只有上游明确撤销 refreshToken 才判登录态失效。
+   if (
+     error instanceof WorkbuddyCnRefreshError &&
+     !error.deadToken
+   ) {
+     return account
+   }
+   if (error instanceof WorkbuddyCnRefreshError && error.deadToken) {
+     await markPoolAccountCredentialFailure(uid, {
+       code: 12153,
+       message: error.message,
+       detectedAt: new Date().toISOString(),
+     })
+     throw new Error(
+       `账号登录态已失效：${error.message}。请重新授权登录`,
+     )
+   }
+   throw error
+ }
 }
 
 /**扫号池目录下还没登记进 pool.json 的凭据文件（手工拷贝进来的场景）。 */

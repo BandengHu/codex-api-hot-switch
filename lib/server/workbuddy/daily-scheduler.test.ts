@@ -28,6 +28,19 @@ test("每日排程：只挑今天没跑且未禁用的账号", () => {
   assert.deepEqual(picked.map((item) => item.uid), ["b"])
 })
 
+test("每日排程：登录态失效账号与封禁账号一样暂停自动任务", () => {
+  const entries = [entry("revoked"), entry("normal")]
+  const state: DailyScheduleState = { version: 4, lastRunByUid: {} }
+  const picked = pickAccountsNeedingRun(
+    entries,
+    state,
+    "2026-11-27",
+    Date.now(),
+    new Set(["revoked"]),
+  )
+  assert.deepEqual(picked.map((item) => item.uid), ["normal"])
+})
+
 test("每日排程：跨日重置，同一天不重复", () => {
   const entries = [entry("local")]
   const state: DailyScheduleState = {

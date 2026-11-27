@@ -10,6 +10,12 @@ export interface WorkbuddyAccountRateLimit {
   kind?: "frequency_limit" | "quota_exhausted"
 }
 
+export interface WorkbuddyAccountCredentialFailure {
+  message: string
+  code: number
+  detectedAt: string
+}
+
 export interface WorkbuddySelectableEntry {
   uid: string
   disabled: boolean
@@ -24,6 +30,7 @@ export interface WorkbuddySelectableState {
   entries: WorkbuddySelectableEntry[]
   rateLimits?: Record<string, WorkbuddyAccountRateLimit>
   accountBans?: Record<string, WorkbuddyAccountBan>
+  credentialFailures?: Record<string, WorkbuddyAccountCredentialFailure>
 }
 
 function isActiveRateLimit(
@@ -53,6 +60,13 @@ export function accountBanOf(
   return state.accountBans?.[uid]
 }
 
+export function credentialFailureOf(
+  state: WorkbuddySelectableState,
+  uid: string,
+) {
+  return state.credentialFailures?.[uid]
+}
+
 /**
  * 两个账号级开关的判定。
  *
@@ -80,7 +94,9 @@ export function selectableUidsOf(
   now = Date.now(),
 ) {
   const isSelectable = (uid: string) =>
-    !accountBanOf(state, uid) && !activeRateLimitOf(state, uid, now)
+    !accountBanOf(state, uid) &&
+    !credentialFailureOf(state, uid) &&
+    !activeRateLimitOf(state, uid, now)
   const uids = orderedEntries
     .filter((entry) => relayAllowed(entry) && isSelectable(entry.uid))
     .map((entry) => entry.uid)
@@ -101,7 +117,10 @@ export function selectableUidsAfter(
   now = Date.now(),
 ) {
   const enabled = orderedEntries.filter(
-    (entry) => relayAllowed(entry) && !accountBanOf(state, entry.uid),
+    (entry) =>
+      relayAllowed(entry) &&
+      !accountBanOf(state, entry.uid) &&
+      !credentialFailureOf(state, entry.uid),
   )
   const currentIndex = enabled.findIndex((entry) => entry.uid === afterUid)
   const start = currentIndex >= 0 ? currentIndex + 1 : 0
