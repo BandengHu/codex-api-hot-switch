@@ -93,6 +93,18 @@
 `mode` 可选：`hybrid`（默认，关键词+向量 RRF 融合）、`keyword`、`semantic`、`regex`。
 `query_vector` 为空时服务端自动编码；调用方已有向量可以直接传入，省一次编码。
 
+**除非自己在本地算好了向量，不要设 `auto_embed: false`**。设成 false 后
+`semantic` 直接返回 0 条，`hybrid` 会静默退化成只剩关键词一路，结果看着正常
+但语义检索已经没了。服务端会在响应里带 `notice` 说明这件事：
+
+```json
+{"mode": "hybrid", "count": 3, "took_ms": 11,
+ "notice": "未传入 query_vector，语义路已跳过（可用 /v1/embed 或本地编码）"}
+```
+
+单库查询和跨库查询（不传 `library`）都会返回 `took_ms` 与 `notice`；
+跨库的 `took_ms` 是整体耗时，`notice` 按原因去重后合并。
+
 **`query` 和 `q` 等价**，GET 的 query string 和 POST 的 body 都同时接受这两个名字。
 两个都传时以 `query` 为准。这是为了兼容两种常见调用习惯：GET 用 `q=`，
 POST 用 `{"query": ...}`。

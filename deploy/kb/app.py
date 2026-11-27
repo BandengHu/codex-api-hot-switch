@@ -119,6 +119,7 @@ def search_get(
 
 
 def _do_search(payload: SearchRequest) -> dict:
+    started = time.time()
     libraries = _resolve_libraries(payload.library)
     if not libraries:
         raise HTTPException(status_code=404, detail="知识库为空")
@@ -145,8 +146,33 @@ def _do_search(payload: SearchRequest) -> dict:
     if len(results) == 1:
         return results[0]
     merged = fuse_libraries(results, payload.top_k)
-    return {"mode": payload.mode, "query": payload.query, "libraries": libraries,
-            "hits": merged, "count": len(merged)}
+    notices = _collect_notices(results)
+    return {
+        "mode": payload.mode,
+        "query": payload.query,
+        "libraries": libraries,
+        "hits": merged,
+        "count": len(merged),
+        # 跨库曾经手写返回体，把 run_search 的 took_ms / notice 丢掉，
+        # 于是「语义路已跳过」这种降级在默认调用（不传 library）下完全看不见：
+        # 结果看着正常，实际只剩关键词一路在跑。这里补回来，跨库也用整体耗时。
+        "took_ms": int((time.time() - started) * 1000),
+        **({"notice": "；".join(notices)} if notices else {}),
+    }
+
+
+def _collect_notices(results: List[dict]) -> List[str]:
+    """汇总各库的降级提示，同一个原因只报一次。
+
+    语义路是否跳过只取决于本次传入的 query_vector 与 mode，各库结论相同，
+    所以这里去重后通常只剩一条；保留列表是为了将来某个库单独降级时不丢信息。
+    """
+    notices: List[str] = []
+    for item in results:
+        notice = item.get("notice")
+        if notice and notice not in notices:
+            notices.append(notice)
+    return notices
 
 
 def fuse_libraries(results: List[dict], top_k: int, k: int = 60) -> List[dict]:
