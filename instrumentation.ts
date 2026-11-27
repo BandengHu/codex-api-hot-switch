@@ -12,4 +12,21 @@ export async function register() {
     "@/lib/server/workbuddy/daily-scheduler"
   )
   startDailyScheduler()
+
+  // 积分账本早先没有裁剪，历史文件只会一路变大（本地实测 14 天 3.7 万行）。
+  // 启动时按账号各收缩一次，把遗留账本拉回保留期内；日常追加由
+  // appendWorkbuddyCreditLedger 每 200 行自动整理一次。
+  const { compactWorkbuddyCreditLedger } = await import(
+    "@/lib/server/workbuddy/credit-ledger"
+  )
+  const { accountDataDirPath, listAccounts } = await import(
+    "@/lib/server/accounts-store"
+  )
+  void listAccounts()
+    .then((accounts) =>
+      Promise.allSettled(
+        accounts.map((account) => compactWorkbuddyCreditLedger(accountDataDirPath(account.id))),
+      ),
+    )
+    .catch(() => undefined)
 }
