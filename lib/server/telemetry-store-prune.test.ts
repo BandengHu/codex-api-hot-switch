@@ -86,3 +86,31 @@ test("写满一轮压缩后，过期明细目录会被真的回收", async () =>
   assert.equal(left.includes(staleId), false, "过期明细目录应当随压缩一起被回收")
   assert.equal(left.includes(inflightId), true, "宽限期内的在途明细不能被误删")
 })
+
+// 服务器模式下后台压缩没有请求上下文，resolveDataDir() 会直接抛
+// “缺少账号上下文”。如果 pruneRequestLogDetails 没拿到显式 dataDir，
+// 明细目录就会无限累积 —— 线上 562M 的 request-details 就是这么来的。
+test("服务器模式下没有请求上下文时，压缩仍能回收过期明细目录", async () => {
+  const accountDir = join(dataDir, "accounts", "a3ba8444-9e8a-450a-8bc5-a3a42704c265")
+  const accountDetailsRoot = join(accountDir, "logs", "request-details")
+  await mkdir(accountDetailsRoot, { recursive: true })
+
+  const now = Date.now()
+  const staleId = `log-${now - 30 * DAY}-srvstale`
+  await mkdir(join(accountDetailsRoot, staleId), { recursive: true })
+
+  const previousServerFlag = process.env.CODEX_HOT_SWITCH_SERVER_UI
+  process.env.CODEX_HOT_SWITCH_SERVER_UI = "1"
+  try {
+    const settings = fakeSettings()
+    for (let index = 0; index < WRITES_PER_COMPACT; index += 1) {
+      await appendTelemetryLog(fakeLog(index), settings, accountDir)
+    }
+  } finally {
+    if (previousServerFlag === undefined) delete process.env.CODEX_HOT_SWITCH_SERVER_UI
+    else process.env.CODEX_HOT_SWITCH_SERVER_UI = previousServerFlag
+  }
+
+  const left = await readdir(accountDetailsRoot)
+  assert.equal(left.includes(staleId), false, "服务器模式下过期明细目录也必须被回收")
+})

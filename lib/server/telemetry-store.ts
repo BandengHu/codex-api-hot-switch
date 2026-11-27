@@ -316,6 +316,7 @@ async function compactTelemetryFiles(settings: Settings, dataDir = resolveDataDi
   // 明细没了”。
   await pruneRequestLogDetails({
     keepIds: new Set(logs.map((log) => log.id)),
+    dataDir,
   })
 }
 

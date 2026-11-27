@@ -125,10 +125,14 @@ async function entryCreatedAtMs(entry: Dirent, path: string) {
 // 没有这一步，全量请求日志会让 data/logs/request-details 无限增长。
 export async function pruneRequestLogDetails(params: {
   keepIds: ReadonlySet<string>
+  dataDir?: string
   now?: number
   graceMs?: number
 }): Promise<RequestLogDetailPruneResult> {
-  const root = requestDetailsRoot()
+  // 后台压缩没有请求上下文，服务器模式下 resolveDataDir() 会直接抛
+  // “缺少账号上下文”。所以 dataDir 必须由调用方显式传入，
+  // 否则明细目录永远不会被清理，只会持续增长。
+  const root = requestDetailsRoot(params.dataDir)
   const now = params.now ?? Date.now()
   const graceMs = params.graceMs ?? PRUNE_GRACE_MS
 
